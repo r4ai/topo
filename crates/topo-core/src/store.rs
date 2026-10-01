@@ -125,11 +125,12 @@ mod tests {
 
     #[test]
     fn render_and_parse_round_trip() {
-        let mut node = Node::new(NodeId("abc123".into()), Kind::Milestone, "Ship: v1 --- final".into());
+        let mut node = Node::new(NodeId("abc123".into()), Kind::Task, "Ship: v1 --- final".into());
         node.status = Status::Doing;
         node.due = Some(jiff::civil::date(2026, 10, 31));
         node.tags = vec!["release".into()];
         node.depends_on = vec![NodeId("zzz999".into())];
+        node.milestones = vec![NodeId("mmm000".into())];
         node.body = "notes\n---\nmore\n".into();
         let path = Path::new("abc123.md");
         assert_eq!(parse(&render(&node), path).unwrap(), node);
@@ -152,23 +153,23 @@ mod tests {
     fn save_writes_only_changes_and_reloads() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = Workspace::init(tmp.path()).unwrap();
-        let a = Node::new(ws.graph.fresh_id(), Kind::Task, "a".into());
-        let a_id = a.id.clone();
-        ws.graph.insert(a).unwrap();
-        let mut m = Node::new(ws.graph.fresh_id(), Kind::Milestone, "m".into());
-        m.depends_on.push(a_id.clone());
+        let m = Node::new(ws.graph.fresh_id(), Kind::Milestone, "m".into());
         let m_id = m.id.clone();
         ws.graph.insert(m).unwrap();
+        let mut a = Node::new(ws.graph.fresh_id(), Kind::Task, "a".into());
+        a.milestones.push(m_id.clone());
+        let a_id = a.id.clone();
+        ws.graph.insert(a).unwrap();
         ws.save().unwrap();
 
         let mut reopened = Workspace::discover(&tmp.path().join(DIR_NAME).join(NODES_DIR)).unwrap();
         assert_eq!(reopened.graph.progress(&m_id), (0, 1));
 
-        reopened.graph.remove(&a_id).unwrap();
+        reopened.graph.remove(&m_id).unwrap();
         reopened.save().unwrap();
-        assert!(!reopened.node_path(&a_id).exists());
+        assert!(!reopened.node_path(&m_id).exists());
         let again = Workspace::open(reopened.dir().to_owned()).unwrap();
-        assert!(again.graph.get(&m_id).unwrap().depends_on.is_empty());
+        assert!(again.graph.get(&a_id).unwrap().milestones.is_empty());
         assert!(matches!(Workspace::init(tmp.path()), Err(Error::AlreadyInitialized(_))));
     }
 }

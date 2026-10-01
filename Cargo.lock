@@ -6269,10 +6269,15 @@ name = "topo-gui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block",
+ "futures",
  "gpui",
+ "jiff",
  "notify",
+ "objc",
  "topo-core",
  "topo-jev",
+ "unicode-segmentation",
 ]
 
 [[package]]

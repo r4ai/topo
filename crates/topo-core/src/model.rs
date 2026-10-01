@@ -53,8 +53,8 @@ impl Status {
     }
 }
 
-/// A task or milestone. `depends_on` is the only kind of edge in the graph:
-/// a milestone is simply a node that depends on the work it groups.
+/// A task or milestone. `depends_on` orders work; a task's `milestones` puts it
+/// in the set of work each of those milestones consists of.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
@@ -69,6 +69,9 @@ pub struct Node {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<NodeId>,
+    /// Milestones this task belongs to (tasks only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub milestones: Vec<NodeId>,
     /// Free-form Markdown notes (the file body, not part of the frontmatter).
     #[serde(skip)]
     pub body: String,
@@ -84,6 +87,7 @@ impl Node {
             due: None,
             tags: Vec::new(),
             depends_on: Vec::new(),
+            milestones: Vec::new(),
             body: String::new(),
         }
     }

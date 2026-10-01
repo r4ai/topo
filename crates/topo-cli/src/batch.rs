@@ -27,9 +27,9 @@ enum Op {
         /// Nodes the new node depends on.
         #[serde(default)]
         depends_on: Vec<String>,
-        /// Nodes that depend on the new node (e.g. its milestone).
-        #[serde(default, rename = "for")]
-        needed_by: Vec<String>,
+        /// Milestones whose set the new task belongs to.
+        #[serde(default, rename = "in")]
+        milestones: Vec<String>,
     },
     Link {
         from: String,
@@ -38,6 +38,14 @@ enum Op {
     Unlink {
         from: String,
         to: String,
+    },
+    Join {
+        task: String,
+        milestone: String,
+    },
+    Leave {
+        task: String,
+        milestone: String,
     },
     Status {
         id: String,
@@ -75,17 +83,15 @@ fn apply_one(graph: &mut Graph, refs: &mut BTreeMap<String, NodeId>, op: Op) -> 
         }
     };
     match op {
-        Op::Add { name, title, kind, due, tags, notes, depends_on, needed_by } => {
+        Op::Add { name, title, kind, due, tags, notes, depends_on, milestones } => {
             let mut node = Node::new(graph.fresh_id(), kind, title);
             node.depends_on = depends_on.iter().map(|d| id(graph, refs, d)).collect::<Result<_>>()?;
+            node.milestones = milestones.iter().map(|m| id(graph, refs, m)).collect::<Result<_>>()?;
             node.due = due;
             node.tags = tags;
             node.body = notes;
             let new_id = node.id.clone();
             graph.insert(node)?;
-            for parent in &needed_by {
-                graph.link(&id(graph, refs, parent)?, &new_id)?;
-            }
             if let Some(name) = name
                 && refs.insert(name.clone(), new_id).is_some()
             {
@@ -94,6 +100,8 @@ fn apply_one(graph: &mut Graph, refs: &mut BTreeMap<String, NodeId>, op: Op) -> 
         }
         Op::Link { from, to } => graph.link(&id(graph, refs, &from)?, &id(graph, refs, &to)?)?,
         Op::Unlink { from, to } => graph.unlink(&id(graph, refs, &from)?, &id(graph, refs, &to)?)?,
+        Op::Join { task, milestone } => graph.join(&id(graph, refs, &task)?, &id(graph, refs, &milestone)?)?,
+        Op::Leave { task, milestone } => graph.leave(&id(graph, refs, &task)?, &id(graph, refs, &milestone)?)?,
         Op::Status { id: target, status } => graph.set_status(&id(graph, refs, &target)?, status)?,
         Op::Edit { id: target, title, kind, due, tags, notes } => {
             let edit = Edit { title, kind, due: due.map(Some), tags, body: notes };
@@ -117,8 +125,8 @@ mod tests {
             &mut graph,
             r#"[
                 {"op": "add", "ref": "m", "title": "v1", "kind": "milestone", "due": "2026-10-31"},
-                {"op": "add", "ref": "a", "title": "design", "for": ["$m"]},
-                {"op": "add", "ref": "b", "title": "build", "depends_on": ["$a"], "for": ["$m"]},
+                {"op": "add", "ref": "a", "title": "design", "in": ["$m"]},
+                {"op": "add", "ref": "b", "title": "build", "depends_on": ["$a"], "in": ["$m"]},
                 {"op": "status", "id": "$a", "status": "done"}
             ]"#,
         )

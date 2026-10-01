@@ -39,9 +39,9 @@ enum Command {
         /// The new node depends on this node (repeatable).
         #[arg(long = "dep", value_name = "ID")]
         deps: Vec<String>,
-        /// This node depends on the new node, e.g. the milestone it belongs to (repeatable).
-        #[arg(long = "for", value_name = "ID")]
-        needed_by: Vec<String>,
+        /// Milestone whose set the new task belongs to (repeatable).
+        #[arg(long = "in", value_name = "MILESTONE")]
+        milestones: Vec<String>,
         #[arg(long)]
         due: Option<Date>,
         #[arg(long = "tag")]
@@ -54,6 +54,10 @@ enum Command {
     Link { from: String, to: String },
     /// Remove the dependency of FROM on TO.
     Unlink { from: String, to: String },
+    /// Add TASK to the set of MILESTONE.
+    Join { task: String, milestone: String },
+    /// Remove TASK from the set of MILESTONE.
+    Leave { task: String, milestone: String },
     /// Set the status of a node.
     Status {
         id: String,
@@ -85,7 +89,7 @@ enum Command {
         kind: Option<Kind>,
         #[arg(long, value_parser = parse_enum::<Status>)]
         status: Option<Status>,
-        /// Only nodes that ID transitively depends on.
+        /// Only nodes that ID transitively requires (for a milestone: its members and their prerequisites).
         #[arg(long, value_name = "ID")]
         under: Option<String>,
         #[arg(long)]
@@ -188,18 +192,16 @@ fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     match cli.command {
         Command::Init => unreachable!("handled above"),
-        Command::Add { title, milestone, deps, needed_by, due, tags, note } => {
+        Command::Add { title, milestone, deps, milestones, due, tags, note } => {
             let kind = if milestone { Kind::Milestone } else { Kind::Task };
             let mut node = Node::new(ws.graph.fresh_id(), kind, title);
             node.depends_on = resolve_all(&ws.graph, &deps)?;
+            node.milestones = resolve_all(&ws.graph, &milestones)?;
             node.due = due;
             node.tags = tags;
             node.body = note.unwrap_or_default();
             let id = node.id.clone();
             ws.graph.insert(node)?;
-            for parent in resolve_all(&ws.graph, &needed_by)? {
-                ws.graph.link(&parent, &id)?;
-            }
             ws.save()?;
             print(json, render::node_json(&ws.graph, &ws.graph.get(&id).unwrap().clone()), || id.to_string());
         }
@@ -214,6 +216,18 @@ fn run(cli: Cli) -> Result<()> {
             ws.graph.unlink(&from, &to)?;
             ws.save()?;
             print(json, json!({ "from": from, "to": to }), String::new);
+        }
+        Command::Join { task, milestone } => {
+            let (task, milestone) = (ws.graph.resolve(&task)?, ws.graph.resolve(&milestone)?);
+            ws.graph.join(&task, &milestone)?;
+            ws.save()?;
+            print(json, json!({ "task": task, "milestone": milestone }), String::new);
+        }
+        Command::Leave { task, milestone } => {
+            let (task, milestone) = (ws.graph.resolve(&task)?, ws.graph.resolve(&milestone)?);
+            ws.graph.leave(&task, &milestone)?;
+            ws.save()?;
+            print(json, json!({ "task": task, "milestone": milestone }), String::new);
         }
         Command::Status { id, status } => {
             let id = ws.graph.resolve(&id)?;

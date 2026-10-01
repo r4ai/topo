@@ -7,10 +7,16 @@ use crate::model::{Kind, Node, NodeId, Status};
 
 /// All nodes of a workspace.
 ///
-/// Invariants: every `depends_on` entry names an existing node, no node depends
-/// on itself or twice on the same node, and the dependency relation is acyclic.
-/// Every mutation below preserves them, so readers never re-check.
-#[derive(Debug, Clone, Default)]
+/// Two relations connect nodes: `depends_on` (ordering) and a task's
+/// `milestones` (set membership). Together they form the *requirement*
+/// relation: a node requires its dependencies, and a milestone additionally
+/// requires its member tasks.
+///
+/// Invariants: every reference names an existing node, with no self or
+/// duplicate references; only tasks have `milestones`, and those name
+/// milestones; the requirement relation is acyclic. Every mutation below
+/// preserves them, so readers never re-check.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Graph {
     nodes: BTreeMap<NodeId, Node>,
 }
@@ -35,7 +41,7 @@ impl Graph {
             graph.nodes.insert(node.id.clone(), node);
         }
         for node in graph.nodes.values() {
-            graph.check_deps(node)?;
+            graph.check_references(node)?;
         }
         graph.topo_order()?;
         Ok(graph)
@@ -78,17 +84,33 @@ impl Graph {
         self.nodes.get_mut(id).ok_or_else(|| Error::NotFound(id.0.clone()))
     }
 
-    fn check_deps(&self, node: &Node) -> Result<(), Error> {
+    fn check_references(&self, node: &Node) -> Result<(), Error> {
         let mut seen = BTreeSet::new();
         for dep in &node.depends_on {
             if dep == &node.id {
                 return Err(Error::Cycle(vec![node.id.clone()]));
             }
             if !self.nodes.contains_key(dep) {
-                return Err(Error::DanglingDependency { node: node.id.clone(), dep: dep.clone() });
+                return Err(Error::DanglingReference { node: node.id.clone(), target: dep.clone() });
             }
             if !seen.insert(dep) {
-                return Err(Error::DuplicateDependency { node: node.id.clone(), dep: dep.clone() });
+                return Err(Error::DuplicateReference { node: node.id.clone(), target: dep.clone() });
+            }
+        }
+        if node.kind == Kind::Milestone && !node.milestones.is_empty() {
+            return Err(Error::MilestoneInMilestone(node.id.clone()));
+        }
+        let mut seen = BTreeSet::new();
+        for milestone in &node.milestones {
+            let target = self
+                .nodes
+                .get(milestone)
+                .ok_or_else(|| Error::DanglingReference { node: node.id.clone(), target: milestone.clone() })?;
+            if target.kind != Kind::Milestone {
+                return Err(Error::NotAMilestone(milestone.clone()));
+            }
+            if !seen.insert(milestone) {
+                return Err(Error::DuplicateReference { node: node.id.clone(), target: milestone.clone() });
             }
         }
         Ok(())
@@ -101,29 +123,40 @@ impl Graph {
         self.nodes.values().filter(move |n| n.depends_on.contains(id))
     }
 
-    /// All transitive dependencies of `id`, excluding `id` itself.
+    /// Tasks that belong to milestone `id`.
+    pub fn members<'a>(&'a self, id: &'a NodeId) -> impl Iterator<Item = &'a Node> + 'a {
+        self.nodes.values().filter(move |n| n.milestones.contains(id))
+    }
+
+    /// What `node` directly requires: its dependencies and, for a milestone, its members.
+    pub fn requirements<'a>(&'a self, node: &'a Node) -> Vec<&'a NodeId> {
+        node.depends_on.iter().chain(self.members(&node.id).map(|m| &m.id)).collect()
+    }
+
+    /// Everything `id` transitively requires, excluding `id` itself.
     pub fn descendants(&self, id: &NodeId) -> BTreeSet<NodeId> {
         let mut seen = BTreeSet::new();
-        let mut stack: Vec<&NodeId> = self.nodes[id].depends_on.iter().collect();
+        let mut stack = self.requirements(&self.nodes[id]);
         while let Some(next) = stack.pop() {
             if seen.insert(next.clone()) {
-                stack.extend(&self.nodes[next].depends_on);
+                stack.extend(self.requirements(&self.nodes[next]));
             }
         }
         seen
     }
 
-    /// Whether `from` transitively depends on `to` (or they are the same node).
+    /// Whether `from` transitively requires `to` (or they are the same node).
     pub fn reaches(&self, from: &NodeId, to: &NodeId) -> bool {
         from == to || self.descendants(from).contains(to)
     }
 
-    /// An open node whose dependencies are all closed.
+    /// An open node whose requirements are all closed. For a milestone this
+    /// means it has been reached.
     pub fn is_ready(&self, node: &Node) -> bool {
-        !node.status.is_closed() && node.depends_on.iter().all(|d| self.nodes[d].status.is_closed())
+        !node.status.is_closed() && self.requirements(node).iter().all(|d| self.nodes[*d].status.is_closed())
     }
 
-    /// Open tasks that can be started now, optionally limited to the work under `scope`.
+    /// Open tasks that can be started now, optionally limited to the work `scope` requires.
     pub fn ready_tasks(&self, scope: Option<&NodeId>) -> Vec<&Node> {
         let in_scope = scope.map(|s| self.descendants(s));
         self.nodes
@@ -133,24 +166,23 @@ impl Graph {
             .collect()
     }
 
-    /// `(closed, total)` tasks among the transitive dependencies of `id`.
+    /// `(closed, total)` member tasks of milestone `id`.
     pub fn progress(&self, id: &NodeId) -> (usize, usize) {
-        let tasks: Vec<&Node> =
-            self.descendants(id).iter().map(|d| &self.nodes[d]).filter(|n| n.kind == Kind::Task).collect();
-        (tasks.iter().filter(|n| n.status.is_closed()).count(), tasks.len())
+        let members: Vec<&Node> = self.members(id).collect();
+        (members.iter().filter(|n| n.status.is_closed()).count(), members.len())
     }
 
-    /// The longest chain of open tasks below `id` (inclusive), dependencies first.
-    /// Its length is the minimum number of sequential steps left.
+    /// The longest chain of open tasks that `id` requires (inclusive), in
+    /// order of execution. Its length is the minimum number of sequential steps left.
     pub fn critical_path(&self, id: &NodeId) -> Vec<NodeId> {
         fn walk(g: &Graph, id: &NodeId, memo: &mut HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
             if let Some(path) = memo.get(id) {
                 return path.clone();
             }
             let node = &g.nodes[id];
-            let mut path = node
-                .depends_on
-                .iter()
+            let mut path = g
+                .requirements(node)
+                .into_iter()
                 .filter(|d| !g.nodes[*d].status.is_closed())
                 .map(|d| walk(g, d, memo))
                 .max_by_key(Vec::len)
@@ -164,7 +196,7 @@ impl Graph {
         walk(self, id, &mut HashMap::new())
     }
 
-    /// Node ids ordered so that every node comes after its dependencies.
+    /// Node ids ordered so that every node comes after its requirements.
     /// Fails with the offending cycle if the relation is not acyclic.
     pub fn topo_order(&self) -> Result<Vec<NodeId>, Error> {
         #[derive(Clone, Copy, PartialEq)]
@@ -189,7 +221,7 @@ impl Graph {
             }
             marks.insert(id, Mark::Visiting);
             path.push(id);
-            for dep in &g.nodes[id].depends_on {
+            for dep in g.requirements(&g.nodes[id]) {
                 visit(g, dep, marks, path, out)?;
             }
             path.pop();
@@ -205,20 +237,21 @@ impl Graph {
         Ok(out)
     }
 
-    /// Nodes that no other node depends on (the tops of the graph).
+    /// Nodes that nothing requires (the tops of the graph).
     pub fn roots(&self) -> Vec<&Node> {
-        let depended: BTreeSet<&NodeId> = self.nodes.values().flat_map(|n| &n.depends_on).collect();
-        self.nodes.values().filter(|n| !depended.contains(&n.id)).collect()
+        let required: BTreeSet<&NodeId> = self.nodes.values().flat_map(|n| self.requirements(n)).collect();
+        self.nodes.values().filter(|n| !required.contains(&n.id)).collect()
     }
 
     // ---- mutations -----------------------------------------------------
 
-    /// Inserts a new node. Its dependencies must already exist.
+    /// Inserts a new node. Everything it references must already exist.
     pub fn insert(&mut self, node: Node) -> Result<(), Error> {
         if self.nodes.contains_key(&node.id) {
             return Err(Error::DuplicateId(node.id));
         }
-        self.check_deps(&node)?;
+        // A new node is required by nothing yet, so it cannot close a cycle.
+        self.check_references(&node)?;
         self.nodes.insert(node.id.clone(), node);
         Ok(())
     }
@@ -249,12 +282,51 @@ impl Graph {
         Ok(())
     }
 
+    /// Adds `task` to the set of `milestone`. Joining twice is a no-op.
+    pub fn join(&mut self, task: &NodeId, milestone: &NodeId) -> Result<(), Error> {
+        if self.node(milestone)?.kind != Kind::Milestone {
+            return Err(Error::NotAMilestone(milestone.clone()));
+        }
+        let node = self.node(task)?;
+        if node.kind == Kind::Milestone {
+            return Err(Error::MilestoneInMilestone(task.clone()));
+        }
+        if node.milestones.contains(milestone) {
+            return Ok(());
+        }
+        if self.reaches(task, milestone) {
+            return Err(Error::WouldCycle { from: milestone.clone(), to: task.clone() });
+        }
+        self.node_mut(task)?.milestones.push(milestone.clone());
+        Ok(())
+    }
+
+    pub fn leave(&mut self, task: &NodeId, milestone: &NodeId) -> Result<(), Error> {
+        let milestones = &mut self.node_mut(task)?.milestones;
+        let index = milestones
+            .iter()
+            .position(|m| m == milestone)
+            .ok_or_else(|| Error::NotMember { task: task.clone(), milestone: milestone.clone() })?;
+        milestones.remove(index);
+        Ok(())
+    }
+
     pub fn set_status(&mut self, id: &NodeId, status: Status) -> Result<(), Error> {
         self.node_mut(id)?.status = status;
         Ok(())
     }
 
     pub fn edit(&mut self, id: &NodeId, edit: Edit) -> Result<(), Error> {
+        if let Some(kind) = edit.kind {
+            let node = self.node(id)?;
+            let blocked = match kind {
+                Kind::Task => self.members(id).next().is_some(),
+                Kind::Milestone => !node.milestones.is_empty(),
+            };
+            if node.kind != kind && blocked {
+                return Err(Error::KindChangeBreaksMembership(id.clone()));
+            }
+        }
         let node = self.node_mut(id)?;
         if let Some(title) = edit.title {
             node.title = title;
@@ -274,11 +346,12 @@ impl Graph {
         Ok(())
     }
 
-    /// Removes a node and every edge pointing at it.
+    /// Removes a node and every reference to it.
     pub fn remove(&mut self, id: &NodeId) -> Result<Node, Error> {
         let node = self.nodes.remove(id).ok_or_else(|| Error::NotFound(id.0.clone()))?;
         for other in self.nodes.values_mut() {
             other.depends_on.retain(|d| d != id);
+            other.milestones.retain(|m| m != id);
         }
         Ok(node)
     }
@@ -288,9 +361,10 @@ impl Graph {
 mod tests {
     use super::*;
 
-    fn node(id: &str, kind: Kind, deps: &[&str]) -> Node {
+    fn node(id: &str, kind: Kind, deps: &[&str], milestones: &[&str]) -> Node {
         let mut n = Node::new(NodeId(id.into()), kind, id.into());
         n.depends_on = deps.iter().map(|d| NodeId((*d).into())).collect();
+        n.milestones = milestones.iter().map(|m| NodeId((*m).into())).collect();
         n
     }
 
@@ -298,36 +372,54 @@ mod tests {
         NodeId(s.into())
     }
 
-    /// m <- b <- a, m <- c
+    /// b depends on a; milestone m = {b, c}.
     fn sample() -> Graph {
         Graph::from_nodes([
-            node("a", Kind::Task, &[]),
-            node("b", Kind::Task, &["a"]),
-            node("c", Kind::Task, &[]),
-            node("m", Kind::Milestone, &["b", "c"]),
+            node("a", Kind::Task, &[], &[]),
+            node("b", Kind::Task, &["a"], &["m"]),
+            node("c", Kind::Task, &[], &["m"]),
+            node("m", Kind::Milestone, &[], &[]),
         ])
         .unwrap()
     }
 
     #[test]
     fn rejects_invalid_graphs() {
-        assert!(matches!(Graph::from_nodes([node("a", Kind::Task, &["x"])]), Err(Error::DanglingDependency { .. })));
+        let invalid = |nodes: Vec<Node>| Graph::from_nodes(nodes).unwrap_err();
+        assert!(matches!(invalid(vec![node("a", Kind::Task, &["x"], &[])]), Error::DanglingReference { .. }));
         assert!(matches!(
-            Graph::from_nodes([node("a", Kind::Task, &["b"]), node("b", Kind::Task, &["a"])]),
-            Err(Error::Cycle(_))
+            invalid(vec![node("a", Kind::Task, &["b"], &[]), node("b", Kind::Task, &["a"], &[])]),
+            Error::Cycle(_)
         ));
-        assert!(matches!(Graph::from_nodes([node("a", Kind::Task, &["a"])]), Err(Error::Cycle(_))));
+        assert!(matches!(invalid(vec![node("a", Kind::Task, &["a"], &[])]), Error::Cycle(_)));
+        assert!(matches!(
+            invalid(vec![node("a", Kind::Task, &[], &["b"]), node("b", Kind::Task, &[], &[])]),
+            Error::NotAMilestone(_)
+        ));
+        // A member that waits for its own milestone can never be finished.
+        assert!(matches!(
+            invalid(vec![node("a", Kind::Task, &["m"], &["m"]), node("m", Kind::Milestone, &[], &[])]),
+            Error::Cycle(_)
+        ));
     }
 
     #[test]
-    fn link_rejects_cycles_and_is_idempotent() {
+    fn link_and_join_reject_cycles_and_are_idempotent() {
         let mut g = sample();
         assert!(matches!(g.link(&id("a"), &id("m")), Err(Error::WouldCycle { .. })));
         assert!(matches!(g.link(&id("a"), &id("a")), Err(Error::WouldCycle { .. })));
         g.link(&id("b"), &id("a")).unwrap();
         assert_eq!(g.get(&id("b")).unwrap().depends_on, vec![id("a")]);
-        g.link(&id("c"), &id("a")).unwrap();
-        assert!(g.reaches(&id("c"), &id("a")));
+
+        g.join(&id("b"), &id("m")).unwrap();
+        assert_eq!(g.get(&id("b")).unwrap().milestones, vec![id("m")]);
+        assert!(matches!(g.join(&id("a"), &id("c")), Err(Error::NotAMilestone(_))));
+        assert!(matches!(g.join(&id("m"), &id("m")), Err(Error::MilestoneInMilestone(_))));
+
+        g.insert(node("n", Kind::Milestone, &["m"], &[])).unwrap();
+        g.link(&id("a"), &id("n")).unwrap_err();
+        g.leave(&id("c"), &id("m")).unwrap();
+        assert!(matches!(g.leave(&id("c"), &id("m")), Err(Error::NotMember { .. })));
     }
 
     #[test]
@@ -335,31 +427,57 @@ mod tests {
         let mut g = sample();
         let ready = |g: &Graph| g.ready_tasks(None).iter().map(|n| n.id.0.clone()).collect::<Vec<_>>();
         assert_eq!(ready(&g), ["a", "c"]);
-        assert_eq!(g.progress(&id("m")), (0, 3));
+        assert_eq!(g.progress(&id("m")), (0, 2));
+        // `a` is not a member but `b` needs it, so it is on the way to `m`.
         assert_eq!(g.critical_path(&id("m")), [id("a"), id("b")]);
+        assert_eq!(g.ready_tasks(Some(&id("m"))).len(), 2);
 
         g.set_status(&id("a"), Status::Done).unwrap();
         assert_eq!(ready(&g), ["b", "c"]);
-        assert_eq!(g.progress(&id("m")), (1, 3));
+        assert_eq!(g.progress(&id("m")), (0, 2));
         assert_eq!(g.critical_path(&id("m")).len(), 1);
-        assert_eq!(g.ready_tasks(Some(&id("b"))).len(), 0);
+
+        g.set_status(&id("b"), Status::Done).unwrap();
+        g.set_status(&id("c"), Status::Dropped).unwrap();
+        assert!(g.is_ready(g.get(&id("m")).unwrap()));
     }
 
     #[test]
-    fn topo_order_puts_dependencies_first() {
+    fn milestone_sets_do_not_include_earlier_milestones() {
+        let mut g = sample();
+        g.insert(node("v2", Kind::Milestone, &["m"], &[])).unwrap();
+        g.insert(node("d", Kind::Task, &[], &["v2"])).unwrap();
+        assert_eq!(g.progress(&id("v2")), (0, 1));
+        assert!(!g.is_ready(g.get(&id("v2")).unwrap()));
+        assert!(g.descendants(&id("v2")).contains(&id("b")));
+    }
+
+    #[test]
+    fn topo_order_puts_requirements_first() {
         let order = sample().topo_order().unwrap();
         let pos = |s: &str| order.iter().position(|x| x.0 == s).unwrap();
         assert!(pos("a") < pos("b") && pos("b") < pos("m") && pos("c") < pos("m"));
     }
 
     #[test]
-    fn remove_cleans_edges_and_resolve_uses_prefixes() {
+    fn kind_changes_keep_membership_valid() {
         let mut g = sample();
-        g.remove(&id("b")).unwrap();
-        assert_eq!(g.get(&id("m")).unwrap().depends_on, vec![id("c")]);
+        let to = |kind| Edit { kind: Some(kind), ..Edit::default() };
+        assert!(matches!(g.edit(&id("m"), to(Kind::Task)), Err(Error::KindChangeBreaksMembership(_))));
+        assert!(matches!(g.edit(&id("b"), to(Kind::Milestone)), Err(Error::KindChangeBreaksMembership(_))));
+        g.edit(&id("a"), to(Kind::Milestone)).unwrap();
+    }
+
+    #[test]
+    fn remove_cleans_references_and_resolve_uses_prefixes() {
+        let mut g = sample();
+        g.remove(&id("m")).unwrap();
+        assert!(g.get(&id("b")).unwrap().milestones.is_empty());
+        g.remove(&id("a")).unwrap();
+        assert!(g.get(&id("b")).unwrap().depends_on.is_empty());
         assert_eq!(g.roots().len(), 2);
 
-        let g = Graph::from_nodes([node("abc", Kind::Task, &[]), node("abd", Kind::Task, &[])]).unwrap();
+        let g = Graph::from_nodes([node("abc", Kind::Task, &[], &[]), node("abd", Kind::Task, &[], &[])]).unwrap();
         assert_eq!(g.resolve("abc").unwrap(), id("abc"));
         assert!(matches!(g.resolve("ab"), Err(Error::Ambiguous { .. })));
         assert!(matches!(g.resolve("z"), Err(Error::NotFound(_))));

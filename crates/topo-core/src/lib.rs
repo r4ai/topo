@@ -27,13 +27,21 @@ pub enum Error {
     Ambiguous { prefix: String, candidates: Vec<NodeId> },
     #[error("duplicate node id `{0}`")]
     DuplicateId(NodeId),
-    #[error("`{node}` depends on missing node `{dep}`")]
-    DanglingDependency { node: NodeId, dep: NodeId },
-    #[error("`{node}` depends on `{dep}` twice")]
-    DuplicateDependency { node: NodeId, dep: NodeId },
+    #[error("`{node}` references missing node `{target}`")]
+    DanglingReference { node: NodeId, target: NodeId },
+    #[error("`{node}` references `{target}` twice")]
+    DuplicateReference { node: NodeId, target: NodeId },
+    #[error("`{0}` is not a milestone")]
+    NotAMilestone(NodeId),
+    #[error("`{0}` is a milestone; only tasks can belong to milestones")]
+    MilestoneInMilestone(NodeId),
+    #[error("cannot change the kind of `{0}` while it has milestone members or memberships")]
+    KindChangeBreaksMembership(NodeId),
+    #[error("`{task}` is not in milestone `{milestone}`")]
+    NotMember { task: NodeId, milestone: NodeId },
     #[error("dependency cycle: {}", .0.iter().map(|id| id.as_str()).collect::<Vec<_>>().join(" -> "))]
     Cycle(Vec<NodeId>),
-    #[error("`{from}` cannot depend on `{to}`: `{to}` already depends on `{from}` (this would create a cycle)")]
+    #[error("`{from}` cannot require `{to}`: `{to}` already requires `{from}` (this would create a cycle)")]
     WouldCycle { from: NodeId, to: NodeId },
     #[error("`{from}` does not depend on `{to}`")]
     NotLinked { from: NodeId, to: NodeId },

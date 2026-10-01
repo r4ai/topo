@@ -56,12 +56,14 @@ pub fn detail_text(graph: &Graph, node: &Node) -> String {
             nodes.iter().map(|n| format!("  {}", node_line(n))).collect::<Vec<_>>().join("\n")
         ),
     };
-    let deps = node.depends_on.iter().map(|d| graph.get(d).expect("graph invariant")).collect();
+    let lookup = |ids: &[NodeId]| ids.iter().map(|d| graph.get(d).expect("graph invariant")).collect();
     let mut text = node_line(node);
     if node.kind == Kind::Milestone {
         text += &format!("\n{}", milestone_line(graph, node));
     }
-    text += &neighbors("depends on", deps);
+    text += &neighbors("members", graph.members(&node.id).collect());
+    text += &neighbors("in milestones", lookup(&node.milestones));
+    text += &neighbors("depends on", lookup(&node.depends_on));
     text += &neighbors("needed by", graph.dependents(&node.id).collect());
     if !node.body.is_empty() {
         text += &format!("\n\n{}", node.body.trim_end());
@@ -78,6 +80,7 @@ pub fn milestone_json(graph: &Graph, milestone: &Node) -> Value {
         "due": milestone.due,
         "done": done,
         "total": total,
+        "members": graph.members(&milestone.id).map(|n| &n.id).collect::<Vec<_>>(),
         "reached": graph.is_ready(milestone) || milestone.status.is_closed(),
         "critical_path": graph.critical_path(&milestone.id),
     })
@@ -118,6 +121,9 @@ fn proposal_line(graph: &Graph, proposal: &Proposal) -> String {
         Proposal::Link { from, to, probability } => {
             format!("{probability:.2}  link  {from} \"{}\" depends on {to} \"{}\"", title(from), title(to))
         }
+        Proposal::Join { task, milestone, probability } => {
+            format!("{probability:.2}  join  {task} \"{}\" in {milestone} \"{}\"", title(task), title(milestone))
+        }
         Proposal::SetKind { id, kind, probability } => {
             format!("{probability:.2}  kind  {id} \"{}\" -> {kind:?}", title(id))
         }
@@ -130,11 +136,11 @@ fn proposal_line(graph: &Graph, proposal: &Proposal) -> String {
 #[derive(Clone, Copy, ValueEnum, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Format {
-    /// Indented dependency tree from the top nodes down.
+    /// Indented requirement tree from the top nodes down.
     Tree,
-    /// Mermaid flowchart (prerequisite --> dependent).
+    /// Mermaid flowchart (prerequisite --> dependent, member -.-> milestone).
     Mermaid,
-    /// Graphviz DOT (prerequisite -> dependent).
+    /// Graphviz DOT (prerequisite -> dependent, dotted member -> milestone).
     Dot,
 }
 
@@ -145,6 +151,8 @@ pub fn graph(graph: &Graph, format: Format, under: Option<&NodeId>) -> String {
     };
     let nodes: Vec<&Node> = ids.iter().map(|id| graph.get(id).expect("ids come from the graph")).collect();
     let edges = || nodes.iter().flat_map(|n| n.depends_on.iter().map(move |d| (d, &n.id)));
+    let memberships =
+        || nodes.iter().flat_map(|n| n.milestones.iter().filter(|m| ids.contains(*m)).map(move |m| (&n.id, m)));
     match format {
         Format::Tree => tree(graph, under),
         Format::Mermaid => {
@@ -161,6 +169,9 @@ pub fn graph(graph: &Graph, format: Format, under: Option<&NodeId>) -> String {
             for (from, to) in edges() {
                 out += &format!("  {from} --> {to}\n");
             }
+            for (task, milestone) in memberships() {
+                out += &format!("  {task} -.-> {milestone}\n");
+            }
             out
         }
         Format::Dot => {
@@ -174,12 +185,15 @@ pub fn graph(graph: &Graph, format: Format, under: Option<&NodeId>) -> String {
             for (from, to) in edges() {
                 out += &format!("  \"{from}\" -> \"{to}\";\n");
             }
+            for (task, milestone) in memberships() {
+                out += &format!("  \"{task}\" -> \"{milestone}\" [style=dotted];\n");
+            }
             out + "}\n"
         }
     }
 }
 
-/// Each node followed by its dependencies, indented. Nodes reached a second
+/// Each node followed by its requirements (dependencies, and members of a milestone), indented. Nodes reached a second
 /// time are printed once more as a reference only.
 fn tree(graph: &Graph, under: Option<&NodeId>) -> String {
     fn walk(graph: &Graph, id: &NodeId, depth: usize, seen: &mut BTreeSet<NodeId>, out: &mut String) {
@@ -190,7 +204,7 @@ fn tree(graph: &Graph, under: Option<&NodeId>) -> String {
             return;
         }
         *out += &format!("{indent}{}\n", node_line(node));
-        for dep in &node.depends_on {
+        for dep in graph.requirements(node) {
             walk(graph, dep, depth + 1, seen, out);
         }
     }

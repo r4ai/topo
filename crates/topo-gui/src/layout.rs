@@ -7,14 +7,14 @@ use topo_core::{Graph, NodeId};
 /// Grid cell of a node: `(column, row)`.
 pub type Cell = (usize, usize);
 
-/// Column = length of the longest dependency chain below the node, so every
+/// Column = length of the longest requirement chain below the node, so every
 /// edge points rightwards. Rows within a column are ordered by the mean row of
 /// the node's dependencies, which keeps most edges short and uncrossed.
 pub fn layout(graph: &Graph) -> BTreeMap<NodeId, Cell> {
     let order = graph.topo_order().expect("workspace graphs are acyclic");
     let mut column: BTreeMap<&NodeId, usize> = BTreeMap::new();
     for id in &order {
-        let deps = &graph.get(id).expect("ids come from the graph").depends_on;
+        let deps = graph.requirements(graph.get(id).expect("ids come from the graph"));
         column.insert(id, deps.iter().map(|d| column[d] + 1).max().unwrap_or(0));
     }
 
@@ -25,7 +25,7 @@ pub fn layout(graph: &Graph) -> BTreeMap<NodeId, Cell> {
             .iter()
             .filter(|id| column[id] == col)
             .map(|id| {
-                let deps = &graph.get(id).expect("ids come from the graph").depends_on;
+                let deps = graph.requirements(graph.get(id).expect("ids come from the graph"));
                 let mean = match deps.is_empty() {
                     true => 0.0,
                     false => deps.iter().map(|d| cells[d].1 as f32).sum::<f32>() / deps.len() as f32,

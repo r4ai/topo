@@ -21,6 +21,12 @@ pub enum Proposal {
         to: NodeId,
         probability: f64,
     },
+    /// `task` should belong to the set of `milestone`.
+    Join {
+        task: NodeId,
+        milestone: NodeId,
+        probability: f64,
+    },
     SetKind {
         id: NodeId,
         kind: Kind,
@@ -38,6 +44,7 @@ impl Proposal {
     fn probability(&self) -> f64 {
         match self {
             Proposal::Link { probability, .. }
+            | Proposal::Join { probability, .. }
             | Proposal::SetKind { probability, .. }
             | Proposal::Duplicate { probability, .. } => *probability,
         }
@@ -61,6 +68,7 @@ pub fn apply(graph: &mut Graph, mut proposals: Vec<Proposal>) -> Vec<Applied> {
         .map(|proposal| {
             let result = match &proposal {
                 Proposal::Link { from, to, .. } => graph.link(from, to).map_err(|e| e.to_string()),
+                Proposal::Join { task, milestone, .. } => graph.join(task, milestone).map_err(|e| e.to_string()),
                 Proposal::SetKind { id, kind, .. } => {
                     graph.edit(id, Edit { kind: Some(*kind), ..Edit::default() }).map_err(|e| e.to_string())
                 }
@@ -84,6 +92,8 @@ fn describe(graph: &Graph, node: &Node) -> Value {
         "notes": node.body,
         "depends_on": titles(node.depends_on.iter().filter_map(|d| graph.get(d)).collect()),
         "needed_by": titles(graph.dependents(&node.id).collect()),
+        "milestones": titles(node.milestones.iter().filter_map(|m| graph.get(m)).collect()),
+        "members": titles(graph.members(&node.id).collect()),
     })
 }
 
@@ -128,14 +138,12 @@ pub fn dependencies(graph: &Graph, client: &Client) -> Result<Vec<Proposal>, Err
     Ok(proposals)
 }
 
-/// Open tasks that no milestone (transitively) depends on.
+/// Open tasks that belong to no milestone.
 pub fn unplaced_tasks(graph: &Graph) -> Vec<NodeId> {
-    let placed: Vec<NodeId> =
-        graph.nodes().filter(|n| n.kind == Kind::Milestone).flat_map(|m| graph.descendants(&m.id)).collect();
-    open_nodes(graph).filter(|n| n.kind == Kind::Task && !placed.contains(&n.id)).map(|n| n.id.clone()).collect()
+    open_nodes(graph).filter(|n| n.kind == Kind::Task && n.milestones.is_empty()).map(|n| n.id.clone()).collect()
 }
 
-/// Asks which open milestone each task contributes to.
+/// Asks which open milestone's set each task belongs to.
 pub fn placement(graph: &Graph, client: &Client, tasks: &[NodeId]) -> Result<Vec<Proposal>, Error> {
     const NONE: &str = "none";
     let milestones: Vec<&Node> = open_nodes(graph).filter(|n| n.kind == Kind::Milestone).collect();
@@ -149,7 +157,7 @@ pub fn placement(graph: &Graph, client: &Client, tasks: &[NodeId]) -> Result<Vec
         .iter()
         .map(|id| {
             let instructions = format!(
-                "Which milestone does task `{id}` (\"{}\") need to be completed for?",
+                "Which milestone is task `{id}` (\"{}\") part of?",
                 graph.get(id).expect("caller passes existing ids").title
             );
             (id.to_string(), Question::Choice { instructions, criteria: criteria.clone() })
@@ -164,7 +172,7 @@ pub fn placement(graph: &Graph, client: &Client, tasks: &[NodeId]) -> Result<Vec
     for id in tasks {
         let (choice, probability) = answers.choice(id.as_str())?;
         if choice != NONE && probability >= client.threshold() {
-            proposals.push(Proposal::Link { from: NodeId(choice), to: id.clone(), probability });
+            proposals.push(Proposal::Join { task: id.clone(), milestone: NodeId(choice), probability });
         }
     }
     Ok(proposals)
@@ -331,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn placement_links_milestone_to_task() {
+    fn placement_proposes_membership() {
         let graph = Graph::from_nodes([
             node("m1", Kind::Milestone, "v1 release", &[]),
             node("t1", Kind::Task, "Write changelog", &[]),
@@ -347,7 +355,7 @@ mod tests {
         assert_eq!(tasks.len(), 2);
         assert_eq!(
             placement(&graph, &client, &tasks).unwrap(),
-            [Proposal::Link { from: NodeId("m1".into()), to: NodeId("t1".into()), probability: 0.9 }]
+            [Proposal::Join { task: NodeId("t1".into()), milestone: NodeId("m1".into()), probability: 0.9 }]
         );
     }
 
