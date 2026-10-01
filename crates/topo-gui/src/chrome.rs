@@ -8,6 +8,9 @@ use topo_core::{Kind, NodeId, Status};
 use crate::theme::{self, button, icon_button, kbd};
 use crate::{NewNode, OrganizeKind, Prompt, TopoApp, dates};
 
+/// Entries of a search or pick list shown at once; the rest scrolls with the highlight.
+const LIST_ROWS: usize = 8;
+
 /// Swallows clicks so they do not reach the canvas underneath.
 fn stop_click<E: InteractiveElement>(element: E) -> E {
     element.on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
@@ -38,9 +41,12 @@ impl TopoApp {
         let clickable = !ids.is_empty();
         div()
             .id(id)
+            .debug_selector(|| id.to_owned())
             .flex()
+            .flex_shrink_0()
             .items_center()
             .gap_1()
+            .whitespace_nowrap()
             .h(px(24.))
             .px_2()
             .rounded_md()
@@ -98,7 +104,7 @@ impl TopoApp {
             .flex()
             .flex_shrink_0()
             .items_center()
-            .gap_3()
+            .when_else(self.compact, |d| d.gap_2(), |d| d.gap_3())
             .h(px(46.))
             .px_3()
             .bg(rgb(theme::SURFACE))
@@ -110,15 +116,25 @@ impl TopoApp {
                     .items_center()
                     .gap_2()
                     .min_w(px(0.))
-                    .child(div().text_color(rgb(theme::AMBER)).child("◆"))
-                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_sm().child("topo"))
+                    .child(
+                        div()
+                            .debug_selector(|| "brand".into())
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_color(rgb(theme::AMBER)).child("◆"))
+                            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_sm().child("topo")),
+                    )
+                    // The workspace name is the first thing to give way in a narrow window.
                     .child(div().text_color(rgb(theme::FAINT)).text_sm().child("/"))
-                    .child(div().text_sm().text_color(rgb(theme::MUTED)).truncate().child(name)),
+                    .child(div().min_w(px(0.)).text_sm().text_color(rgb(theme::MUTED)).truncate().child(name)),
             )
-            .child(div().w(px(1.)).h(px(20.)).bg(rgb(theme::BORDER)))
+            .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(rgb(theme::BORDER)))
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .gap_1()
                     .child(self.stat("stat-ready", "●", self.stat_text(ready.len(), "ready"), theme::GREEN, ready, cx))
@@ -196,9 +212,11 @@ impl TopoApp {
 
     pub(crate) fn zoom_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let hint = match (&self.hovered, &self.selected) {
-            (Some(_), _) => "Double-click to rename · drag the ● handle onto another node to connect",
-            (None, Some(_)) => "Tab follow-up · ⇧Tab prerequisite · Space status · ⌫ delete · ←→↑↓ move",
-            (None, None) => "N task · M milestone · / search · F fit · ? shortcuts",
+            (Some(_), _) => {
+                "Double-click to rename · drag ● onto a node to connect, or onto empty space for a follow-up"
+            }
+            (None, Some(_)) => "Tab follow-up · ⇧Tab prerequisite · L link · Space status · ⌫ delete · ←→↑↓ move",
+            (None, None) => "N task · M milestone · / search · F fit · drag to pan · ? shortcuts",
         };
         let pill = || {
             div()
@@ -288,11 +306,13 @@ impl TopoApp {
                 context.extend(required_by.iter().map(|id| self.node_chip("before", id)));
                 context.extend(milestones.iter().map(|id| self.node_chip("in", id)));
             }
-            Prompt::Rename(id) | Prompt::Due(id) | Prompt::Tags(id) => context.push(self.node_chip("", id)),
+            Prompt::Rename(id) | Prompt::Due(id) | Prompt::Tags(id) | Prompt::Pick { node: id, .. } => {
+                context.push(self.node_chip("", id))
+            }
             Prompt::Search => {}
         }
         let icon = match prompt {
-            Prompt::Search => "⌕",
+            Prompt::Search | Prompt::Pick { .. } => "⌕",
             Prompt::Create(_) => "+",
             Prompt::Rename(_) => "✎",
             Prompt::Due(_) => "⏱",
@@ -300,21 +320,24 @@ impl TopoApp {
         };
         let footer = match prompt {
             Prompt::Search => vec![("↵", "jump"), ("↑↓", "choose"), ("esc", "close")],
+            Prompt::Pick { .. } => vec![("↵", "connect"), ("↑↓", "choose"), ("esc", "cancel")],
             Prompt::Create(_) => vec![("↵", "create"), ("esc", "cancel")],
             _ => vec![("↵", "save"), ("esc", "cancel")],
         };
 
         let body: Option<AnyElement> = match prompt {
-            Prompt::Search => {
-                let results = self.search_results(&query);
-                let rows: Vec<AnyElement> = results
+            Prompt::Search | Prompt::Pick { .. } => {
+                let listed = self.listed(cx);
+                // The window of rows that keeps the highlighted one in view.
+                let first = (self.search_index + 1).saturating_sub(LIST_ROWS);
+                let rows: Vec<AnyElement> = listed
                     .iter()
                     .enumerate()
+                    .skip(first)
+                    .take(LIST_ROWS)
                     .map(|(i, id)| {
-                        let node = self.graph().get(id).expect("results come from the graph");
+                        let node = self.graph().get(id).expect("the list comes from the graph");
                         let (icon, color) = theme::node_icon(node);
-                        let active = i == self.search_index;
-                        let id = id.clone();
                         div()
                             .id(ElementId::Name(format!("result-{id}").into()))
                             .flex()
@@ -323,7 +346,7 @@ impl TopoApp {
                             .h(px(32.))
                             .px_3()
                             .rounded_md()
-                            .when(active, |d| d.bg(rgb(theme::RAISED)))
+                            .when(i == self.search_index, |d| d.bg(rgb(theme::RAISED)))
                             .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
                             .cursor_pointer()
                             .child(div().w(px(14.)).text_color(rgb(color)).child(icon))
@@ -335,21 +358,18 @@ impl TopoApp {
                             )
                             .child(div().text_xs().text_color(rgb(theme::FAINT)).child(id.to_string()))
                             .on_click(cx.listener(move |app, _, window, cx| {
-                                app.select(Some(id.clone()), true);
-                                app.close_prompt(window, cx);
+                                app.search_index = i;
+                                app.submit_prompt(window, cx);
                             }))
                             .into_any_element()
                     })
                     .collect();
+                let note = |text: String| div().px_3().py_1p5().text_xs().text_color(rgb(theme::FAINT)).child(text);
+                let more = (listed.len() > LIST_ROWS)
+                    .then(|| note(format!("{}–{} of {}", first + 1, first + rows.len(), listed.len())));
                 Some(match rows.is_empty() {
-                    true => div()
-                        .px_3()
-                        .py_2()
-                        .text_sm()
-                        .text_color(rgb(theme::FAINT))
-                        .child("No matches")
-                        .into_any_element(),
-                    false => div().flex().flex_col().p_1().children(rows).into_any_element(),
+                    true => note("No matches".to_owned()).into_any_element(),
+                    false => div().flex().flex_col().p_1().children(rows).children(more).into_any_element(),
                 })
             }
             Prompt::Due(_) => {
@@ -431,7 +451,7 @@ impl TopoApp {
                 .right_0()
                 .flex()
                 .justify_center()
-                .child(stop_click(card))
+                .child(stop_click(card.occlude()))
                 .into_any_element(),
         )
     }
@@ -496,7 +516,7 @@ impl TopoApp {
     }
 
     pub(crate) fn help_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let groups: [(&'static str, &'static [(&'static str, &'static str)]); 5] = [
+        let groups: [(&'static str, &'static [(&'static str, &'static str)]); 6] = [
             (
                 "Create",
                 &[
@@ -515,7 +535,16 @@ impl TopoApp {
                     ("1–4", "Todo / Doing / Done / Dropped"),
                     ("D", "Due date"),
                     ("T", "Tags"),
+                    ("O", "Open the file (notes)"),
                     ("⌫", "Delete"),
+                ],
+            ),
+            (
+                "Connect selection",
+                &[
+                    ("L", "Add a prerequisite"),
+                    ("⇧L", "Add a node that requires it"),
+                    ("I", "Add to a milestone / add a member"),
                 ],
             ),
             (
@@ -532,9 +561,10 @@ impl TopoApp {
             (
                 "Mouse",
                 &[
-                    ("Drag ●", "Connect to the node dropped on"),
+                    ("Drag ●", "Connect; on empty space: new follow-up"),
                     ("⇧Drag", "Connect from anywhere on a card"),
                     ("Double-click", "Rename"),
+                    ("Drag  Scroll", "Pan"),
                     ("Pinch  ⌘Scroll", "Zoom"),
                     ("2-finger double-tap", "Fit / actual size"),
                 ],
@@ -548,16 +578,17 @@ impl TopoApp {
                         .items_center()
                         .gap_2()
                         .text_xs()
-                        .child(div().w(px(72.)).flex_shrink_0().flex().child(kbd(*keys)))
+                        .child(div().w(px(96.)).flex_shrink_0().flex().child(kbd(*keys)))
                         .child(div().flex_1().min_w(px(0.)).text_color(rgb(theme::MUTED)).child(*what))
                 }),
             )
         };
-        let [create, edit, nav, view, mouse] = groups;
+        let [create, edit, connect, nav, view, mouse] = groups;
         div()
             .id("help")
             .absolute()
             .size_full()
+            .occlude()
             .flex()
             .items_center()
             .justify_center()
@@ -607,7 +638,8 @@ impl TopoApp {
                                     .flex_col()
                                     .gap_4()
                                     .child(group(create))
-                                    .child(group(edit)),
+                                    .child(group(edit))
+                                    .child(group(connect)),
                             )
                             .child(
                                 div()

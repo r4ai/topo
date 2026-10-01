@@ -100,11 +100,15 @@ fn styled_button(
     hover_bg: Hsla,
     hover_border: Hsla,
 ) -> Stateful<Div> {
+    let id = id.into();
     div()
-        .id(id.into())
+        .id(id.clone())
+        .debug_selector(|| id.to_string())
         .flex()
+        .flex_shrink_0()
         .items_center()
         .gap_1p5()
+        .whitespace_nowrap()
         .h(px(26.))
         .px_2p5()
         .rounded_md()
@@ -121,8 +125,10 @@ fn styled_button(
 
 /// A borderless square button showing a single glyph.
 pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) -> Stateful<Div> {
+    let id = id.into();
     div()
-        .id(id.into())
+        .id(id.clone())
+        .debug_selector(|| id.to_string())
         .flex()
         .flex_shrink_0()
         .items_center()

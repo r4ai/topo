@@ -10,8 +10,8 @@ pub enum Gesture {
 }
 
 /// Starts forwarding the gestures of this app's windows. The monitor lives
-/// as long as the app.
-#[cfg(target_os = "macos")]
+/// as long as the app. Tests have no AppKit event loop to monitor.
+#[cfg(all(target_os = "macos", not(test)))]
 pub fn watch() -> UnboundedReceiver<Gesture> {
     use block::ConcreteBlock;
     use objc::runtime::Object;
@@ -45,7 +45,7 @@ pub fn watch() -> UnboundedReceiver<Gesture> {
     rx
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 pub fn watch() -> UnboundedReceiver<Gesture> {
     unbounded().1
 }

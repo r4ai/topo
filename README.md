@@ -158,8 +158,9 @@ Interactive dashboard in your terminal:
 Desktop interface powered by GPUI. Reflects edits from CLI or external processes live:
 
 - Canvas Navigation:
-  - `Space` + drag: Pan canvas
-  - Trackpad pinch / Mouse wheel: Zoom canvas
+  - Drag (background or a card) / scroll: Pan canvas
+  - Trackpad pinch / `Cmd` + scroll: Zoom canvas
+  - Two-finger double-tap: Toggle between fit and actual size
   - `Cmd+=` / `Cmd+-` / `Cmd+0`: Zoom in / Zoom out / Actual size
   - `f`: Fit all nodes on canvas
 - Node Operations:
@@ -167,13 +168,17 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - `m`: New milestone
   - `Tab`: Add follow-up task for selected node
   - `Shift+Tab`: Add prerequisite task for selected node
-  - `Shift` + drag or edge-handle drag: Connect dependency link
+  - `Shift` + drag or edge-handle drag: Connect dependency link (a task dropped on a milestone joins it; dropped on empty canvas, it creates a follow-up task)
+  - `l` / `Shift+l`: Pick an existing node as a prerequisite / as a dependent
+  - `i`: Add the task to a milestone (on a milestone: add a member task)
   - `Space`: Cycle status
   - `x`: Toggle `done` status
   - `1` - `4`: Set status directly (Todo, Doing, Done, Dropped)
   - `d`: Set due date
   - `t`: Edit tags
-  - `Enter` / `r` / `F2`: Edit title
+  - `Enter` / `r` / `F2` / double-click: Edit title
+  - `o`: Open the node's Markdown file (notes) in the default editor
+  - Arrow keys: Move the selection along dependencies (left / right) or within a column (up / down)
   - `c`: Center canvas on selected node
   - `Backspace` / `Delete`: Delete node
   - `Cmd+Z` / `Cmd+Shift+Z`: Undo / Redo

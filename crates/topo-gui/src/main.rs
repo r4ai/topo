@@ -54,11 +54,25 @@ enum OrganizeKind {
 }
 
 enum Drag {
-    /// Background dragged; `last` is the previous mouse position. A press
-    /// that never moved is a click, which clears the selection.
-    Pan { last: Point<Pixels>, moved: bool },
+    /// The canvas dragged by its background or by a card; `last` is the
+    /// previous mouse position. A background press that never moved is a
+    /// click, which clears the selection.
+    Pan { last: Point<Pixels>, moved: bool, on_card: bool },
     /// Shift-drag or handle-drag from `source`; `mouse` is in window coordinates.
     Link { source: NodeId, mouse: Point<Pixels> },
+}
+
+/// How a node picked from a list relates to the node it is picked for.
+#[derive(Clone, Copy, PartialEq)]
+enum Relation {
+    /// The node requires the picked one.
+    Requires,
+    /// The picked one requires the node.
+    NeededBy,
+    /// The (task) node joins the picked milestone.
+    InMilestone,
+    /// The picked task joins the (milestone) node.
+    Member,
 }
 
 /// A node about to be created from the prompt.
@@ -75,6 +89,12 @@ struct NewNode {
 #[derive(Clone)]
 enum Prompt {
     Search,
+    /// Connect `node` to one of `candidates`, the nodes it can be connected to that way.
+    Pick {
+        node: NodeId,
+        relation: Relation,
+        candidates: Vec<NodeId>,
+    },
     Create(NewNode),
     Rename(NodeId),
     Due(NodeId),
@@ -85,6 +105,10 @@ impl Prompt {
     fn title(&self) -> &'static str {
         match self {
             Prompt::Search => "Jump to",
+            Prompt::Pick { relation: Relation::Requires, .. } => "Add a prerequisite of",
+            Prompt::Pick { relation: Relation::NeededBy, .. } => "Add a node that requires",
+            Prompt::Pick { relation: Relation::InMilestone, .. } => "Add to a milestone",
+            Prompt::Pick { relation: Relation::Member, .. } => "Add a member to",
             Prompt::Create(NewNode { kind: Kind::Milestone, .. }) => "New milestone",
             Prompt::Create(NewNode { required_by: Some(_), .. }) => "New prerequisite",
             Prompt::Create(NewNode { depends_on, .. }) if !depends_on.is_empty() => "New follow-up task",
@@ -97,7 +121,7 @@ impl Prompt {
 
     fn placeholder(&self) -> &'static str {
         match self {
-            Prompt::Search => "Search by title, #tag or id…",
+            Prompt::Search | Prompt::Pick { .. } => "Search by title, #tag or id…",
             Prompt::Create(NewNode { kind: Kind::Milestone, .. }) => "Milestone title",
             Prompt::Create(_) => "What needs to be done?",
             Prompt::Rename(_) => "Title",
@@ -142,6 +166,7 @@ struct TopoApp {
     drag: Option<Drag>,
     prompt: Option<Prompt>,
     input: Entity<TextInput>,
+    /// Position of the highlighted entry in the list of a search or pick prompt.
     search_index: usize,
     show_help: bool,
     /// Narrow window: the toolbar and inspector drop secondary text.
@@ -295,10 +320,13 @@ impl TopoApp {
         let Some(graph) = from.pop() else {
             return self.toast(if undo { "Nothing to undo" } else { "Nothing to redo" }, false, cx);
         };
-        to.push(std::mem::replace(&mut self.ws.graph, graph));
+        let current = std::mem::replace(&mut self.ws.graph, graph);
         if let Err(e) = self.ws.save() {
+            // Nothing was restored, so the step stays where it was.
+            from.push(std::mem::replace(&mut self.ws.graph, current));
             return self.toast(e.to_string(), true, cx);
         }
+        to.push(current);
         self.graph_replaced();
         self.toast(if undo { "Undone" } else { "Redone" }, false, cx);
     }
@@ -351,6 +379,27 @@ impl TopoApp {
         }
     }
 
+    /// Turns a task into a milestone or back.
+    fn convert(&mut self, id: NodeId, cx: &mut Context<Self>) {
+        let Some(kind) = self.graph().get(&id).map(|n| n.kind) else { return };
+        let kind = match kind {
+            Kind::Task => Kind::Milestone,
+            Kind::Milestone => Kind::Task,
+        };
+        self.mutate(cx, |graph| graph.edit(&id, Edit { kind: Some(kind), ..Edit::default() }));
+    }
+
+    /// Whether [`Self::convert`] is possible: membership ties a node to its kind.
+    fn convertible(&self, node: &Node) -> bool {
+        node.milestones.is_empty() && self.graph().members(&node.id).next().is_none()
+    }
+
+    /// Opens the Markdown file of `id` in the default editor; saving there shows up live.
+    fn open_file(&mut self, id: &NodeId, cx: &mut Context<Self>) {
+        cx.open_with_system(&self.ws.node_path(id));
+        self.toast("Opened the file — edits appear here when saved", false, cx);
+    }
+
     fn create(&mut self, new: NewNode, title: String, cx: &mut Context<Self>) -> Option<NodeId> {
         let id = self.graph().fresh_id();
         let mut node = Node::new(id.clone(), new.kind, title);
@@ -395,9 +444,53 @@ impl TopoApp {
     }
 
     fn finish_link(&mut self, source: NodeId, target: NodeId, cx: &mut Context<Self>) {
-        if source != target && self.mutate(cx, |graph| Self::connect(graph, &source, &target)) {
-            self.selected = Some(target);
+        match self.connect_preview(&source, &target) {
+            (_, true) => {
+                self.mutate(cx, |graph| Self::connect(graph, &source, &target));
+                // The layout just changed under the pointer; keep the result in view.
+                self.select(Some(target), true);
+            }
+            (why, false) => self.toast(why, true, cx),
         }
+    }
+
+    /// Nodes that `node` can be connected to by `relation` without a duplicate or a cycle.
+    fn candidates(&self, node: &Node, relation: Relation) -> Vec<NodeId> {
+        let graph = self.graph();
+        let (below, above) = (graph.descendants(&node.id), graph.ancestors(&node.id));
+        graph
+            .nodes()
+            .filter(|n| n.id != node.id)
+            .filter(|n| match relation {
+                Relation::Requires => !node.depends_on.contains(&n.id) && !above.contains(&n.id),
+                Relation::NeededBy => !n.depends_on.contains(&node.id) && !below.contains(&n.id),
+                Relation::InMilestone => {
+                    n.kind == Kind::Milestone && !node.milestones.contains(&n.id) && !below.contains(&n.id)
+                }
+                Relation::Member => n.kind == Kind::Task && !n.milestones.contains(&node.id) && !above.contains(&n.id),
+            })
+            .map(|n| n.id.clone())
+            .collect()
+    }
+
+    fn relate(graph: &mut Graph, node: &NodeId, relation: Relation, picked: &NodeId) -> Result<(), topo_core::Error> {
+        match relation {
+            Relation::Requires => graph.link(node, picked),
+            Relation::NeededBy => graph.link(picked, node),
+            Relation::InMilestone => graph.join(node, picked),
+            Relation::Member => graph.join(picked, node),
+        }
+    }
+
+    /// Opens the list of nodes that the selection can be connected to by `relation`.
+    fn prompt_pick(&mut self, relation: Relation, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(node) = self.selected_node() else { return };
+        let candidates = self.candidates(node, relation);
+        if candidates.is_empty() {
+            return self.toast("Nothing left to connect this to", false, cx);
+        }
+        let prompt = Prompt::Pick { node: node.id.clone(), relation, candidates };
+        self.open_prompt(prompt, "", window, cx);
     }
 
     // ---- prompt --------------------------------------------------------
@@ -443,6 +536,19 @@ impl TopoApp {
         self.open_prompt(Prompt::Create(new), "", window, cx);
     }
 
+    /// Opens the prompt for a task that comes after `source`, in the same
+    /// milestones: what dragging its handle onto empty canvas asks for.
+    pub(crate) fn prompt_follow_up(&mut self, source: &NodeId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.graph().get(source) else { return };
+        let new = NewNode {
+            kind: Kind::Task,
+            milestones: source.milestones.clone(),
+            depends_on: vec![source.id.clone()],
+            required_by: None,
+        };
+        self.open_prompt(Prompt::Create(new), "", window, cx);
+    }
+
     fn on_input_event(
         &mut self,
         _: &Entity<TextInput>,
@@ -454,24 +560,34 @@ impl TopoApp {
             InputEvent::Changed => self.search_index = 0,
             InputEvent::Cancel => self.close_prompt(window, cx),
             InputEvent::Submit => self.submit_prompt(window, cx),
-            InputEvent::Up => self.search_index = self.search_index.saturating_sub(1),
-            InputEvent::Down => {
-                let query = self.input.read(cx).text().to_owned();
-                let count = self.search_results(&query).len();
-                self.search_index = (self.search_index + 1).min(count.saturating_sub(1));
-            }
+            InputEvent::Up => self.move_in_list(self.search_index.saturating_sub(1), cx),
+            InputEvent::Down => self.move_in_list(self.search_index + 1, cx),
         }
         cx.notify();
     }
 
-    fn submit_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Highlights entry `index` of the prompt's list (clamped to it) and brings its node into view.
+    fn move_in_list(&mut self, index: usize, cx: &mut Context<Self>) {
+        let listed = self.listed(cx);
+        self.search_index = index.min(listed.len().saturating_sub(1));
+        if let Some(id) = listed.get(self.search_index) {
+            self.reveal(id, false);
+        }
+    }
+
+    pub(crate) fn submit_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prompt) = self.prompt.clone() else { return };
         let text = self.input.read(cx).text().trim().to_owned();
         match prompt {
             Prompt::Search => {
-                if let Some(id) = self.search_results(&text).get(self.search_index).cloned() {
+                if let Some(id) = self.listed(cx).get(self.search_index).cloned() {
                     self.select(Some(id), true);
                 }
+            }
+            Prompt::Pick { node, relation, .. } => {
+                // Nothing matches: keep the prompt open so the query can be corrected.
+                let Some(picked) = self.listed(cx).get(self.search_index).cloned() else { return };
+                self.mutate(cx, |graph| Self::relate(graph, &node, relation, &picked));
             }
             Prompt::Create(_) if text.is_empty() => {}
             Prompt::Create(new) => {
@@ -498,13 +614,20 @@ impl TopoApp {
         self.close_prompt(window, cx);
     }
 
-    /// Nodes matching `query` by title, `#tag` or id prefix; open work first.
-    fn search_results(&self, query: &str) -> Vec<NodeId> {
-        let query = query.trim().to_lowercase();
+    /// The list of the open search or pick prompt: the nodes it offers that
+    /// match the typed query by title, `#tag` or id prefix; open work first.
+    pub(crate) fn listed(&self, cx: &App) -> Vec<NodeId> {
+        let offered = |n: &&Node| match &self.prompt {
+            Some(Prompt::Search) => true,
+            Some(Prompt::Pick { candidates, .. }) => candidates.contains(&n.id),
+            _ => false,
+        };
+        let query = self.input.read(cx).text().trim().to_lowercase();
         let tag = query.strip_prefix('#');
         let mut hits: Vec<(bool, usize, &Node)> = self
             .graph()
             .nodes()
+            .filter(offered)
             .filter_map(|n| {
                 let title = n.title.to_lowercase();
                 let rank = match tag {
@@ -517,16 +640,21 @@ impl TopoApp {
             })
             .collect();
         hits.sort_by(|a, b| (a.0, a.1, &a.2.title).cmp(&(b.0, b.1, &b.2.title)));
-        hits.into_iter().take(8).map(|(_, _, n)| n.id.clone()).collect()
+        hits.into_iter().map(|(_, _, n)| n.id.clone()).collect()
     }
 
-    /// Nodes to emphasize while searching, or `None` when not searching.
+    /// Nodes to emphasize while a list is open, or `None` when the whole graph is of interest.
     fn search_matches(&self, cx: &App) -> Option<Vec<NodeId>> {
-        let query = self.input.read(cx).text();
-        match (&self.prompt, query.trim().is_empty()) {
-            (Some(Prompt::Search), false) => Some(self.search_results(query)),
+        match &self.prompt {
+            Some(Prompt::Search) if !self.input.read(cx).text().trim().is_empty() => Some(self.listed(cx)),
+            Some(Prompt::Pick { node, .. }) => Some(self.listed(cx).into_iter().chain([node.clone()]).collect()),
             _ => None,
         }
+    }
+
+    /// The node the highlighted list entry stands for.
+    fn list_cursor(&self, cx: &App) -> Option<NodeId> {
+        self.listed(cx).get(self.search_index).cloned()
     }
 
     // ---- AI organizing -------------------------------------------------
@@ -802,6 +930,11 @@ impl TopoApp {
                 let Some(id) = selected else { return };
                 let node = self.graph().get(&id).expect("selection exists").clone();
                 match key {
+                    "l" if m.shift => self.prompt_pick(Relation::NeededBy, window, cx),
+                    "l" => self.prompt_pick(Relation::Requires, window, cx),
+                    "i" if node.kind == Kind::Task => self.prompt_pick(Relation::InMilestone, window, cx),
+                    "i" => self.prompt_pick(Relation::Member, window, cx),
+                    "o" => self.open_file(&id, cx),
                     "enter" | "f2" | "r" => self.open_prompt(Prompt::Rename(id), &node.title, window, cx),
                     "d" => {
                         let due = node.due.map(|d| d.to_string()).unwrap_or_default();
@@ -915,6 +1048,9 @@ fn main() -> Result<()> {
     });
     Ok(())
 }
+
+#[cfg(test)]
+mod ui_tests;
 
 #[cfg(test)]
 mod tests {

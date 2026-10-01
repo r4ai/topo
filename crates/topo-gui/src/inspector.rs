@@ -5,11 +5,11 @@ use topo_core::{Graph, Kind, Node, NodeId, Status};
 use topo_jev::organize::Proposal;
 
 use crate::theme::{self, button, chip, icon_button, kbd, section_label};
-use crate::{Prompt, TopoApp, dates};
+use crate::{Prompt, Relation, TopoApp, dates};
 
 type Remove = fn(&mut Graph, &NodeId, &NodeId) -> Result<(), topo_core::Error>;
 /// The two ends of a relation and how to remove it.
-type Relation = Option<(NodeId, NodeId, Remove)>;
+type Removal = Option<(NodeId, NodeId, Remove)>;
 
 impl TopoApp {
     pub(crate) fn inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -34,19 +34,40 @@ impl TopoApp {
     }
 
     /// A clickable row naming a node, with an optional button that removes the relation.
+    /// The status icon of a task toggles it done, like the one on its card.
     fn node_row(
         &self,
         key: &str,
         node: &Node,
         detail: Option<String>,
-        remove: Relation,
+        remove: Removal,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let (icon, color) = theme::node_icon(node);
         let group = SharedString::from(format!("row-{key}-{}", node.id));
         let id = node.id.clone();
+        let toggle_id = node.id.clone();
+        let icon = div()
+            .id(ElementId::Name(format!("{group}-check").into()))
+            .debug_selector(|| format!("{group}-check"))
+            .w(px(18.))
+            .h(px(18.))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .rounded_sm()
+            .text_color(rgb(color))
+            .child(icon)
+            .when(node.kind == Kind::Task, |d| {
+                d.hover(|s| s.bg(rgb(theme::RAISED))).on_click(cx.listener(move |app, _, _, cx| {
+                    cx.stop_propagation();
+                    app.toggle_done(toggle_id.clone(), cx);
+                }))
+            });
         div()
             .id(ElementId::Name(group.clone()))
+            .debug_selector(|| group.to_string())
             .group(group.clone())
             .flex()
             .items_center()
@@ -57,7 +78,7 @@ impl TopoApp {
             .rounded_md()
             .cursor_pointer()
             .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
-            .child(div().w(px(14.)).flex_shrink_0().text_color(rgb(color)).child(icon))
+            .child(icon)
             .child(
                 div()
                     .flex_1()
@@ -381,50 +402,85 @@ impl TopoApp {
         }
 
         // Notes.
-        if !node.body.trim().is_empty() {
-            out.push(section_label("NOTES").into_any_element());
-            out.push(
-                div()
-                    .p_3()
-                    .rounded_lg()
-                    .bg(rgb(theme::CANVAS))
-                    .border_1()
-                    .border_color(rgb(theme::BORDER))
-                    .text_xs()
-                    .text_color(rgb(theme::MUTED))
-                    .line_height(px(18.))
-                    .child(node.body.trim_end().to_owned())
-                    .into_any_element(),
-            );
-        }
+        let notes_id = id.clone();
+        out.push(
+            div()
+                .flex()
+                .items_end()
+                .justify_between()
+                .child(section_label("NOTES"))
+                .child(
+                    div()
+                        .id("open-file")
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .px_1()
+                        .mb_0p5()
+                        .rounded_sm()
+                        .text_xs()
+                        .text_color(rgb(theme::MUTED))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
+                        .child("Edit file ↗")
+                        .child(kbd("O"))
+                        .on_click(cx.listener(move |app, _, _, cx| app.open_file(&notes_id, cx))),
+                )
+                .into_any_element(),
+        );
+        out.push(match node.body.trim().is_empty() {
+            true => div().text_xs().text_color(rgb(theme::FAINT)).child("No notes").into_any_element(),
+            false => div()
+                .p_3()
+                .rounded_lg()
+                .bg(rgb(theme::CANVAS))
+                .border_1()
+                .border_color(rgb(theme::BORDER))
+                .text_xs()
+                .text_color(rgb(theme::MUTED))
+                .line_height(px(18.))
+                .child(node.body.trim_end().to_owned())
+                .into_any_element(),
+        });
 
-        // Relations.
-        let rows = |label: String, items: Vec<(&Node, Relation)>, cx: &mut Context<Self>| {
-            let mut v: Vec<AnyElement> = Vec::new();
-            if !items.is_empty() {
-                v.push(section_label(format!("{label} · {}", items.len())).into_any_element());
-                for (n, remove) in items {
-                    v.push(self.node_row(&label, n, None, remove, cx).into_any_element());
-                }
-            }
-            v
+        // Relations: each section lists what is connected and offers to connect more.
+        let section = |label: &'static str, items: Vec<(&Node, Removal)>, add: Relation, cx: &mut Context<Self>| {
+            let heading = match items.len() {
+                0 => label.to_owned(),
+                n => format!("{label} · {n}"),
+            };
+            let add_button = icon_button(format!("add-{label}"), "+")
+                .on_click(cx.listener(move |app, _, window, cx| app.prompt_pick(add, window, cx)));
+            let header = div().flex().items_end().justify_between().child(section_label(heading)).child(add_button);
+            let rows =
+                items.into_iter().map(|(n, remove)| self.node_row(label, n, None, remove, cx).into_any_element());
+            std::iter::once(header.into_any_element()).chain(rows).collect::<Vec<_>>()
         };
         let get = |id: &NodeId| graph.get(id).expect("graph invariant");
-        let members: Vec<_> =
-            graph.members(&id).map(|m| (m, Some((m.id.clone(), id.clone(), Graph::leave as Remove)))).collect();
-        let memberships: Vec<_> =
-            node.milestones.iter().map(|m| (get(m), Some((id.clone(), m.clone(), Graph::leave as Remove)))).collect();
         let deps: Vec<_> =
             node.depends_on.iter().map(|d| (get(d), Some((id.clone(), d.clone(), Graph::unlink as Remove)))).collect();
         let needed_by: Vec<_> =
             graph.dependents(&id).map(|n| (n, Some((n.id.clone(), id.clone(), Graph::unlink as Remove)))).collect();
-        out.extend(rows("MEMBERS".into(), members, cx));
-        out.extend(rows("IN MILESTONES".into(), memberships, cx));
-        out.extend(rows("REQUIRES".into(), deps, cx));
-        out.extend(rows("NEEDED BY".into(), needed_by, cx));
+        match node.kind {
+            Kind::Milestone => {
+                let members: Vec<_> =
+                    graph.members(&id).map(|m| (m, Some((m.id.clone(), id.clone(), Graph::leave as Remove)))).collect();
+                out.extend(section("MEMBERS", members, Relation::Member, cx));
+            }
+            Kind::Task => {
+                let memberships: Vec<_> = node
+                    .milestones
+                    .iter()
+                    .map(|m| (get(m), Some((id.clone(), m.clone(), Graph::leave as Remove))))
+                    .collect();
+                out.extend(section("IN MILESTONES", memberships, Relation::InMilestone, cx));
+            }
+        }
+        out.extend(section("REQUIRES", deps, Relation::Requires, cx));
+        out.extend(section("NEEDED BY", needed_by, Relation::NeededBy, cx));
 
         // Actions.
-        let (follow_id, delete_id) = (id.clone(), id.clone());
+        let (follow_id, convert_id, delete_id) = (id.clone(), id.clone(), id.clone());
         out.push(
             div()
                 .flex()
@@ -453,6 +509,12 @@ impl TopoApp {
                             app.prompt_create(Kind::Task, None, window, cx);
                         },
                     )))
+                })
+                .when(self.convertible(node), |d| {
+                    d.child(
+                        button("convert", if milestone { "Make it a task" } else { "Make it a milestone" })
+                            .on_click(cx.listener(move |app, _, _, cx| app.convert(convert_id.clone(), cx))),
+                    )
                 })
                 .child(
                     theme::tinted_button("delete", "Delete", theme::RED)

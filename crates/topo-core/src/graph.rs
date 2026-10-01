@@ -145,6 +145,22 @@ impl Graph {
         seen
     }
 
+    /// Everything that transitively requires `id`, excluding `id` itself.
+    pub fn ancestors(&self, id: &NodeId) -> BTreeSet<NodeId> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![id];
+        while let Some(next) = stack.pop() {
+            // A node is required by its dependents and by the milestones it belongs to.
+            let requirers = self.dependents(next).map(|n| &n.id).chain(&self.nodes[next].milestones);
+            for requirer in requirers {
+                if seen.insert(requirer.clone()) {
+                    stack.push(requirer);
+                }
+            }
+        }
+        seen
+    }
+
     /// Whether `from` transitively requires `to` (or they are the same node).
     pub fn reaches(&self, from: &NodeId, to: &NodeId) -> bool {
         from == to || self.descendants(from).contains(to)
@@ -450,6 +466,10 @@ mod tests {
         assert_eq!(g.progress(&id("v2")), (0, 1));
         assert!(!g.is_ready(g.get(&id("v2")).unwrap()));
         assert!(g.descendants(&id("v2")).contains(&id("b")));
+        let all = |ids: &[&str]| ids.iter().map(|s| id(s)).collect::<BTreeSet<_>>();
+        assert_eq!(g.ancestors(&id("a")), all(&["b", "m", "v2"]));
+        assert_eq!(g.ancestors(&id("d")), all(&["v2"]));
+        assert!(g.ancestors(&id("v2")).is_empty());
     }
 
     #[test]

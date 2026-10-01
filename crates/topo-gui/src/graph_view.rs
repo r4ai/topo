@@ -18,6 +18,8 @@ struct CardState {
     hovered: bool,
     dimmed: bool,
     critical: bool,
+    /// The highlighted entry of the open list is this node.
+    cursor: bool,
     /// `Some(allowed)` while a link is being dragged over this card.
     drop: Option<bool>,
 }
@@ -32,23 +34,7 @@ struct EdgePaint {
 
 /// `id` together with everything it transitively requires and everything that requires it.
 fn chain(graph: &Graph, id: &NodeId) -> BTreeSet<NodeId> {
-    let mut required_by: BTreeMap<&NodeId, Vec<&NodeId>> = BTreeMap::new();
-    for node in graph.nodes() {
-        for req in graph.requirements(node) {
-            required_by.entry(req).or_default().push(&node.id);
-        }
-    }
-    let mut set = graph.descendants(id);
-    set.insert(id.clone());
-    let mut stack = vec![id];
-    while let Some(next) = stack.pop() {
-        for parent in required_by.get(next).into_iter().flatten() {
-            if set.insert((*parent).clone()) {
-                stack.push(parent);
-            }
-        }
-    }
-    set
+    graph.descendants(id).into_iter().chain(graph.ancestors(id)).chain([id.clone()]).collect()
 }
 
 impl TopoApp {
@@ -70,7 +56,7 @@ impl TopoApp {
             return;
         }
         match &mut self.drag {
-            Some(Drag::Pan { last, moved }) => {
+            Some(Drag::Pan { last, moved, .. }) => {
                 let delta = event.position - *last;
                 *moved |= delta.x.abs() + delta.y.abs() > px(2.);
                 *last = event.position;
@@ -83,13 +69,18 @@ impl TopoApp {
         cx.notify();
     }
 
-    pub(crate) fn on_drag_end(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_drag_end(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         match self.drag.take() {
-            Some(Drag::Pan { moved: false, .. }) => self.selected = None,
+            Some(Drag::Pan { moved: false, on_card: false, .. }) => self.selected = None,
             Some(Drag::Link { source, .. }) => {
+                let area = self.area.get();
                 let cells = layout::layout(self.graph());
-                if let Some(target) = self.node_at(event.position - self.area.get().origin, &cells) {
-                    self.finish_link(source, target, cx);
+                match self.node_at(event.position - area.origin, &cells) {
+                    Some(target) if target == source => {}
+                    Some(target) => self.finish_link(source, target, cx),
+                    // Dropped on empty canvas: the link gets a new task at its end.
+                    None if area.contains(&event.position) => self.prompt_follow_up(&source, window, cx),
+                    None => {}
                 }
             }
             _ => {}
@@ -106,6 +97,7 @@ impl TopoApp {
 
         let focus = self.selected.as_ref().filter(|id| graph.get(id).is_some()).map(|id| chain(graph, id));
         let matches: Option<BTreeSet<NodeId>> = self.search_matches(cx).map(|ids| ids.into_iter().collect());
+        let cursor = self.list_cursor(cx);
         let critical: BTreeSet<NodeId> = match self.selected_node() {
             Some(n) if n.kind == Kind::Milestone => graph.critical_path(&n.id).into_iter().collect(),
             _ => BTreeSet::new(),
@@ -120,11 +112,13 @@ impl TopoApp {
             Some(Drag::Link { source, mouse }) => Some((source.clone(), *mouse - origin)),
             _ => None,
         };
-        let drop = link.as_ref().and_then(|(source, mouse)| {
-            let target = self.node_at(*mouse, &cells).filter(|t| t != source)?;
-            let (label, allowed) = self.connect_preview(source, &target);
-            Some((target, label, allowed))
-        });
+        let over = link.as_ref().and_then(|(_, mouse)| self.node_at(*mouse, &cells));
+        let drop = link.as_ref().zip(over.as_ref()).filter(|((source, _), target)| source != *target).map(
+            |((source, _), target)| {
+                let (label, allowed) = self.connect_preview(source, target);
+                (target.clone(), label, allowed)
+            },
+        );
 
         // Edges run from the right side of a requirement to the left side of
         // the node requiring it: prerequisite → dependent, member → milestone.
@@ -173,6 +167,7 @@ impl TopoApp {
                     hovered: self.hovered.as_ref() == Some(&n.id) && self.drag.is_none(),
                     dimmed: !emphasized(&n.id),
                     critical: critical.contains(&n.id),
+                    cursor: cursor.as_ref() == Some(&n.id),
                     drop: drop.as_ref().filter(|(t, ..)| *t == n.id).map(|(_, _, allowed)| *allowed),
                 };
                 self.node_card(n, self.to_screen(cells[&n.id]), state, today, cx)
@@ -213,10 +208,11 @@ impl TopoApp {
             _ => CursorStyle::Arrow,
         };
         let link_label = link.map(|(_, mouse)| {
-            let (text, color) = match &drop {
-                Some((_, label, true)) => (format!("↳ {label}"), theme::GREEN),
-                Some((_, label, false)) => (format!("✕ {label}"), theme::RED),
-                None => ("Drop on a node to connect".to_owned(), theme::MUTED),
+            let (text, color) = match (&drop, &over) {
+                (Some((_, label, true)), _) => (format!("↳ {label}"), theme::GREEN),
+                (Some((_, label, false)), _) => (format!("✕ {label}"), theme::RED),
+                (None, Some(_)) => ("Drop on a node to connect, or on empty space".to_owned(), theme::MUTED),
+                (None, None) => ("+ New follow-up task".to_owned(), theme::ACCENT),
             };
             div()
                 .absolute()
@@ -254,8 +250,11 @@ impl TopoApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, ev: &MouseDownEvent, _, cx| {
-                    app.drag = Some(Drag::Pan { last: ev.position, moved: false });
-                    cx.notify();
+                    // A click away from an open prompt only dismisses it (the window does that).
+                    if app.prompt.is_none() {
+                        app.drag = Some(Drag::Pan { last: ev.position, moved: false, on_card: false });
+                        cx.notify();
+                    }
                 }),
             )
             .on_scroll_wheel(cx.listener(|app, ev: &ScrollWheelEvent, _, cx| {
@@ -285,7 +284,7 @@ impl TopoApp {
         let milestone = node.kind == Kind::Milestone;
         let closed = node.status.is_closed();
         let (icon, icon_color) = theme::node_icon(node);
-        let border: Hsla = match (state.drop, state.selected) {
+        let border: Hsla = match (state.drop, state.selected || state.cursor) {
             (Some(true), _) => rgb(theme::GREEN).into(),
             (Some(false), _) => rgb(theme::RED).into(),
             (None, true) => rgb(theme::ACCENT).into(),
@@ -391,7 +390,7 @@ impl TopoApp {
             div()
                 .id(ElementId::Name(format!("handle-{id}").into()))
                 .absolute()
-                .right(px(-7. * z))
+                .left(px((NODE_W - 7.) * z))
                 .top(px((NODE_H / 2. - 7.) * z))
                 .size(px(14. * z))
                 .rounded_full()
@@ -410,14 +409,10 @@ impl TopoApp {
                 )
         };
 
-        let (hover_id, down_id) = (id.clone(), id.clone());
-        div()
-            .id(ElementId::Name(format!("node-{id}").into()))
-            .absolute()
-            .left(pos.x)
-            .top(pos.y)
+        let down_id = id.clone();
+        let card = div()
             .w(px(NODE_W * z))
-            .h(px(NODE_H * z))
+            .h_full()
             .flex()
             .flex_col()
             .justify_center()
@@ -425,24 +420,14 @@ impl TopoApp {
             .pl(px(10. * z))
             .pr(px(12. * z))
             .rounded(px(if milestone { 14. } else { 8. } * z))
-            .when_else(state.selected || state.drop.is_some(), |d| d.border_2(), |d| d.border_1())
+            .when_else(state.selected || state.cursor || state.drop.is_some(), |d| d.border_2(), |d| d.border_1())
             .border_color(border)
             .bg(bg)
             .when(state.selected, |d| d.shadow(theme::shadow()))
-            .opacity(opacity)
             .text_size(px(13. * z))
             .cursor_pointer()
             .child(div().flex().items_center().gap(px(6. * z)).child(check).child(title))
             .when(z >= 0.55, |d| d.child(meta))
-            .when(state.hovered || state.selected, |d| d.child(handle))
-            .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
-                match *hovered {
-                    true => app.hovered = Some(hover_id.clone()),
-                    false if app.hovered.as_ref() == Some(&hover_id) => app.hovered = None,
-                    false => return,
-                }
-                cx.notify();
-            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |app, ev: &MouseDownEvent, window, cx| {
@@ -452,15 +437,39 @@ impl TopoApp {
                     }
                     window.focus(&app.focus);
                     app.selected = Some(down_id.clone());
-                    if ev.modifiers.shift {
-                        app.drag = Some(Drag::Link { source: down_id.clone(), mouse: ev.position });
-                    } else if ev.click_count >= 2 {
-                        let title = app.title_of(&down_id);
-                        app.open_prompt(Prompt::Rename(down_id.clone()), &title, window, cx);
-                    }
+                    app.drag = match () {
+                        _ if ev.modifiers.shift => Some(Drag::Link { source: down_id.clone(), mouse: ev.position }),
+                        _ if ev.click_count >= 2 => {
+                            let title = app.title_of(&down_id);
+                            app.open_prompt(Prompt::Rename(down_id.clone()), &title, window, cx);
+                            None
+                        }
+                        // Cards are placed by the layout, so dragging one moves the canvas.
+                        _ => Some(Drag::Pan { last: ev.position, moved: false, on_card: true }),
+                    };
                     cx.notify();
                 }),
-            )
+            );
+
+        // Wider than the card, so the pointer can reach all of the handle without leaving.
+        div()
+            .id(ElementId::Name(format!("node-{id}").into()))
+            .absolute()
+            .left(pos.x)
+            .top(pos.y)
+            .w(px((NODE_W + 8.) * z))
+            .h(px(NODE_H * z))
+            .opacity(opacity)
+            .child(card)
+            .when(state.hovered || state.selected, |d| d.child(handle))
+            .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
+                match *hovered {
+                    true => app.hovered = Some(id.clone()),
+                    false if app.hovered.as_ref() == Some(&id) => app.hovered = None,
+                    false => return,
+                }
+                cx.notify();
+            }))
             .into_any_element()
     }
 }

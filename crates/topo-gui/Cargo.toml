@@ -27,3 +27,8 @@ block = "0.1"
 [lints.rust]
 # objc 0.2 macros test a `cargo-clippy` feature in the calling crate.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
+[dev-dependencies]
+# Headless windows that take simulated input, for the interaction tests.
+gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }
+tempfile = "3"
