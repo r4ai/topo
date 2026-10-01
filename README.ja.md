@@ -85,8 +85,8 @@ Rust 2024 edition のツールチェーンが必要である。
 
 ```bash
 # クローン
-git clone https://github.com/r4ai/topological-todo.git
-cd topological-todo
+git clone https://github.com/r4ai/topo.git
+cd topo
 
 # CLIのインストール
 cargo install --path crates/topo-cli

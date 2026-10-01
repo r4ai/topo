@@ -85,8 +85,8 @@ Running `topo ready` outputs only unblocked tasks (`DB Schema` and `UI Mockups`)
 Requires the Rust toolchain (2024 edition).
 
 ```bash
-git clone https://github.com/r4ai/topological-todo.git
-cd topological-todo
+git clone https://github.com/r4ai/topo.git
+cd topo
 
 # Install CLI
 cargo install --path crates/topo-cli
