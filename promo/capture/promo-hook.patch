@@ -1,0 +1,358 @@
+diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/main.rs crates/topo-gui/src/main.rs
+--- /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/main.rs	2026-10-02 01:47:10
++++ crates/topo-gui/src/main.rs	2026-10-02 02:01:58
+@@ -11,6 +11,7 @@
+ mod graph_view;
+ mod inspector;
+ mod layout;
++mod promo;
+ mod text_input;
+ mod theme;
+ 
+@@ -163,6 +164,8 @@
+     pending_fit: bool,
+     selected: Option<NodeId>,
+     hovered: Option<NodeId>,
++    promo_a: (Point<Pixels>, f32),
++    promo_b: (Point<Pixels>, f32),
+     drag: Option<Drag>,
+     prompt: Option<Prompt>,
+     input: Entity<TextInput>,
+@@ -212,6 +215,7 @@
+         let subscription = cx.subscribe_in(&input, window, Self::on_input_event);
+         let focus = cx.focus_handle();
+         window.focus(&focus);
++        promo::start(window, cx);
+         Ok(Self {
+             ws,
+             focus,
+@@ -222,6 +226,8 @@
+             pending_fit: true,
+             selected: None,
+             hovered: None,
++            promo_a: (point(px(0.), px(0.)), 1.0),
++            promo_b: (point(px(0.), px(0.)), 1.0),
+             drag: None,
+             prompt: None,
+             input,
+@@ -1027,12 +1033,14 @@
+ fn main() -> Result<()> {
+     let ws = open_workspace()?;
+     let title: SharedString = format!("topo — {}", ws.dir().parent().unwrap_or(ws.dir()).display()).into();
++    let title: SharedString = std::env::var("TOPO_TITLE").map(SharedString::from).unwrap_or(title);
++    let win: Vec<f32> = std::env::var("TOPO_WIN").unwrap_or("1360x860".into()).split('x').map(|v| v.parse().unwrap()).collect();
+     Application::new().run(move |cx: &mut App| {
+         text_input::bind_keys(cx);
+         cx.on_action(|_: &Quit, cx| cx.quit());
+         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None), KeyBinding::new("cmd-w", CloseWindow, None)]);
+         cx.set_menus(vec![Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)] }]);
+-        let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
++        let bounds = Bounds::centered(None, size(px(win[0]), px(win[1])), cx);
+         let options = WindowOptions {
+             window_bounds: Some(WindowBounds::Windowed(bounds)),
+             titlebar: Some(gpui::TitlebarOptions { title: Some(title), ..Default::default() }),
+diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/promo.rs crates/topo-gui/src/promo.rs
+--- /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/promo.rs	1970-01-01 09:00:00
++++ crates/topo-gui/src/promo.rs	2026-10-02 02:01:58
+@@ -0,0 +1,284 @@
++//! Promo capture driver (scratch copy only): replays a script of app state
++//! changes and writes the app's own window to PNG after each `shot`.
++
++use std::ffi::{CString, c_char, c_void};
++use std::time::Duration;
++
++use gpui::{Context, Window, point, px};
++use objc::runtime::Object;
++use objc::{class, msg_send, sel, sel_impl};
++use topo_core::{Kind, NodeId, Status};
++
++use crate::{CELL_H, CELL_W, Direction, Drag, NODE_H, NODE_W, Prompt, TopoApp, layout};
++
++pub fn start(window: &mut Window, cx: &mut Context<TopoApp>) {
++    let Some(path) = std::env::var_os("TOPO_PROMO") else { return };
++    let script = std::fs::read_to_string(path).expect("promo script");
++    cx.spawn_in(window, async move |this, cx| {
++        cx.background_executor().timer(Duration::from_millis(900)).await;
++        for line in script.lines() {
++            let line = line.trim();
++            if line.is_empty() || line.starts_with('#') {
++                continue;
++            }
++            let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
++            match cmd {
++                "wait" => cx.background_executor().timer(Duration::from_millis(rest.parse().unwrap())).await,
++                "shot" => {
++                    cx.background_executor().timer(Duration::from_millis(140)).await;
++                    let meta = this.update(cx, |app, _| app.promo_meta()).unwrap();
++                    capture(rest, &meta);
++                }
++                "quit" => std::process::exit(0),
++                _ => {
++                    this.update_in(cx, |app, window, cx| {
++                        app.promo_cmd(cmd, rest, window, cx);
++                        cx.notify();
++                    })
++                    .unwrap();
++                }
++            }
++        }
++        std::process::exit(0);
++    })
++    .detach();
++}
++
++fn id(s: &str) -> NodeId {
++    NodeId(s.trim().into())
++}
++
++impl TopoApp {
++    fn promo_cmd(&mut self, cmd: &str, rest: &str, window: &mut Window, cx: &mut Context<Self>) {
++        let rest = &rest.replace("@sel", self.selected.as_ref().map_or("-", |id| id.as_str()));
++        let rest = rest.as_str();
++        let args: Vec<&str> = rest.split_whitespace().collect();
++        let num = |i: usize| args[i].parse::<f32>().unwrap();
++        match cmd {
++            "select" => self.selected = (rest != "-").then(|| id(rest)),
++            "hover" => self.hovered = (rest != "-").then(|| id(rest)),
++            "status" => {
++                let status = match args[1] {
++                    "todo" => Status::Todo,
++                    "doing" => Status::Doing,
++                    "done" => Status::Done,
++                    _ => Status::Dropped,
++                };
++                self.set_status(id(args[0]), status, cx);
++            }
++            // frame <zoom> <fx> <fy> <id...>: put the middle of the nodes at a fraction of the canvas.
++            "frame" => {
++                let cells = layout::layout(self.graph());
++                let z = num(0);
++                let cs: Vec<layout::Cell> = args[3..].iter().map(|a| cells[&id(a)]).collect();
++                let mid = |f: fn(&layout::Cell) -> usize, pitch: f32, size: f32| {
++                    let lo = cs.iter().map(f).min().unwrap() as f32 * pitch;
++                    let hi = cs.iter().map(f).max().unwrap() as f32 * pitch + size;
++                    (lo + hi) / 2.
++                };
++                let area = self.area.get().size;
++                self.anim = None;
++                self.zoom = z;
++                self.offset = point(
++                    area.width * num(1) - px(mid(|c| c.0, CELL_W, NODE_W) * z),
++                    area.height * num(2) - px(mid(|c| c.1, CELL_H, NODE_H) * z),
++                );
++            }
++            "mark" => {
++                let cam = (self.offset, self.zoom);
++                match rest {
++                    "a" => self.promo_a = cam,
++                    _ => self.promo_b = cam,
++                }
++            }
++            // mix <t>: camera between the marks, zooming geometrically around the canvas center.
++            "mix" => {
++                let t = num(0);
++                let center = self.canvas_center();
++                let world = |(o, z): (gpui::Point<gpui::Pixels>, f32)| {
++                    (f32::from(center.x - o.x) / z, f32::from(center.y - o.y) / z)
++                };
++                let (a, b) = (world(self.promo_a), world(self.promo_b));
++                let z = self.promo_a.1 * (self.promo_b.1 / self.promo_a.1).powf(t);
++                // Pan in step with the zoom so the target stays put on screen.
++                let k = if (self.promo_b.1 - self.promo_a.1).abs() < 1e-4 { t } else { (1. / self.promo_a.1 - 1. / z) / (1. / self.promo_a.1 - 1. / self.promo_b.1) };
++                let (wx, wy) = (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k);
++                self.anim = None;
++                self.zoom = z;
++                self.offset = point(center.x - px(wx * z), center.y - px(wy * z));
++            }
++            "fit" => self.fit(true),
++            "fitall" => {
++                self.fit(false);
++                if let Some(anim) = self.anim.take() {
++                    (self.offset, self.zoom) = anim.to;
++                }
++            }
++            "sh" => {
++                let status = std::process::Command::new("/bin/sh").arg("-c").arg(rest).status().unwrap();
++                assert!(status.success(), "promo sh failed: {rest}");
++            }
++            "cam" => {
++                self.anim = None;
++                self.zoom = num(0);
++                self.offset = point(px(num(1)), px(num(2)));
++            }
++            // focus <id> <zoom> [fx fy]: put the node's center at the given fraction of the canvas.
++            "focus" => {
++                let cell = layout::layout(self.graph())[&id(args[0])];
++                let z = num(1);
++                let (fx, fy) = if args.len() >= 4 { (num(2), num(3)) } else { (0.5, 0.5) };
++                let area = self.area.get().size;
++                self.anim = None;
++                self.zoom = z;
++                self.offset = point(
++                    area.width * fx - px((cell.0 as f32 * CELL_W + NODE_W / 2.) * z),
++                    area.height * fy - px((cell.1 as f32 * CELL_H + NODE_H / 2.) * z),
++                );
++            }
++            // dragto <src> <target> <t>: link drag in flight from the handle of src to the middle of target.
++            "dragto" => {
++                let cells = layout::layout(self.graph());
++                let z = self.zoom;
++                let origin = self.area.get().origin;
++                let a = self.to_screen(cells[&id(args[0])]) + point(px(NODE_W * z), px(NODE_H * z / 2.));
++                let b = self.to_screen(cells[&id(args[1])]) + point(px(NODE_W * z * 0.5), px(NODE_H * z * 0.5));
++                let t = num(2);
++                let arc = px(-46. * z * (t * std::f32::consts::PI).sin());
++                let p = a + (b - a) * t + point(px(0.), arc);
++                self.selected = Some(id(args[0]));
++                self.drag = Some(Drag::Link { source: id(args[0]), mouse: origin + p });
++            }
++            // dragxy <src> <dx> <dy>: link drag to an offset (canvas units) from the handle of src.
++            "dragxy" => {
++                let cells = layout::layout(self.graph());
++                let z = self.zoom;
++                let origin = self.area.get().origin;
++                let a = self.to_screen(cells[&id(args[0])]) + point(px(NODE_W * z), px(NODE_H * z / 2.));
++                self.selected = Some(id(args[0]));
++                self.drag = Some(Drag::Link { source: id(args[0]), mouse: origin + a + point(px(num(1) * z), px(num(2) * z)) });
++            }
++            "drop" => {
++                self.drag = None;
++                self.finish_link(id(args[0]), id(args[1]), cx);
++                self.anim = None;
++            }
++            "nodrag" => self.drag = None,
++            "search" => self.open_prompt(Prompt::Search, "", window, cx),
++            "newtask" => self.prompt_create(Kind::Task, None, window, cx),
++            "newmilestone" => self.prompt_create(Kind::Milestone, None, window, cx),
++            "followup" => self.prompt_create(Kind::Task, Some(Direction::Right), window, cx),
++            "type" => {
++                let text = rest.to_owned();
++                self.input.update(cx, |input, cx| input.promo_set(&text, cx));
++            }
++            "submit" => {
++                self.submit_prompt(window, cx);
++                self.anim = None;
++            }
++            "cancel" => self.close_prompt(window, cx),
++            "help" => self.show_help = rest == "1",
++            "notoast" => self.toast = None,
++            "noanim" => {
++                if let Some(anim) = self.anim.take() {
++                    (self.offset, self.zoom) = anim.to;
++                }
++            }
++            other => panic!("unknown promo command {other}"),
++        }
++    }
++
++    fn promo_meta(&self) -> String {
++        let graph = self.graph();
++        let cells = layout::layout(graph);
++        let area = self.area.get();
++        let nodes: Vec<String> = graph
++            .nodes()
++            .map(|n| {
++                let p = self.to_screen(cells[&n.id]);
++                format!(
++                    "{{\"id\":\"{}\",\"title\":\"{}\",\"kind\":\"{:?}\",\"status\":\"{:?}\",\"col\":{},\"row\":{},\"x\":{},\"y\":{}}}",
++                    n.id,
++                    n.title.replace('"', "\\\""),
++                    n.kind,
++                    n.status,
++                    cells[&n.id].0,
++                    cells[&n.id].1,
++                    f32::from(area.origin.x + p.x),
++                    f32::from(area.origin.y + p.y),
++                )
++            })
++            .collect();
++        format!(
++            "{{\"zoom\":{},\"offset\":[{},{}],\"area\":[{},{},{},{}],\"node\":[{},{}],\"nodes\":[{}]}}",
++            self.zoom,
++            f32::from(self.offset.x),
++            f32::from(self.offset.y),
++            f32::from(area.origin.x),
++            f32::from(area.origin.y),
++            f32::from(area.size.width),
++            f32::from(area.size.height),
++            NODE_W * self.zoom,
++            NODE_H * self.zoom,
++            nodes.join(",")
++        )
++    }
++}
++
++#[repr(C)]
++struct CGRect {
++    x: f64,
++    y: f64,
++    w: f64,
++    h: f64,
++}
++
++unsafe extern "C" {
++    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
++    fn CFRelease(cf: *mut c_void);
++}
++
++#[link(name = "ImageIO", kind = "framework")]
++unsafe extern "C" {
++    fn CGImageDestinationCreateWithURL(url: *mut Object, ty: *mut Object, count: usize, options: *const c_void) -> *mut c_void;
++    fn CGImageDestinationAddImage(dest: *mut c_void, image: *mut c_void, properties: *const c_void);
++    fn CGImageDestinationFinalize(dest: *mut c_void) -> bool;
++}
++
++/// Writes this process's first window to `path` (PNG) and `meta` next to it.
++fn capture(path: &str, meta: &str) {
++    type CreateImage = unsafe extern "C" fn(CGRect, u32, u32, u32) -> *mut c_void;
++    // SAFETY: plain AppKit / CoreGraphics calls on the main thread with valid arguments.
++    unsafe {
++        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
++        let windows: *mut Object = msg_send![app, windows];
++        let count: usize = msg_send![windows, count];
++        let mut number: isize = 0;
++        for i in 0..count {
++            let w: *mut Object = msg_send![windows, objectAtIndex: i];
++            let visible: bool = msg_send![w, isVisible];
++            if visible {
++                number = msg_send![w, windowNumber];
++                break;
++            }
++        }
++        let name = CString::new("CGWindowListCreateImage").unwrap();
++        let sym = dlsym(-2isize as *mut c_void, name.as_ptr());
++        let create: CreateImage = std::mem::transmute(sym);
++        let null = CGRect { x: f64::INFINITY, y: f64::INFINITY, w: 0., h: 0. };
++        let image = create(null, 1 << 3, number as u32, 1);
++        assert!(!image.is_null(), "window capture failed");
++        let cpath = CString::new(path).unwrap();
++        let ns_path: *mut Object = msg_send![class!(NSString), stringWithUTF8String: cpath.as_ptr()];
++        let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_path];
++        let png = CString::new("public.png").unwrap();
++        let ty: *mut Object = msg_send![class!(NSString), stringWithUTF8String: png.as_ptr()];
++        let dest = CGImageDestinationCreateWithURL(url, ty, 1, std::ptr::null());
++        CGImageDestinationAddImage(dest, image, std::ptr::null());
++        assert!(CGImageDestinationFinalize(dest), "png write failed");
++        CFRelease(dest);
++        CFRelease(image);
++    }
++    std::fs::write(format!("{path}.json"), meta).unwrap();
++    eprintln!("shot {path}");
++}
+diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/text_input.rs crates/topo-gui/src/text_input.rs
+--- /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/text_input.rs	2026-10-02 01:27:42
++++ crates/topo-gui/src/text_input.rs	2026-10-02 01:51:40
+@@ -123,6 +123,13 @@
+     }
+ 
+     /// Replaces the content and selects all of it, so typing overwrites it.
++    pub fn promo_set(&mut self, text: &str, cx: &mut Context<Self>) {
++        self.content = text.to_owned().into();
++        self.selected_range = self.content.len()..self.content.len();
++        cx.emit(InputEvent::Changed);
++        cx.notify();
++    }
++
+     pub fn reset(&mut self, text: &str, placeholder: &str, cx: &mut Context<Self>) {
+         self.content = text.to_owned().into();
+         self.placeholder = placeholder.to_owned().into();

@@ -1,0 +1,32 @@
+{
+  "ids": {
+    "api": "vxeal3",
+    "auth": "h3hy17",
+    "ci": "rjqon5",
+    "db": "qauzt2",
+    "fe": "5qu6ob",
+    "m": "4rz7l4",
+    "req": "6hhpm4",
+    "test": "c5wn1s",
+    "ui": "g9hdkd",
+    "docs": "0u3ntv"
+  },
+  "cli": {
+    "ready0": "[ ] g9hdkd  Design UI\n[ ] h3hy17  Write auth spec\n[ ] qauzt2  Design DB schema\n[ ] rjqon5  Set up CI\n",
+    "milestones0": "[ ] 4rz7l4  ◆ v1.0 Release  ░░░░░░░░░░ 0/2  3 step(s) left on critical path\n",
+    "tree0": "[ ] 4rz7l4  ◆ v1.0 Release\n  [ ] 0u3ntv  Write docs\n    [ ] vxeal3  Build API\n      [ ] qauzt2  Design DB schema\n        [x] 6hhpm4  Define requirements\n      [ ] h3hy17  Write auth spec\n        ↑ 6hhpm4 Define requirements\n  [ ] c5wn1s  Integration tests\n    ↑ vxeal3 Build API\n    [ ] 5qu6ob  Build frontend\n      [ ] g9hdkd  Design UI\n        ↑ 6hhpm4 Define requirements\n    [ ] rjqon5  Set up CI\n",
+    "show_api": "[ ] vxeal3  Build API\ndepends on:\n  [ ] qauzt2  Design DB schema\n  [ ] h3hy17  Write auth spec\nneeded by:\n  [ ] 0u3ntv  Write docs\n  [ ] c5wn1s  Integration tests\n",
+    "file_api": "---\nid: vxeal3\nkind: task\ntitle: Build API\nstatus: todo\ndepends_on:\n- qauzt2\n- h3hy17\n---\n",
+    "done_db": "",
+    "ready1": "[ ] g9hdkd  Design UI\n[ ] h3hy17  Write auth spec\n[ ] rjqon5  Set up CI\n",
+    "done_auth": "",
+    "ready2": "[ ] g9hdkd  Design UI\n[ ] rjqon5  Set up CI\n[ ] vxeal3  Build API\n",
+    "diff": "diff --git a/.topo/nodes/h3hy17.md b/.topo/nodes/h3hy17.md\nindex 9f37724..8df9abe 100644\n--- a/.topo/nodes/h3hy17.md\n+++ b/.topo/nodes/h3hy17.md\n@@ -2,7 +2,7 @@\n id: h3hy17\n kind: task\n title: Write auth spec\n-status: todo\n+status: done\n depends_on:\n - 6hhpm4\n ---\ndiff --git a/.topo/nodes/qauzt2.md b/.topo/nodes/qauzt2.md\nindex 084a39f..2dfd7b1 100644\n--- a/.topo/nodes/qauzt2.md\n+++ b/.topo/nodes/qauzt2.md\n@@ -2,7 +2,7 @@\n id: qauzt2\n kind: task\n title: Design DB schema\n-status: todo\n+status: done\n depends_on:\n - 6hhpm4\n ---\n",
+    "done_ui": "",
+    "ready3": "[ ] 5qu6ob  Build frontend\n[ ] rjqon5  Set up CI\n[ ] vxeal3  Build API\n",
+    "milestones3": "[ ] 4rz7l4  ◆ v1.0 Release  ░░░░░░░░░░ 0/2  2 step(s) left on critical path\n",
+    "ready_json": "[\n  {\n    \"id\": \"0u3ntv\",\n    \"kind\": \"task\",\n    \"title\": \"Write docs\",\n    \"status\": \"todo\",\n    \"depends_on\": [\n      \"vxeal3\"\n    ],\n    \"milestones\": [\n      \"4rz7l4\"\n    ],\n    \"notes\": \"\",\n    \"ready\": true\n  },\n  {\n    \"id\": \"5qu6ob\",\n    \"kind\": \"task\",\n    \"title\": \"Build frontend\",\n    \"status\": \"todo\",\n    \"depends_on\": [\n      \"g9hdkd\"\n    ],\n    \"notes\": \"\",\n    \"ready\": true\n  },\n  {\n    \"id\": \"rjqon5\",\n    \"kind\": \"task\",\n    \"title\": \"Set up CI\",\n    \"status\": \"todo\",\n    \"notes\": \"\",\n    \"ready\": true\n  }\n]\n",
+    "apply": "$blog = j5ryzl\n$demo = 07aln0\n$m2 = oi01li\n$mail = g8un7j\n$price = ldk4db\n$stats = w6vu9l\n",
+    "agent_batch": "[\n  {\n    \"op\": \"add\",\n    \"ref\": \"m2\",\n    \"title\": \"Launch campaign\",\n    \"kind\": \"milestone\"\n  },\n  {\n    \"op\": \"add\",\n    \"ref\": \"price\",\n    \"title\": \"Draft pricing page\",\n    \"depends_on\": [\n      \"6hhpm4\"\n    ],\n    \"in\": [\n      \"$m2\"\n    ]\n  },\n  {\n    \"op\": \"add\",\n    \"ref\": \"mail\",\n    \"title\": \"Write onboarding emails\",\n    \"depends_on\": [\n      \"6hhpm4\"\n    ]\n  },\n  {\n    \"op\": \"add\",\n    \"ref\": \"stats\",\n    \"title\": \"Set up analytics\",\n    \"depends_on\": [\n      \"rjqon5\"\n    ],\n    \"in\": [\n      \"$m2\"\n    ]\n  },\n  {\n    \"op\": \"add\",\n    \"ref\": \"blog\",\n    \"title\": \"Publish blog post\",\n    \"depends_on\": [\n      \"$price\",\n      \"$mail\"\n    ],\n    \"in\": [\n      \"$m2\"\n    ]\n  },\n  {\n    \"op\": \"add\",\n    \"ref\": \"demo\",\n    \"title\": \"Record demo video\",\n    \"depends_on\": [\n      \"5qu6ob\"\n    ],\n    \"in\": [\n      \"$m2\"\n    ]\n  }\n]"
+  }
+}
