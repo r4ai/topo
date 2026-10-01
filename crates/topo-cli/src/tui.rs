@@ -66,8 +66,10 @@ impl App {
         Ok(())
     }
 
+    /// Picks up edits made outside the TUI; its own saves reload an identical graph.
     fn reload(&mut self) {
         match Workspace::open(self.ws.dir().to_owned()) {
+            Ok(ws) if ws.graph == self.ws.graph => {}
             Ok(ws) => {
                 self.ws = ws;
                 self.message = "reloaded".into();
@@ -84,8 +86,12 @@ impl App {
         let index = View::ALL.iter().position(|v| *v == self.view).expect("view is listed");
         frame.render_widget(Tabs::new(View::ALL.map(View::title)).select(index), tabs_area);
 
+        let len = self.visible().len();
+        self.list.select(match len {
+            0 => None,
+            _ => Some(self.list.selected().unwrap_or(0).min(len - 1)),
+        });
         let nodes = self.visible();
-        let len = nodes.len();
         let items: Vec<String> = nodes
             .iter()
             .map(|n| match n.kind {
@@ -99,10 +105,6 @@ impl App {
             .and_then(|i| nodes.get(i))
             .map(|n| render::detail_text(&self.ws.graph, n))
             .unwrap_or_default();
-        self.list.select(match len {
-            0 => None,
-            _ => Some(self.list.selected().unwrap_or(0).min(len - 1)),
-        });
         let list = List::new(items)
             .block(Block::bordered().title(self.view.title()))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
