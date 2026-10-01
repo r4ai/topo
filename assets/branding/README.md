@@ -9,4 +9,3 @@ The SVG redraws the selected concept as clean curves in solid white.
 - `topo-logo-preview.png`: preview on the app's dark canvas color (`#111216`).
 
 Use white on a dark background and preserve the diagonal gap and proportions.
-Earlier numbered PNGs and comparison boards are design explorations; use the unnumbered `topo-logo` files for the adopted mark.

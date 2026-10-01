@@ -1,9 +1,0 @@
-Generated with the built-in image_gen tool.
-
-Use case: logo-brand
-Asset type: minimal app logo symbol for topo / Topological Todo, a desktop task-dependency graph app.
-Primary request: Create a substantially more minimal and stylish logo than a colorful connected-circle checklist. One elegant abstract geometric symbol, formed by three restrained connected strokes, suggesting a branching dependency graph and subtly a lowercase t. No circular task nodes and no literal checkmark. A carefully designed silhouette with refined proportions, consistent medium stroke weight, softly rounded terminals, clear negative space, and a distinctive asymmetrical branching junction. Feels like a sophisticated contemporary design-tool brand.
-Style/medium: pure flat vector-like mark, precise clean edges, optically balanced geometry.
-Color palette: one solid color only, the app accent blue #6EA8FE; no other colors.
-Composition/framing: single centered symbol on a square transparent canvas, about 60 percent of canvas width, generous balanced padding.
-Constraints: truly transparent background; symbol only; no text, no wordmark, no circular nodes, no checkmarks, no enclosing tile, no decorative elements, no gradients, no glow, no shadows, no bevels, no textures, no 3D, no mockup, no option sheet, no watermark. Aim for a memorable premium mark readable at 24px, with very few elements.
