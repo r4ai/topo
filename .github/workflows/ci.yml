@@ -34,7 +34,9 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           "$(go env GOPATH)/bin/actionlint" -shellcheck=""
       - name: Validate packaging scripts
-        run: bash -n .github/scripts/package-release.sh
+        run: |
+          bash -n .github/scripts/package-release.sh
+          bash -n assets/branding/install-linux-desktop.sh
 
   check:
     name: Check (${{ matrix.os }})
@@ -73,6 +75,14 @@ jobs:
       - name: Check formatting
         if: runner.os == 'macOS'
         run: cargo fmt --all -- --check
+      - name: Install Linux GUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev libclang-dev
+      - name: Check native GUI on Linux and Windows
+        if: runner.os != 'macOS'
+        run: cargo check --locked -p topo-gui
       - name: Lint
         env:
           PACKAGES: ${{ matrix.packages }}

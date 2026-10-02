@@ -28,5 +28,25 @@ if [[ "$BUILD_GUI" == true ]]; then
   stage="$smoke_dir/topo-gui-$RELEASE_TAG-$TARGET"
   mkdir -p "$stage"
   cp "$binary_dir/topo-gui" README.md README.ja.md "$stage/"
+  app="$stage/topo.app/Contents"
+  mkdir -p "$app/MacOS" "$app/Resources"
+  cp "$binary_dir/topo-gui" "$app/MacOS/topo-gui"
+  cp assets/branding/topo.icns "$app/Resources/topo.icns"
+  cat > "$app/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>topo</string>
+  <key>CFBundleDisplayName</key><string>topo</string>
+  <key>CFBundleIdentifier</key><string>dev.r4ai.topo</string>
+  <key>CFBundleExecutable</key><string>topo-gui</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>topo.icns</string>
+  <key>CFBundleShortVersionString</key><string>${RELEASE_TAG#v}</string>
+  <key>CFBundleVersion</key><string>${RELEASE_TAG#v}</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+  plutil -lint "$app/Info.plist"
   tar -czf "dist/topo-gui-$RELEASE_TAG-$TARGET.tar.gz" -C "$smoke_dir" "$(basename "$stage")"
 fi

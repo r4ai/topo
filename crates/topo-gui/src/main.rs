@@ -5,6 +5,7 @@
 //! (press `?` for the list), every edit can be undone, and edits made
 //! elsewhere (CLI, agents) appear live.
 
+mod branding;
 mod chrome;
 mod dates;
 mod gesture;
@@ -1028,12 +1029,14 @@ fn main() -> Result<()> {
     let ws = open_workspace()?;
     let title: SharedString = format!("topo — {}", ws.dir().parent().unwrap_or(ws.dir()).display()).into();
     Application::new().run(move |cx: &mut App| {
+        branding::set_app_icon();
         text_input::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None), KeyBinding::new("cmd-w", CloseWindow, None)]);
         cx.set_menus(vec![Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)] }]);
         let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         let options = WindowOptions {
+            app_id: Some("dev.r4ai.topo".into()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(gpui::TitlebarOptions { title: Some(title), ..Default::default() }),
             window_min_size: Some(size(px(720.), px(480.))),

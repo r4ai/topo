@@ -4,6 +4,7 @@ CI runs for pull requests, main, merge queues, and manual requests. Rust is pinn
 in `rust-toolchain.toml`; update the two workflow toolchain inputs and cache key
 when changing it. CI checks formatting, Clippy with warnings denied, and tests.
 Linux and Windows test the core, Jev client and CLI/TUI; macOS also tests GPUI.
+All three operating systems compile-check the native GUI, including Windows icon resources.
 Workflows and packaging scripts are linted. Cargo always uses the checked-in lockfile.
 Dependabot opens weekly Cargo and SHA-pinned Actions updates for review.
 
@@ -57,9 +58,12 @@ Download the matching checksums and verify before running the binary. On Linux,
 On macOS, use `shasum -a 256 ARCHIVE.tar.gz` and compare to `SHA256SUMS`.
 On Windows, use `Get-FileHash ARCHIVE.tar.gz -Algorithm SHA256`.
 
-The macOS GUI archives contain a command-line executable, not a signed or notarized
-`.app` installer. Launch it from your initialized workspace, or pass the `.topo`
-directory: `./topo-gui /path/to/project/.topo`. Apple signing/notarization requires
+The macOS GUI archives contain both a command-line executable and a `topo.app`
+bundle with the topo logo in Finder and the Dock. Launch from your initialized
+workspace, or pass the `.topo` directory: `./topo-gui /path/to/project/.topo`.
+To launch the bundle with a workspace, use
+`open topo.app --args /path/to/project/.topo`. The bundle is unsigned and not
+notarized. Apple signing/notarization requires
 separate developer credentials and is not configured by this workflow.
 
 Build provenance attestations are enabled automatically for public repositories:
