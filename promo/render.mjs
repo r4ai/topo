@@ -6,9 +6,9 @@
 //   node render.mjs --serve               serve the live preview at http://127.0.0.1:8765/
 //
 // Options: --fps 60 --samples 4 (motion blur sub-frames) --workers 6 --scale 1 --crf 15 --out file
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync, statSync, createReadStream } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, rmSync, statSync, createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,17 @@ const server = createServer((req, res) => {
   res.writeHead(200, { "content-type": MIME[extname(file)] || "application/octet-stream", "cache-control": "no-store" });
   createReadStream(file).pipe(res);
 });
+// The camera moves inside the app are stored as video; the page reads them as frames.
+const seqDir = join(root, "assets", "shots", "seq");
+for (const f of readdirSync(join(root, "assets", "moves"))) {
+  const key = f.replace(".mp4", "");
+  const src = join(root, "assets", "moves", f);
+  const first = join(seqDir, `s_${key}_000.jpg`);
+  if (existsSync(first) && statSync(first).mtimeMs >= statSync(src).mtimeMs) continue;
+  mkdirSync(seqDir, { recursive: true });
+  spawnSync("ffmpeg", ["-v", "error", "-y", "-i", src, "-start_number", "0", "-q:v", "2", join(seqDir, `s_${key}_%03d.jpg`)], { stdio: "inherit" });
+}
+
 await new Promise((ok) => server.listen(args.serve ? 8765 : 0, "127.0.0.1", ok));
 const port = server.address().port;
 if (args.serve) {

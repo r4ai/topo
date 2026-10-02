@@ -20,6 +20,8 @@
     else if (t < T.connect) {
       S.reveal(c, t);
       if (t >= T.title) S.title(c, t);
+      // The app window is already rising while the title leaves.
+      if (t >= T.connect - 0.4) S.product(c, t);
     } else if (t < T.build) S.product(c, t);
     else if (t < T.climax) S.build(c, t);
     else if (t < T.logo) S.climax(c, t);
@@ -39,7 +41,7 @@
     E.A.preview = preview;
     await E.loadData(base);
     if (preview) {
-      for (const name of Object.keys(E.A.data.shots)) E.shot(name);
+      for (const name of Object.keys(E.A.data.shots)) if (!name.startsWith("s_")) E.shot(name);
       await E.settle();
     }
   };
@@ -63,12 +65,12 @@
       out.globalAlpha = 1;
     };
     pass();
-    if (E.A.pending.size) {
+    // A frame can ask for images it only finds out about once others have loaded.
+    while (E.A.pending.size) {
       await E.settle();
       pass();
-    } else {
-      await E.settle();
     }
+    await E.settle();
     E.post(out, t);
   };
 })(typeof window !== "undefined" ? window : globalThis);

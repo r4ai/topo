@@ -351,6 +351,69 @@ function drone(t, len, midi, g = 1) {
   });
 }
 
+// ---- soft, pitched UI sounds ---------------------------------------------------------
+/** A mallet note (marimba / kalimba): warm body, a short bright partial, a felt transient. */
+function mallet(t, midi, g = 1, { pan = 0, dec = 0.32, rev = 0.3, dly = 0.22, bright = 1 } = {}) {
+  const f0 = mtof(midi + rand() * 0.06);
+  const bp = svf();
+  bp.set(Math.min(6000, f0 * 3), 1.2);
+  const vel = g * (0.8 + 0.2 * rand());
+  voice(B.sfx, t, dec * 4 + 0.1, vel, (tt) => {
+    const body = Math.sin(TAU * f0 * tt) * Math.exp(-tt / dec);
+    const over = Math.sin(TAU * f0 * 3.93 * tt) * Math.exp(-tt / (dec * 0.16)) * 0.32 * bright;
+    const sub = Math.sin(TAU * f0 * 0.5 * tt) * Math.exp(-tt / (dec * 0.7)) * 0.18;
+    const felt = bp.run(rand())[1] * Math.exp(-tt / 0.004) * 0.35;
+    return (body + over + sub + felt) * Math.min(1, tt / 0.0012) * 0.6;
+  }, { pan, rev, dly });
+}
+
+/** A key press; every stroke differs a little in tone, weight and position. */
+function softKey(t, g = 1, pan = 0) {
+  const f = svf();
+  f.set(820 + (rand() + 1) * 520, 1.4 + (rand() + 1) * 0.6);
+  const body = 150 + (rand() + 1) * 50;
+  const dec = 0.007 + (rand() + 1) * 0.004;
+  const vel = g * (0.62 + (rand() + 1) * 0.19);
+  let ph = 0;
+  voice(B.sfx, t + (rand() + 1) * 0.004, 0.1, vel, (tt) => {
+    ph += (TAU * (body + 90 * Math.exp(-tt / 0.005))) / SR;
+    return f.run(rand())[1] * Math.exp(-tt / dec) * 1.1 + Math.sin(ph) * Math.exp(-tt / 0.022) * 0.45;
+  }, { pan: pan + rand() * 0.15, rev: 0.1 });
+}
+
+/** A soft low knock: something landed. */
+function knock(t, g = 1, pan = 0) {
+  let ph = 0;
+  const lp = svf();
+  lp.set(900, 0.8);
+  voice(B.sfx, t, 0.4, g, (tt) => {
+    ph += (TAU * (58 + 70 * Math.exp(-tt / 0.02))) / SR;
+    return Math.sin(ph) * Math.exp(-tt / 0.11) * Math.min(1, tt / 0.002) + lp.run(rand())[0] * Math.exp(-tt / 0.012) * 0.4;
+  }, { pan, rev: 0.25 });
+}
+
+/** A high, slow-blooming cluster: the glow after something good happens. */
+function shimmer(t, notes, g = 1, len = 1.6) {
+  voice(B.sfx, t, len + 0.4, g, (tt) => {
+    let l = 0, r = 0;
+    notes.forEach((m, k) => {
+      const f = mtof(m + 12);
+      const a = Math.sin(TAU * f * tt + k) + 0.4 * Math.sin(TAU * f * 2.003 * tt);
+      const trem = 0.75 + 0.25 * Math.sin(TAU * (3 + k * 0.7) * tt + k);
+      l += a * trem * (k % 2 ? 0.4 : 1);
+      r += a * trem * (k % 2 ? 1 : 0.4);
+    });
+    const env = Math.min(1, tt / 0.09) * Math.exp(-tt / (len * 0.45));
+    return [(l / notes.length) * env * 0.5, (r / notes.length) * env * 0.5];
+  }, { rev: 0.7, dly: 0.3 });
+}
+
+/** A quick upward run of mallets: something unlocked. */
+function bloom(t, notes, g = 1, pan = 0) {
+  notes.forEach((m, k) => mallet(t + k * 0.042, m, g * (0.7 + k * 0.1), { pan: pan + (k - 1.5) * 0.15, dec: 0.36, bright: 1.2 }));
+  shimmer(t + 0.05, notes.slice(-3), g * 0.5, 1.4);
+}
+
 // ---- harmony ---------------------------------------------------------------------
 // vi – IV – I – V in A major, one chord per bar.
 const CHORDS = [
@@ -369,177 +432,203 @@ const K = (t, g = 1) => {
 };
 
 // ---- A. hook: the list piles up (0–4) ------------------------------------------
+// Each row is a mallet note climbing F# minor pentatonic, so the pile-up is a run that
+// accelerates, not a row of identical clicks.
+const FSM = [54, 57, 59, 61, 64, 66, 69, 71, 73, 76, 78, 81, 83, 85, 88];
+/** Chord tone `k` (wrapping upwards by octaves) of the chord sounding at `t`. */
+const tone = (t, k) => chordAt(Math.max(t, T.drop)).notes[k % 4] + 12 * Math.floor(k / 4);
 drone(0, 4, 30, 0.4);
 drone(0, 4, 42, 0.18);
-thud(0, 0.9);
+knock(0, 0.9);
 PV.rowTimes.forEach((t, i) => {
-  key(t, 0.55, (i % 2 ? 0.2 : -0.2));
-  tick(t, 0.22, 84 + (i % 5) * 2, 0);
+  softKey(t, 0.42, i % 2 ? 0.25 : -0.25);
+  mallet(t, FSM[i] + 12, 0.34 + i * 0.012, { pan: i % 2 ? 0.3 : -0.3, dec: 0.3 });
 });
-PV.floodTimes.forEach((t, i) => key(t, 0.3 + (0.3 * i) / PV.floodTimes.length, rand() * 0.8));
-riser(2, 2, 0.5, 42);
-revcym(4, 1.2, 0.3);
+PV.floodTimes.forEach((t, i) => {
+  if (i % 2 === 0) softKey(t, 0.22 + (0.2 * i) / PV.floodTimes.length, rand() * 0.8);
+  mallet(t, FSM[(i * 2) % 13] + 12 + (i > 12 ? 12 : 0), 0.14 + i * 0.008, { pan: rand() * 0.7, dec: 0.16, dly: 0.1 });
+});
+riser(2, 2, 0.45, 42);
+revcym(4, 1.2, 0.26);
 
 // ---- B. stop (4–6) ---------------------------------------------------------------
 impact(4, 1.0);
 drone(4.05, 3.7, 30, 0.22);
-[66, 69, 71, 73].forEach((m, i) => {
+pad(4.6, [54, 61, 64], 1.6, 0.08, 400, 900);
+[54, 57, 59, 61].forEach((m, i) => {
   const t = PV.words[i].t;
-  thud(t, i === 3 ? 0.75 : 0.5);
-  pluck(B.sfx, t, m, 0.5, i === 3 ? 0.3 : 0.2, { bright: 0.5, rev: 0.4, dly: 0.35 });
+  knock(t, i === 3 ? 0.6 : 0.4);
+  mallet(t, m + 12, i === 3 ? 0.5 : 0.36, { dec: 0.5, rev: 0.5, dly: 0.35 });
+  if (i === 3) shimmer(t, [61, 64, 68], 0.26, 1.6);
 });
 
 // ---- C. tension (6–8) ------------------------------------------------------------
-PV.heart.forEach((t, i) => K(t, 0.75 + i * 0.04));
-for (let t = 7; t < 7.75 - 1e-6; t += 0.125) snare(t, 0.2 + ((t - 7) / 0.75) * 0.45);
-riser(6, 1.75, 0.6, 42);
-revcym(7.75, 1.5, 0.45);
+PV.heart.forEach((t, i) => {
+  K(t, 0.7 + i * 0.04);
+  mallet(t, FSM[2 + i] + 12, 0.24, { pan: i % 2 ? 0.4 : -0.4, dec: 0.2 });
+  mallet(t + 0.06, FSM[4 + i] + 12, 0.18, { pan: i % 2 ? -0.4 : 0.4, dec: 0.2 });
+});
+for (let t = 7; t < 7.75 - 1e-6; t += 0.125) snare(t, 0.16 + ((t - 7) / 0.75) * 0.4);
+riser(6, 1.75, 0.55, 42);
+revcym(7.75, 1.5, 0.4);
 
 // ---- D. drop: it is a graph (8–16) -----------------------------------------------
 function grooveBar(t0, { full = true, arp = false, hatG = 1, stabG = 1, bassG = 1 } = {}) {
   const ch = chordAt(t0);
   for (let b = 0; b < 4; b++) {
     K(t0 + b * 0.5);
-    hat(t0 + b * 0.5 + 0.25, 0.3 * hatG, full && b === 3, 0.2);
-    hat(t0 + b * 0.5 + 0.125, 0.09 * hatG, false, -0.25);
-    hat(t0 + b * 0.5 + 0.375, 0.11 * hatG, false, -0.25);
+    hat(t0 + b * 0.5 + 0.25, (0.26 + 0.05 * rand()) * hatG, full && b === 3, 0.2);
+    hat(t0 + b * 0.5 + 0.125, (0.07 + 0.03 * rand()) * hatG, false, -0.25);
+    hat(t0 + b * 0.5 + 0.375, (0.1 + 0.03 * rand()) * hatG, false, -0.25);
   }
-  clap(t0 + 0.5, 0.55);
-  clap(t0 + 1.5, 0.55);
+  clap(t0 + 0.5, 0.5);
+  clap(t0 + 1.5, 0.5);
   for (let e = 0; e < 8; e++) bass(t0 + e * 0.25, ch.root + (e === 7 ? 12 : 0), 0.2, 0.5 * bassG);
-  for (const s of [0, 3, 6, 8, 11, 14]) stab(t0 + s * 0.125, ch.notes, 0.2 * stabG, 0.2, full ? 1 : 0.6);
+  for (const st of [0, 3, 6, 8, 11, 14]) stab(t0 + st * 0.125, ch.notes, 0.2 * stabG, 0.2, full ? 1 : 0.6);
+  pad(t0, ch.notes, 2, 0.1, 900, 1500);
   if (arp) {
     const seq = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1, 0, 2, 1, 3];
-    seq.forEach((k, s) => {
-      pluck(B.music, t0 + s * 0.125, ch.notes[k] + 12, 0.16, 0.13, { pan: s % 2 ? 0.4 : -0.4, bright: 0.9 });
+    seq.forEach((k, st) => {
+      pluck(B.music, t0 + st * 0.125, ch.notes[k] + 12, 0.16, 0.11 + 0.02 * rand(), { pan: st % 2 ? 0.4 : -0.4, bright: 0.9 });
     });
   }
 }
 impact(8, 1.0);
-crash(8, 0.35);
+crash(8, 0.3);
+shimmer(8, [61, 64, 69], 0.3, 2);
 grooveBar(8, { arp: false });
 grooveBar(10, { arp: true });
-crash(12, 0.3);
+// The edges draw themselves: one mallet per edge, walking up the chord.
+for (let k = 0; k < 9; k++) mallet(T.graph + k * PV.S16, tone(T.graph, k % 6) + 12, 0.2, { pan: k % 2 ? 0.5 : -0.5, dec: 0.22 });
+crash(12, 0.26);
+shimmer(12, [57, 64, 69, 73], 0.4, 2.4);
 grooveBar(12, { arp: true });
 grooveBar(14, { arp: true });
-// Lead motif over the title.
 const MOTIF = [
-  // [beat offset, midi, beats]
   [[0, 76, 1], [1, 81, 0.5], [1.5, 85, 0.5], [2, 83, 1], [3, 81, 1]],
   [[0, 83, 1.5], [1.5, 80, 0.5], [2, 76, 1], [3, 83, 1]],
   [[0, 78, 1], [1, 81, 0.5], [1.5, 85, 0.5], [2, 83, 1], [3, 81, 1]],
   [[0, 78, 1], [1, 81, 0.5], [1.5, 83, 0.5], [2, 81, 1], [3, 78, 1]],
 ];
 const motif = (t0, k, g) => MOTIF[k].forEach(([b, m, d]) => lead(t0 + b * 0.5, m, d * 0.5 - 0.04, g));
-motif(12, 0, 0.2);
-motif(14, 1, 0.2);
-for (let t = 15.5; t < 16 - 1e-6; t += 0.125) snare(t, 0.25 + (t - 15.5) * 0.5);
-revcym(16, 1.0, 0.3);
+motif(12, 0, 0.18);
+motif(14, 1, 0.18);
+for (let t = 15.5; t < 16 - 1e-6; t += 0.125) snare(t, 0.2 + (t - 15.5) * 0.4);
+revcym(16, 1.0, 0.26);
 
 // ---- E. product scenes (16–40): a lighter groove that leaves room for the UI --------
-function lightBar(t0, { hats = false, arp = false, stabs = false, g = 1 } = {}) {
+function lightBar(t0, { hats = false, arp = false, stabs = false, g = 1, bar = 0 } = {}) {
   const ch = chordAt(t0);
   K(t0, 0.85);
   K(t0 + 1, 0.85);
-  K(t0 + 1.75, 0.6);
-  clap(t0 + 0.5, 0.32);
-  clap(t0 + 1.5, 0.32);
+  if (bar % 2) K(t0 + 1.75, 0.55);
+  else K(t0 + 0.75, 0.4);
+  clap(t0 + 0.5, 0.28);
+  clap(t0 + 1.5, 0.28);
   bass(t0, ch.root, 0.7, 0.45);
-  bass(t0 + 0.75, ch.root, 0.2, 0.35);
+  bass(t0 + 0.75, ch.root, 0.2, 0.33);
   bass(t0 + 1, ch.root, 0.6, 0.45);
-  bass(t0 + 1.75, ch.root + 12, 0.2, 0.35);
-  pad(t0, ch.notes, 2, 0.16 * g, 600, 1000);
-  if (hats) for (let e = 0; e < 8; e++) hat(t0 + e * 0.25, e % 2 ? 0.2 : 0.09, false, 0.2);
+  bass(t0 + 1.75, ch.root + (bar % 2 ? 12 : 7), 0.2, 0.33);
+  pad(t0, ch.notes, 2, 0.11 * g, 700, 1300);
+  pad(t0, [ch.notes[0] + 12, ch.notes[2] + 12], 2, 0.05 * g, 1400, 2400);
+  if (hats) {
+    for (let e = 0; e < 8; e++) hat(t0 + e * 0.25, (e % 2 ? 0.17 : 0.07) + 0.03 * rand(), bar % 4 === 3 && e === 7, 0.2);
+    if (bar % 2) hat(t0 + 1.875, 0.08, false, -0.3);
+  }
   if (arp) {
-    [0, 2, 1, 3, 2, 3, 1, 2].forEach((k, e) => {
-      pluck(B.music, t0 + e * 0.25, ch.notes[k] + 12, 0.2, 0.085, { pan: e % 2 ? 0.45 : -0.45, bright: 0.6 });
+    const seq = bar % 2 ? [0, 2, 1, 3, 2, 3, 1, 2] : [2, 0, 3, 1, 3, 2, 0, 1];
+    seq.forEach((k, e) => {
+      if ((bar + e) % 5 === 4) return;
+      pluck(B.music, t0 + e * 0.25, ch.notes[k] + 12, 0.2, 0.07 + 0.015 * rand(), { pan: e % 2 ? 0.45 : -0.45, bright: 0.6 });
     });
   }
-  if (stabs) for (const s of [0, 6, 11]) stab(t0 + s * 0.125, ch.notes, 0.1, 0.2, 0.55);
+  if (stabs) for (const st of bar % 2 ? [0, 6, 11] : [3, 8, 14]) stab(t0 + st * 0.125, ch.notes, 0.085, 0.2, 0.55);
 }
 for (let t = 16; t < 40; t += 2) {
-  lightBar(t, { hats: t >= 20, arp: t >= 24 && t < 36, stabs: t >= 28 });
+  lightBar(t, { hats: t >= 20, arp: t >= 24 && t < 36, stabs: t >= 28, bar: (t - 16) / 2 });
 }
 
 // 16–20 connect: click, Tab, typing, Enter, drag, drop.
-whoosh(15.85, 0.5, 0.35);
+whoosh(15.7, 0.7, 0.26);
 const c = PV.connect;
-tick(c.click, 0.4, 88);
-key(c.tab, 0.9);
-ding(c.tab, 76, 0.1);
-c.type.forEach((t, i) => key(t, 0.5, (i % 3 - 1) * 0.25));
-key(c.enter, 1.0);
-pop(c.enter, 0.3);
-ding(c.enter, 81, 0.16);
-whoosh(c.drag, 0.5, 0.25);
-ding(c.drop, 85, 0.22);
-tick(c.drop, 0.5, 92);
+knock(c.click, 0.3);
+mallet(c.click, tone(c.click, 2), 0.3, { dec: 0.2 });
+softKey(c.tab, 0.8);
+mallet(c.tab, tone(c.tab, 4), 0.26);
+c.type.forEach((t, i) => softKey(t, 0.42, (i % 3 - 1) * 0.3));
+softKey(c.enter, 0.9);
+bloom(c.enter, [tone(c.enter, 2), tone(c.enter, 4), tone(c.enter, 5)], 0.3, 0.1);
+whoosh(c.drag - 0.05, 0.55, 0.16);
+mallet(c.drop, tone(c.drop, 4), 0.4, { dec: 0.45, pan: 0.3 });
+mallet(c.drop + 0.05, tone(c.drop, 6), 0.3, { dec: 0.45, pan: 0.4 });
+shimmer(c.drop, [tone(c.drop, 4), tone(c.drop, 6)], 0.24, 1.4);
 
 // 20–24 critical path: pull back, then the steps light one by one.
 const cr = PV.crit;
-whoosh(cr.pull - 0.1, 0.8, 0.35, -1);
+whoosh(PV.seq.y.t0 - 0.05, 1.1, 0.26, -1);
+whoosh(PV.seq.x.t0 - 0.05, 1.1, 0.2, -1);
 cr.steps.forEach((t, i) => {
-  pluck(B.sfx, t, [73, 76, 81][i], 0.5, 0.3, { bright: 1.1, rev: 0.4, dly: 0.35 });
-  tick(t, 0.3, 90 + i * 2);
+  mallet(t, tone(t, i + 2), 0.42, { dec: 0.4, pan: -0.3 + i * 0.3, bright: 1.2 });
+  mallet(t + 0.25, tone(t, i + 3), 0.2, { dec: 0.3, pan: -0.15 + i * 0.3 });
 });
-ding(cr.goal, 85, 0.28);
-ding(cr.goal + 0.06, 88, 0.16, 0.3);
+bloom(cr.goal, [tone(cr.goal, 4), tone(cr.goal, 5), tone(cr.goal, 6), tone(cr.goal, 8)], 0.36, 0.3);
 
 // 24–32 ready: pings, zoom, finish → unlock.
 const rd = PV.ready;
-rd.pings.forEach((t, i) => {
-  pop(t, 0.22, i % 2 ? 0.3 : -0.3);
-  pluck(B.sfx, t, PENTA[i + 1], 0.3, 0.16, { bright: 0.8 });
-});
-whoosh(rd.zoom - 0.05, 0.8, 0.4);
+rd.pings.forEach((t, i) => mallet(t, tone(t, i + 3), 0.34, { pan: i % 2 ? 0.35 : -0.35, dec: 0.3 }));
+shimmer(rd.pings[0], [tone(25, 4), tone(25, 6)], 0.18, 1.6);
+whoosh(PV.seq.z.t0 - 0.05, 1.0, 0.3);
 rd.done.forEach((d, i) => {
-  tick(d.click, 0.5, 91);
-  ding(d.click, [76, 78, 81][i], 0.2, -0.2);
+  knock(d.click, 0.28, -0.2);
+  mallet(d.click, tone(d.click, 3 + i), 0.34, { pan: -0.3, dec: 0.25 });
   if (d.pop) {
-    pop(d.arrive, 0.5, 0.2);
-    [0, 0.045, 0.09].forEach((o, k) => ding(d.arrive + o, [81, 85, 88][k], 0.17, 0.3));
+    bloom(d.arrive, [tone(d.arrive, 4), tone(d.arrive, 5), tone(d.arrive, 6), tone(d.arrive, 8)], 0.4, 0.25);
   } else {
-    tick(d.arrive, 0.35, 86);
+    mallet(d.arrive, tone(d.arrive, 2), 0.24, { pan: 0.25, dec: 0.2 });
   }
 });
-crash(PV.T.unlock, 0.16);
-key(rd.space, 0.9);
-ding(rd.space, 83, 0.14);
-whoosh(rd.out - 0.15, 0.6, 0.3, -1);
+crash(PV.T.unlock, 0.12);
+softKey(rd.space, 0.85);
+mallet(rd.space, tone(rd.space, 5), 0.3, { dec: 0.4 });
+whoosh(PV.seq.w.t0 - 0.05, 1.1, 0.22, -1);
 
 // 32–36 everywhere: three surfaces land, a command is typed, all of them update.
 const sy = PV.sync;
 sy.panels.forEach((t, i) => {
-  thud(t, 0.55);
-  whoosh(t - 0.18, 0.3, 0.2, i % 2 ? 1 : -1);
+  knock(t, 0.5, [-0.4, 0.4, 0.2][i]);
+  mallet(t, tone(t, i + 1), 0.3, { pan: [-0.4, 0.4, 0.2][i], dec: 0.35 });
+  if (i) whoosh(t - 0.2, 0.4, 0.14, i % 2 ? 1 : -1);
 });
-sy.type.forEach((t, i) => key(t, 0.4, (i % 3 - 1) * 0.2));
-key(sy.enter, 1.0);
-[0, 0.05, 0.1].forEach((o, k) => ding(sy.flash + o, [76, 81, 85][k], 0.2, [-0.5, 0, 0.5][k]));
-pop(sy.flash, 0.35);
+sy.type.forEach((t, i) => softKey(t, 0.36, 0.25 + (i % 3 - 1) * 0.15));
+softKey(sy.enter, 0.9, 0.25);
+[0, 0.05, 0.1].forEach((o, k) => mallet(sy.flash + o, tone(sy.flash, k + 4), 0.36, { pan: [0.4, 0, -0.4][k], dec: 0.4 }));
+shimmer(sy.flash, [tone(sy.flash, 4), tone(sy.flash, 5), tone(sy.flash, 6)], 0.26, 1.8);
 
 // 36–40 files and agents.
 const fi = PV.files;
-whoosh(fi.in - 0.15, 0.5, 0.3);
-tick(fi.minus, 0.4, 80);
-tick(fi.plus, 0.45, 87);
-ding(fi.plus, 81, 0.14);
-thud(fi.git, 0.5);
+whoosh(fi.in - 0.2, 0.7, 0.22);
+knock(fi.in + 0.1, 0.35);
+mallet(fi.minus, tone(fi.minus, 2), 0.3, { pan: 0.35, dec: 0.25 });
+mallet(fi.plus, tone(fi.plus, 4), 0.36, { pan: 0.35, dec: 0.35 });
+mallet(fi.git, tone(fi.git, 5), 0.3, { dec: 0.4 });
 const ag = PV.agents;
-whoosh(ag.in - 0.15, 0.5, 0.3, -1);
-for (let i = 0; i < 8; i++) key(ag.in + 0.06 + i * 0.05, 0.4);
-key(ag.enter, 1.0);
+whoosh(ag.in - 0.25, 0.8, 0.22, -1);
+for (let i = 0; i < 8; i++) softKey(ag.in + 0.06 + i * 0.05, 0.34, -0.4);
+softKey(ag.enter, 0.9, -0.4);
 [0, 0.06, 0.12, 0.18, 0.24, 0.3].forEach((o, k) => {
-  pop(ag.land + o, 0.22, (k % 3 - 1) * 0.5);
-  ding(ag.land + o, PENTA[k + 2], 0.11, (k % 3 - 1) * 0.5);
+  mallet(ag.land + o, tone(ag.land, k + 2), 0.3, { pan: (k % 3 - 1) * 0.5, dec: 0.3 });
 });
+shimmer(ag.land, [tone(ag.land, 4), tone(ag.land, 6), tone(ag.land, 7)], 0.26, 1.6);
 
 // ---- F. build (40–44) ----------------------------------------------------------------
 for (let t = 40; t < 43 - 1e-6; t += 0.5) K(t, 0.95);
-for (let t = 40; t < 42 - 1e-6; t += 0.25) snare(t, 0.16 + (t - 40) * 0.06);
-for (let t = 42; t < 43 - 1e-6; t += 0.125) snare(t, 0.3 + (t - 42) * 0.2);
-for (let t = 43; t < 43.5 - 1e-6; t += 0.0625) snare(t, 0.5 + (t - 43) * 0.5);
-PV.flashes.forEach((t, i) => tick(t, 0.2, 84 + (i % 7), (i % 2 ? 0.5 : -0.5)));
+for (let t = 40; t < 42 - 1e-6; t += 0.25) snare(t, 0.13 + (t - 40) * 0.05);
+for (let t = 42; t < 43 - 1e-6; t += 0.125) snare(t, 0.24 + (t - 42) * 0.18);
+for (let t = 43; t < 43.5 - 1e-6; t += 0.0625) snare(t, 0.42 + (t - 43) * 0.5);
+// The words land on a mallet line that climbs with the tension.
+PV.flashes.forEach((t, i) => {
+  if (t < 43) mallet(t, tone(t, (i % 4) + Math.floor(i / 6)) + 12, 0.2 + i * 0.004, { pan: i % 2 ? 0.5 : -0.5, dec: 0.18, dly: 0.12 });
+});
 for (let t = 40; t < 43.5; t += 2) {
   const ch = chordAt(t);
   const len = Math.min(2, 43.5 - t);
@@ -547,53 +636,53 @@ for (let t = 40; t < 43.5; t += 2) {
   pad(t, ch.notes.map((m) => m + 12), len - 0.3, 0.2, 500 + 5500 * x0 * x0, 500 + 5500 * x1 * x1);
   if (t < 42) for (let e = 0; e < 8; e++) bass(t + e * 0.25, ch.root, 0.2, 0.45);
 }
-riser(40, 3.5, 0.75, 45);
-revcym(43.5, 2.0, 0.5);
-ding(43.5, 88, 0.3);
+riser(40, 3.5, 0.7, 45);
+revcym(43.5, 2.0, 0.45);
+mallet(43.5, 88, 0.5, { dec: 0.6, rev: 0.7 });
 
 // ---- G. climax (44–52) ---------------------------------------------------------------
 for (let t = 44; t < 52; t += 2) {
-  grooveBar(t, { arp: true, hatG: 1.25, stabG: 1.3, bassG: 1.1 });
-  crash(t, t % 4 === 0 ? 0.36 : 0.22);
+  grooveBar(t, { arp: true, hatG: 1.2, stabG: 1.3, bassG: 1.1 });
+  crash(t, t % 4 === 0 ? 0.32 : 0.18);
   motif(t, ((t - 44) / 2) % 4, 0.24);
-  // Octave doubling of the arp for extra sparkle.
   const ch = chordAt(t);
   [0, 2, 1, 3, 0, 2, 1, 3].forEach((k, e) => {
-    pluck(B.music, t + e * 0.25 + 0.125, ch.notes[k] + 24, 0.14, 0.06, { pan: e % 2 ? -0.6 : 0.6, bright: 1 });
+    pluck(B.music, t + e * 0.25 + 0.125, ch.notes[k] + 24, 0.14, 0.055, { pan: e % 2 ? -0.6 : 0.6, bright: 1 });
   });
 }
 impact(44, 1.0);
-impact(48, 0.7);
+impact(48, 0.6);
+// The wave of completions is a marimba ostinato on the chord, not a tick per node.
 for (const n of PV.mega.nodes) {
   if (n.milestone) continue;
-  tick(n.t, 0.13, PENTA[(n.col + Math.round(n.row + 4)) % PENTA.length] + 12, clamp(n.row / 4, -0.8, 0.8));
+  const k = Math.round(n.row + 4) % 6;
+  mallet(n.t, tone(n.t, k) + 12, 0.1 + 0.04 * (rand() + 1), { pan: clamp(n.row / 4, -0.8, 0.8), dec: 0.14, dly: 0.1, rev: 0.2 });
 }
 for (const t of [46, 48, 50]) {
-  [0, 0.04, 0.08].forEach((o, k) => ding(t + o, [81, 85, 88][k], 0.2, [-0.4, 0, 0.4][k]));
+  bloom(t, [tone(t, 4), tone(t, 5), tone(t, 6), tone(t, 8)], 0.34, 0);
 }
-for (let t = 51.5; t < 52 - 1e-6; t += 0.0625) snare(t, 0.3 + (t - 51.5) * 0.7);
-revcym(52, 1.6, 0.45);
+for (let t = 51.5; t < 52 - 1e-6; t += 0.0625) snare(t, 0.26 + (t - 51.5) * 0.6);
+revcym(52, 1.6, 0.4);
 
 // ---- H. logo (52–58) -----------------------------------------------------------------
 const lg = PV.logo;
 impact(lg.hit, 1.1);
-crash(lg.hit, 0.4);
+crash(lg.hit, 0.34);
 K(lg.hit);
 bass(lg.hit, 33, 2.4, 0.5);
 supersaw(B.music, lg.hit, [45, 57, 61, 64, 71], 4.5, 0.42, (tt) => [
   Math.min(1, tt / 0.004) * Math.exp(-tt / 1.5),
   600 + 6000 * Math.exp(-tt / 0.7),
 ], { rev: 0.5, dly: 0.2 });
-[0, 0.05, 0.1, 0.15].forEach((o, k) => ding(lg.hit + o, [81, 85, 88, 93][k], 0.2, [-0.5, -0.2, 0.2, 0.5][k]));
-pluck(B.sfx, lg.tagline, 73, 0.9, 0.3, { bright: 0.8, rev: 0.5, dly: 0.4 });
-pluck(B.sfx, lg.tagline + 0.25, 76, 0.9, 0.3, { bright: 0.8, rev: 0.5, dly: 0.4 });
-lg.type.forEach((t, i) => key(t, 0.5, (i % 3 - 1) * 0.2));
-key(lg.type[lg.type.length - 1] + 0.2, 0.9);
-pop(lg.answer, 0.4);
-ding(lg.answer, 81, 0.3, -0.2);
-ding(lg.answer + 0.07, 88, 0.22, 0.2);
-tick(lg.url, 0.35, 88);
-pad(lg.answer, [57, 61, 64, 69], 2.2, 0.1, 500, 900);
+bloom(lg.hit, [69, 73, 76, 81], 0.4, 0);
+shimmer(lg.hit, [69, 73, 76, 83], 0.4, 3.2);
+mallet(lg.tagline, 73, 0.4, { dec: 0.6, rev: 0.5, dly: 0.35, pan: -0.2 });
+mallet(lg.tagline + 0.25, 76, 0.36, { dec: 0.6, rev: 0.5, dly: 0.35, pan: 0.2 });
+pad(lg.tagline, [57, 61, 64, 69], 4.2, 0.1, 500, 1000);
+lg.type.forEach((t, i) => softKey(t, 0.42, (i % 3 - 1) * 0.2));
+softKey(lg.type[lg.type.length - 1] + 0.2, 0.8);
+bloom(lg.answer, [69, 73, 76, 81], 0.4, 0);
+mallet(lg.url, 81, 0.22, { dec: 0.5, rev: 0.6 });
 
 // ---- mix ---------------------------------------------------------------------------------
 // Sidechain: everything musical ducks under the kick.
@@ -684,7 +773,7 @@ for (const [name, b] of Object.entries(B)) stats(name, b);
 stats("dlyOut", dly);
 stats("revOut", rev);
 
-const G = { kick: 0.55, drums: 1.25, bass: 0.27, music: 1.7, sfx: 0.62, dly: 0.9, rev: 1.5, drive: 1.0 };
+const G = { kick: 0.55, drums: 1.2, bass: 0.27, music: 1.75, sfx: 0.6, dly: 0.9, rev: 1.9, drive: 1.0 };
 const mix = bus();
 const hpL = svf(), hpR = svf();
 hpL.set(28, 0.7);
@@ -704,7 +793,8 @@ for (let i = 0; i < N; i++) {
   peak = Math.max(peak, Math.abs(mix.L[i]), Math.abs(mix.R[i]));
 }
 stats("mix", mix);
-const norm = 0.9 / peak;
+// Leave headroom: about -13 LUFS overall, so nothing sounds crushed.
+const norm = (0.9 / peak) * 0.74;
 // Loudness per bar, to check the arc of the track at a glance.
 let line = "";
 for (let bar = 0; bar < DUR / 2; bar++) {

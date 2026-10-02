@@ -38,6 +38,45 @@
     };
   }
 
+  // ---- easing shared with the capture script -------------------------------
+  /** CSS-style cubic bezier easing through (x1, y1) and (x2, y2). */
+  function bezier(x1, y1, x2, y2) {
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    return function (x) {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      let u = x;
+      for (let i = 0; i < 8; i++) {
+        const err = ((ax * u + bx) * u + cx) * u - x;
+        const d = (3 * ax * u + 2 * bx) * u + cx;
+        if (Math.abs(err) < 1e-6 || Math.abs(d) < 1e-6) break;
+        u -= err / d;
+      }
+      u = Math.min(1, Math.max(0, u));
+      return ((ay * u + by) * u + cy) * u;
+    };
+  }
+  /** Camera moves: a short wind-up, most of the way at once, then a long settle. */
+  const swoop = bezier(0.22, 0, 0, 1);
+
+  // Camera moves inside the real app are captured one frame of the app per frame of
+  // the video, with `swoop` baked in, so they play back without skipping or holding.
+  const FPS = 60;
+  const seq = {
+    y: { t0: 19.88, d: 1.7 }, // pull back to the critical path
+    x: { t0: 23.88, d: 1.6 }, // back to the whole graph
+    z: { t0: 25.88, d: 1.12 }, // in on the ready work
+    w: { t0: 30.88, d: 1.6 }, // out again
+  };
+  for (const s of Object.values(seq)) s.n = Math.round(s.d * FPS) + 1;
+  /** Name of the captured frame of sequence `k` showing at `t`. */
+  function seqFrame(k, t) {
+    const s = seq[k];
+    const i = Math.min(s.n - 1, Math.max(0, Math.round((t - s.t0) * FPS)));
+    return `s_${k}_${String(i).padStart(3, "0")}`;
+  }
+
   // ---- hook: a flat list piling up ---------------------------------------
   const LIST = [
     "Ship v1.0",
@@ -82,12 +121,11 @@
     drag: 19,
     drop: 19.5,
   };
-  const crit = { pull: 20, land: 20.75, steps: [21, 21.5, 22], goal: 22.5 };
+  const crit = { steps: [21, 21.5, 22], goal: 22.5 };
   const ready = {
     in: 24,
     pings: [25, 25.25, 25.5, 25.75],
     zoom: 26,
-    zoomDur: 0.75,
     // Finishing `node` at `click` reaches `to` at `arrive`, which then shows `state`.
     done: [
       { node: "db", click: 27, to: "api", arrive: 27.25, shot: "r_1", pop: false },
@@ -186,7 +224,7 @@
   };
 
   g.PV = {
-    BEAT, BAR, S16, T, rng,
+    BEAT, BAR, S16, T, rng, bezier, swoop, FPS, seq, seqFrame,
     LIST, FLOOD, rowTimes, floodTimes, words, heart,
     TYPE_TITLE, connect, crit, ready, SYNC_CMD, sync, files, agents,
     BUILD_WORDS, flashes, buildGap, MEGA_COLS, mega, climaxWords, END_CMD, logo,

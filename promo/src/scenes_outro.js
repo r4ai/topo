@@ -25,37 +25,39 @@
     let i = -1;
     for (let k = 0; k < PV.flashes.length; k++) if (PV.flashes[k] <= t) i = k;
     if (i >= 0 && t < PV.buildGap + 0.14) {
+      // Words too big for the frame: each one is cut off by the edges and keeps
+      // sliding through, alternating direction, so the type never stands still.
       const t0 = PV.flashes[i];
       const t1 = PV.flashes[i + 1] ?? PV.buildGap;
       const word = PV.BUILD_WORDS[i % PV.BUILD_WORDS.length];
-      const w100 = E.measure(ctx, word, font(900, 100), -3);
-      const size = Math.min(470, (1660 / w100) * 100);
+      const w100 = E.measure(ctx, word, font(900, 100), -4);
+      const size = Math.max(620, Math.min(1180, ((W * 1.42) / w100) * 100));
       const f = font(900, size);
-      const ls = -0.03 * size;
+      const ls = -0.04 * size;
       const collapse = ease.inExpo(prog(t, PV.buildGap, 0.13));
-      const punch = lerp(1.12, 1, ep(t, t0, Math.min(0.2, t1 - t0))) * (1 - collapse);
+      const dir = i % 2 ? 1 : -1;
+      const slide = dir * (lerp(260, 60, ep(t, t0, Math.max(0.3, t1 - t0))) - 190 * prog(t, t0, 0.6));
       const style = i % 4;
       ctx.save();
-      ctx.translate(W / 2, H / 2);
-      ctx.scale(punch, punch);
+      ctx.translate(W / 2 + slide * (1 - collapse), H / 2 + (i % 3 - 1) * 46);
+      ctx.scale(1 - collapse, 1 - collapse);
       const tw = E.measure(ctx, word, f, ls);
       if (style === 3) {
         ctx.fillStyle = C.green;
-        ctx.fillRect(-tw / 2 - 50, -size * 0.52, tw + 100, size * 1.04);
-        text(ctx, word, 0, size * 0.36, { f, color: "#08090c", align: "center", ls });
+        ctx.fillRect(-tw / 2 - 400, -size * 0.5, tw + 800, size * 1.0);
+        text(ctx, word, 0, size * 0.355, { f, color: "#08090c", align: "center", ls });
       } else if (style === 1) {
         ctx.font = f;
         ctx.letterSpacing = `${ls}px`;
         ctx.textAlign = "center";
-        ctx.lineWidth = Math.max(3, size * 0.012);
+        ctx.lineWidth = 5;
         ctx.strokeStyle = C.text;
         ctx.lineJoin = "round";
-        ctx.strokeText(word, 0, size * 0.36);
+        ctx.strokeText(word, 0, size * 0.355);
       } else {
-        text(ctx, word, 0, size * 0.36, { f, color: style === 2 ? C.green : C.text, align: "center", ls });
+        text(ctx, word, 0, size * 0.355, { f, color: style === 2 ? C.green : C.text, align: "center", ls });
       }
       ctx.restore();
-      text(ctx, `${String(i + 1).padStart(2, "0")} / ${PV.flashes.length}`, 96, 96, { f: font(600, 24, E.MONO), color: C.faint, ls: 2, alpha: 1 - collapse });
     }
 
     // Rails of commands, sliding in opposite directions, faster and faster.
@@ -74,13 +76,12 @@
 
     // The gap before the drop: one point again.
     if (t >= PV.buildGap) {
-      const pulse = 1 + 0.4 * Math.sin((t - PV.buildGap) * 38);
       ctx.save();
       ctx.shadowColor = C.green;
       ctx.shadowBlur = 44;
       ctx.fillStyle = "#fff";
       ctx.beginPath();
-      ctx.arc(W / 2, H / 2, 6.5 * pulse, 0, Math.PI * 2);
+      ctx.arc(W / 2, H / 2, 7, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
@@ -115,9 +116,8 @@
     const zKeys = [[44, 1.75], [46, 1.5], [48, 1.3], [50, 1.1], [50.8, 1.05], [51.7, 0.56]];
     let z = zKeys[0][1];
     for (let i = 1; i < zKeys.length; i++) z = lerp(z, zKeys[i][1], ease.inOutCubic(prog(t, zKeys[i - 1][0], zKeys[i][0] - zKeys[i - 1][0])));
-    z *= 1 + 0.018 * E.beatPulse(t);
     // Burst out of the point the build collapsed into.
-    const open = ep(t, T.climax, 0.7);
+    const open = ep(t, T.climax, 1.5);
     const front = (t - T.climax) * 2 * CW;
     const cxW = lerp(front + 150, (15 * CW + MW) / 2, ease.inOutCubic(prog(t, 50.6, 1.1)));
     const cyW = Math.sin(t * 0.9) * 18;
@@ -167,12 +167,12 @@
       const rad = (n.milestone ? 12 : 7) * zz;
       ctx.save();
       ctx.translate(x + w / 2, y + h / 2);
-      ctx.scale(1 + pop * 0.16, 1 + pop * 0.16);
+      ctx.scale(1 + pop * 0.05, 1 + pop * 0.05);
       ctx.translate(-w / 2, -h / 2);
       const tint = n.milestone ? C.amber : C.green;
       if (done || ready) {
         ctx.shadowColor = tint;
-        ctx.shadowBlur = (done ? 10 + 40 * pop : 16 + 10 * E.beatPulse(t, 0.2)) * zz;
+        ctx.shadowBlur = (done ? 10 + 40 * pop : 20) * zz;
       }
       rr(ctx, 0, 0, w, h, rad);
       ctx.fillStyle = n.milestone ? "#221f1b" : C.card;
@@ -215,8 +215,8 @@
       const size = Math.min(560, (1700 / w100) * 100);
       const f = font(900, size);
       const ls = -0.04 * size;
-      const sc = lerp(1.35, 1, ep(dt, 0, 0.4)) * lerp(1, 1.07, prog(dt, 0.2, 1.7));
-      const solid = 1 - ep(dt, 0.1, 0.22, ease.outCubic);
+      const sc = lerp(1.4, 1, ep(dt, 0, 1.3)) * lerp(1, 1.08, prog(dt, 0, 1.9));
+      const solid = 1 - ep(dt, 0.08, 0.5, ease.outCubic);
       ctx.save();
       ctx.translate(W / 2, H / 2);
       ctx.scale(sc, sc);
@@ -228,7 +228,7 @@
         ctx.fillStyle = "#fff";
         ctx.fillText(cw.w, 0, size * 0.36);
       }
-      ctx.globalAlpha = 0.85 * (1 - ep(dt, 1.2, 0.7, ease.inQuad));
+      ctx.globalAlpha = 0.85 * (1 - ep(dt, 1.0, 0.9, ease.inOutCubic));
       ctx.lineWidth = 3.5;
       ctx.lineJoin = "round";
       ctx.strokeStyle = "#fff";
@@ -237,7 +237,7 @@
     }
 
     // HUD: the numbers behind the wave.
-    const hud = ep(t, T.climax + 0.1, 0.4) * (1 - ep(t, 51.6, 0.25));
+    const hud = ep(t, T.climax + 0.1, 1.0) * (1 - ep(t, 51.5, 0.35, ease.inCubic));
     if (hud > 0) {
       const doneN = M.order.filter((n) => n.t <= t).length;
       const readyN = M.nodes.filter((n) => t < n.t && t >= n.readyAt).length;
@@ -257,22 +257,20 @@
       text(ctx, "$ topo ready", 96, 96, { f: font(600, 30, E.MONO), color: C.muted });
       ctx.fillStyle = C.green;
       ctx.beginPath();
-      ctx.arc(104, 138, 8 + 3 * E.beatPulse(t, 0.15), 0, Math.PI * 2);
+      ctx.arc(104, 138, 8, 0, Math.PI * 2);
       ctx.fill();
       text(ctx, `${readyN} ready`, 126, 149, { f: font(700, 34), color: C.green });
 
-      const lastPop = Math.max(0, ...M.order.filter((n) => n.t <= t).slice(-3).map((n) => hit(t, n.t, 0.08)));
-      text(ctx, "DONE", W - 96, 82, { f: font(600, 22, E.MONO), color: C.faint, align: "right", ls: 3 });
-      const numF = font(800, 84 + 8 * lastPop, E.MONO);
-      const totW = text(ctx, `/${String(M.total).padStart(3, "0")}`, W - 96, 160, { f: font(600, 40, E.MONO), color: C.faint, align: "right" });
-      text(ctx, String(doneN).padStart(3, "0"), W - 96 - totW - 8, 160, { f: numF, color: C.text, align: "right", ls: -2 });
+      const numF = font(800, 84, E.MONO);
+      const totW = text(ctx, `/${String(M.total).padStart(3, "0")} done`, W - 96, 150, { f: font(600, 34, E.MONO), color: C.faint, align: "right" });
+      text(ctx, String(doneN).padStart(3, "0"), W - 96 - totW - 10, 150, { f: numF, color: C.text, align: "right", ls: -2 });
 
       // A log of what just finished, as the CLI would list it.
       const recent = M.order.filter((n) => n.t <= t).slice(-7);
       recent.forEach((n, k) => {
         const age = recent.length - 1 - k;
-        const a = (1 - age / 7.5) * ep(t, n.t, 0.1);
-        const y = H - 84 - age * 34 + (1 - ep(t, n.t, 0.12)) * 20;
+        const a = (1 - age / 7.5) * ep(t, n.t, 0.25);
+        const y = H - 84 - age * 34 + (1 - ep(t, n.t, 0.5)) * 26;
         const w1 = text(ctx, "[x] ", 96, y, { f: font(500, 22, E.MONO), color: n.milestone ? C.amber : C.green, alpha: a });
         text(ctx, `${n.id}  ${n.milestone ? "◆ " : ""}${n.title}`, 96 + w1, y, { f: font(500, 22, E.MONO), color: age === 0 ? C.text : C.muted, alpha: a });
       });
@@ -290,6 +288,11 @@
   function logo(ctx, t) {
     const L = PV.logo;
     const lt = t - L.hit;
+    const drift = lerp(1, 1.04, prog(t, L.hit, 6));
+    ctx.save();
+    ctx.translate(W / 2, 540);
+    ctx.scale(drift, drift);
+    ctx.translate(-W / 2, -540);
     const glow = ctx.createRadialGradient(W / 2, 430, 0, W / 2, 430, 900);
     glow.addColorStop(0, rgba(C.accent, 0.13 * ep(t, L.hit, 0.8)));
     glow.addColorStop(0.5, rgba(C.green, 0.045 * ep(t, L.hit, 0.8)));
@@ -322,16 +325,16 @@
     const markW = 258;
     const x0 = W / 2 - (markW + 44 + wordW) / 2;
     const baseY = 500;
-    const pop = lerp(1.3, 1, ep(t, L.hit, 0.7));
+    const pop = lerp(1.3, 1, ep(t, L.hit, 1.6));
     ctx.save();
     ctx.translate(x0 + markW / 2, baseY - 122);
     ctx.scale(pop, pop);
-    E.logoMark(ctx, 0, 0, 454, { open: (1 - ep(t, L.hit, 0.8)) * 0.6, alpha: ep(t, L.hit, 0.08) });
+    E.logoMark(ctx, 0, 0, 454, { open: (1 - ep(t, L.hit, 1.5)) * 0.6, alpha: ep(t, L.hit, 0.08) });
     ctx.restore();
     let lx = x0 + markW + 44;
     "topo".split("").forEach((ch, i) => {
       const w = E.measure(ctx, ch, f, ls);
-      const a = ep(lt, 0.05 + i * 0.05, 0.65);
+      const a = ep(lt, 0.05 + i * 0.07, 1.2);
       ctx.save();
       ctx.beginPath();
       ctx.rect(lx - 20, baseY - size, w + 40, size * 1.3);
@@ -342,12 +345,12 @@
     });
 
     E.riseText(ctx, "Know what's next.", W / 2, 668, t - L.tagline, {
-      size: 98, weight: 800, align: "center", dur: 0.6, stagger: 0.08, colors: [C.text, C.text, C.green],
+      size: 98, weight: 800, align: "center", dur: 1.1, stagger: 0.1, colors: [C.text, C.text, C.green],
     });
 
     // The last word goes to the product: the only thing ready is trying it.
-    if (t >= L.type[0] - 0.3) {
-      const a = ep(t, L.type[0] - 0.3, 0.3);
+    if (t >= L.type[0] - 0.45) {
+      const a = ep(t, L.type[0] - 0.45, 0.9);
       const fs = 38;
       const fm = font(500, fs, E.MONO);
       const typed = L.type.filter((x) => x <= t).length;
@@ -371,15 +374,16 @@
         ctx.fillRect(bx + w1 + w2 + 4, 786, 20, 40);
       }
       if (t >= L.answer) {
-        const k = ep(t, L.answer, 0.35);
+        const k = ep(t, L.answer, 0.9);
         const w3 = text(ctx, "[ ] t0p0go  ", bx, 876 + (1 - k) * 14, { f: fm, color: C.muted, alpha: k });
         text(ctx, "Try topo", bx + w3, 876 + (1 - k) * 14, { f: font(700, fs, E.MONO), color: C.green, alpha: k });
       }
       ctx.restore();
       E.ringBurst(ctx, bx - 44, 762, blockW + 88, 150, 18, t - L.answer, C.green, { grow: 36, width: 3, dur: 0.7 });
     }
-    const ua = ep(t, L.url, 0.5);
-    text(ctx, "github.com/r4ai/topo", W / 2, 990 + (1 - ua) * 14, { f: font(500, 30, E.MONO), color: C.muted, align: "center", ls: 1, alpha: ua });
+    const ua = ep(t, L.url - 0.1, 1.2);
+    text(ctx, "github.com/r4ai/topo", W / 2, 990 + (1 - ua) * 24, { f: font(500, 30, E.MONO), color: C.muted, align: "center", ls: 1, alpha: ua });
+    ctx.restore();
   }
 
   PV.scenes = PV.scenes || {};

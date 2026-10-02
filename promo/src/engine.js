@@ -26,11 +26,13 @@
     inOutExpo: (x) =>
       x <= 0 ? 0 : x >= 1 ? 1 : x < 0.5 ? Math.pow(2, 20 * x - 10) / 2 : (2 - Math.pow(2, -20 * x + 10)) / 2,
     outBack: (x, s = 1.70158) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2),
+    /** Most of the way at once, then a slow settle that is still moving when the next thing starts. */
+    gwan: (x) => (x >= 1 ? 1 : (0.9 * (1 - Math.pow(2, -13 * x))) / (1 - Math.pow(2, -13)) + 0.1 * (1 - Math.pow(1 - x, 3))),
     /** Underdamped spring settling at 1. */
     spring: (x, damping = 5.5, freq = 11) => (x >= 1 ? 1 : 1 - Math.exp(-damping * x) * Math.cos(freq * x)),
   };
   /** Eased progress. */
-  const ep = (t, t0, dur, fn = ease.outExpo) => fn(prog(t, t0, dur));
+  const ep = (t, t0, dur, fn = ease.gwan) => fn(prog(t, t0, dur));
   /** 1 at `t0`, decaying to 0: the shape of a hit. */
   const hit = (t, t0, decay = 0.25) => (t < t0 ? 0 : Math.exp(-(t - t0) / decay));
   /** Strength of the kick pulse at `t` for a four-on-the-floor section. */
@@ -98,7 +100,7 @@
    * `t` is the time since the line started; `out` (optional) the time it leaves.
    */
   function riseText(ctx, str, x, y, t, o = {}) {
-    const { size = 80, weight = 800, color = C.text, ls = -0.02 * (o.size || 80), stagger = 0.06, dur = 0.55, align = "left", out = Infinity, family = SANS, colors = null, times = null } = o;
+    const { size = 80, weight = 800, color = C.text, ls = -0.02 * (o.size || 80), stagger = 0.07, dur = 0.95, align = "left", out = Infinity, family = SANS, colors = null, times = null } = o;
     const f = font(weight, size, family);
     const words = str.split(" ");
     const space = measure(ctx, " ", f, ls);
@@ -107,8 +109,8 @@
     let cx = align === "center" ? x - total / 2 : align === "right" ? x - total : x;
     words.forEach((w, i) => {
       const t0 = times ? times[i] : i * stagger;
-      const a = ease.outExpo(prog(t, t0, dur));
-      const b = ease.inCubic(prog(t, out + i * 0.03, 0.3));
+      const a = ease.gwan(prog(t, t0, dur));
+      const b = ease.inCubic(prog(t, out + i * 0.03, 0.36));
       if (t >= t0 && b < 1) {
         ctx.save();
         ctx.beginPath();
@@ -318,11 +320,15 @@
   /** Expanding ring around a rounded rect: something happened here. */
   function ringBurst(ctx, x, y, w, h, r, t, color, { dur = 0.6, grow = 34, width = 3 } = {}) {
     if (t < 0 || t > dur) return;
-    const p = ease.outCubic(t / dur);
+    // Most of the travel happens at once and the ring is gone while it is still
+    // thick: it never lingers as a thin line.
+    const p = ease.outExpo(t / dur);
+    const fade = Math.pow(1 - t / dur, 3.2);
+    if (fade < 0.02) return;
     ctx.save();
-    ctx.globalAlpha *= 1 - ease.inQuad(t / dur);
+    ctx.globalAlpha *= fade;
     ctx.strokeStyle = color;
-    ctx.lineWidth = width * (1 - p * 0.6);
+    ctx.lineWidth = width * (1 - p * 0.25);
     ctx.shadowColor = color;
     ctx.shadowBlur = 18;
     rr(ctx, x - grow * p, y - grow * p, w + 2 * grow * p, h + 2 * grow * p, r + grow * p);
@@ -333,10 +339,10 @@
   function sparks(ctx, cx, cy, t, color, seed, { n = 12, dur = 0.55, dist = 120 } = {}) {
     if (t < 0 || t > dur) return;
     const r = PV.rng(seed);
-    const p = ease.outQuart(t / dur);
+    const p = ease.outExpo(t / dur);
     ctx.save();
     ctx.fillStyle = color;
-    ctx.globalAlpha *= 1 - ease.inCubic(t / dur);
+    ctx.globalAlpha *= Math.pow(1 - t / dur, 2.2);
     for (let i = 0; i < n; i++) {
       const a = r() * Math.PI * 2, d = dist * (0.4 + 0.6 * r()) * p, s = 2 + r() * 4;
       ctx.fillRect(cx + Math.cos(a) * d - s / 2, cy + Math.sin(a) * d - s / 2, s, s);
@@ -415,7 +421,8 @@
   }
   function request(name) {
     if (A.img.has(name) || A.pending.has(name)) return;
-    const p = fetch(`${A.base}assets/shots/${name}.png`)
+    // Frames of the camera moves are extracted from assets/moves/*.mp4 into a cache.
+    const p = fetch(name.startsWith("s_") ? `${A.base}assets/shots/seq/${name}.jpg` : `${A.base}assets/shots/${name}.png`)
       .then((r) => r.blob())
       .then((b) => createImageBitmap(b, A.preview ? { resizeWidth: 1440, resizeQuality: "high" } : {}))
       .then((bmp) => {
@@ -475,6 +482,13 @@
           ctx.clip();
           ctx.imageSmoothingQuality = "high";
           ctx.drawImage(bmp, x, y, w, h);
+          // The system draws the title bar and follows the light / dark setting of the day
+          // the frame was captured: always use the one from the first capture.
+          const bar = shot("c_init");
+          if (bar && bar !== bmp) {
+            const bh = (TITLEBAR / WIN_PT_W) * bar.width;
+            ctx.drawImage(bar, 0, 0, bar.width, bh, x, y, w, TITLEBAR * s);
+          }
           ctx.restore();
         }
         rr(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 11 * s);

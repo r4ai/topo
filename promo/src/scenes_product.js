@@ -21,34 +21,32 @@
 
   // ---- captions --------------------------------------------------------------------
   const CAPTIONS = [
-    { t0: 16, t1: 20, k: "01  PLAN", head: "Sketch the plan.", sub: "Tab adds what comes next. Drag to connect." },
-    { t0: 20, t1: 24, k: "02  PATH", head: "See the critical path.", sub: "The longest chain to your milestone, found for you.", colors: [0, 0, C.amber, C.amber] },
-    { t0: 24, t1: 28, k: "03  READY", head: "Know what's ready.", sub: "Only the tasks with nothing in their way.", colors: [0, 0, C.green] },
-    { t0: 28, t1: 32, k: "03  READY", head: "Finish one. Unlock the next.", sub: "Blocked work frees itself.", colors: [0, 0, C.green, C.green, C.green] },
-    { t0: 32, t1: 36, k: "04  EVERYWHERE", head: "GUI. TUI. CLI.", sub: "One graph. Every edit shows up live.", times: [0, 0.5, 1] },
-    { t0: 36, t1: 38, k: "05  FILES", head: "Plain Markdown. Git-native.", sub: "One node, one file. Diff, branch, merge.", times: [0, 0.06, 1, 1], colors: [0, 0, C.green] },
-    { t0: 38, t1: 40, k: "06  AGENTS", head: "Agent-ready.", sub: "A whole plan lands as one atomic batch.", colors: [C.accent] },
+    { t0: 16, t1: 20, head: "Sketch the plan.", sub: "Tab adds what comes next. Drag to connect." },
+    { t0: 20, t1: 24, head: "See the critical path.", sub: "The longest chain to your milestone, found for you.", colors: [0, 0, C.amber, C.amber] },
+    { t0: 24, t1: 28, head: "Know what's ready.", sub: "Only the tasks with nothing in their way.", colors: [0, 0, C.green] },
+    { t0: 28, t1: 32, head: "Finish one. Unlock the next.", sub: "Blocked work frees itself.", colors: [0, 0, C.green, C.green, C.green] },
+    { t0: 32, t1: 36, head: "GUI. TUI. CLI.", sub: "One graph. Every edit shows up live.", times: [0, 0.5, 1] },
+    { t0: 36, t1: 38, head: "Plain Markdown. Git-native.", sub: "One node, one file. Diff, branch, merge.", times: [0, 0.07, 1, 1], colors: [0, 0, C.green] },
+    { t0: 38, t1: 40, head: "Agent-ready.", sub: "A whole plan lands as one atomic batch.", colors: [C.accent] },
   ];
 
+  // Headlines roll into each other: the old one is still leaving upwards
+  // through its line while the next one rises into the same place.
   function captions(ctx, t) {
     for (const cap of CAPTIONS) {
       const lt = t - cap.t0;
       const len = cap.t1 - cap.t0;
-      if (lt < -0.05 || lt > len + 0.2) continue;
-      const out = len - 0.3;
-      const a = ep(lt, 0, 0.3, ease.outCubic) * (1 - ep(lt, out, 0.25, ease.inCubic));
-      text(ctx, cap.k, 162, 82, { f: font(600, 22, E.MONO), color: C.accent, ls: 3, alpha: a });
-      ctx.save();
-      ctx.globalAlpha = a;
-      ctx.fillStyle = C.accent;
-      ctx.fillRect(162, 98, 46 * ep(lt, 0.05, 0.5), 3);
-      ctx.restore();
-      E.riseText(ctx, cap.head, 158, 188, lt, {
-        size: 86, weight: 800, out, dur: 0.5, stagger: 0.055, times: cap.times,
+      if (lt < 0 || lt > len + 0.7) continue;
+      const last = cap.t1 >= 40;
+      // The old line is on its way out just as the next one starts to rise.
+      const out = len - (last ? 0.5 : 0.3);
+      E.riseText(ctx, cap.head, 158, 172, lt, {
+        size: 92, weight: 800, out, dur: 1.0, stagger: 0.08, times: cap.times,
         colors: cap.colors ? cap.colors.map((c) => c || C.text) : null,
       });
-      const sa = ep(lt, 0.3, 0.5, ease.outCubic) * (1 - ep(lt, out, 0.2, ease.inCubic));
-      text(ctx, cap.sub, 1760, 184 + (1 - sa) * 14, { f: font(400, 30), color: C.muted, align: "right", alpha: sa });
+      const sa = ep(lt, 0.2, 1.1) * (1 - ep(lt, out - 0.05, 0.3, ease.inCubic));
+      const sy = (1 - ep(lt, 0.2, 1.1)) * 26 - ep(lt, out - 0.05, 0.3, ease.inCubic) * 26;
+      text(ctx, cap.sub, 1760, 166 + sy, { f: font(400, 30), color: C.muted, align: "right", alpha: sa });
     }
   }
 
@@ -175,7 +173,7 @@
     clickRipple(ctx, p, t, c.drop, C.amber);
     const press = Math.max(hit(t, c.click, 0.1), t >= c.drag && t < c.drop ? 1 : 0);
     ctx.save();
-    ctx.globalAlpha = ep(t, 16.1, 0.3) * (1 - ep(t, 20.0, 0.25));
+    ctx.globalAlpha = ep(t, 16.1, 0.3) * (1 - ep(t, PV.seq.y.t0 - 0.12, 0.14, ease.inCubic));
     E.cursor(ctx, p.x, p.y, 1.7, press);
     ctx.restore();
 
@@ -184,27 +182,30 @@
   }
 
   // ---- 20–24: the critical path ---------------------------------------------------------
-  function critShot(t) {
-    const c = PV.crit;
-    return `y_${pad2(Math.round(ease.inOutCubic(prog(t, c.pull, c.land - c.pull)) * critLast()))}`;
+  /**
+   * The real frame of the app's window showing at `t` between 16 and 36 s. Camera moves
+   * come from sequences captured one app frame per video frame; between them a still holds.
+   * Null while the close-up composites its own states.
+   */
+  function guiShot(t) {
+    const q = PV.seq;
+    const end = (k) => q[k].t0 + q[k].d;
+    if (t < q.y.t0) return connectShot(t);
+    if (t < end("y")) return PV.seqFrame("y", t);
+    if (t < q.x.t0) return "e_path";
+    if (t < end("x")) return PV.seqFrame("x", t);
+    if (t < q.z.t0) return "e_init";
+    if (t < end("z")) return PV.seqFrame("z", t);
+    if (t < q.w.t0) return null;
+    if (t < end("w")) return PV.seqFrame("w", t);
+    return t < PV.sync.flash ? "e_after" : "e_sync";
   }
 
-  /** Last frame of the real pull-back to use: the one where the path still reads large. */
-  let critK = -1;
-  function critLast() {
-    if (critK < 0) {
-      critK = 29;
-      for (let i = 0; i < 30; i++) {
-        if (Math.abs(E.meta(`y_${pad2(i)}`).zoom - 0.88) < Math.abs(E.meta(`y_${pad2(critK)}`).zoom - 0.88)) critK = i;
-      }
-    }
-    return critK;
-  }
-
-  function critOverlay(ctx, t, w) {
+  /** Overlays of the critical path, placed by where the nodes are in the frame `CR` showing now. */
+  function critOverlay(ctx, t, w, CR) {
     const c = PV.crit;
-    if (t < c.land) return;
-    const CR = `y_${pad2(critLast())}`;
+    ctx.save();
+    ctx.globalAlpha = 1 - ep(t, PV.seq.x.t0 - 0.3, 0.3, ease.inCubic);
     const names = [...CRIT_PATH, GOAL];
     const times = [...c.steps, c.goal];
     for (let i = 0; i < 3; i++) {
@@ -223,11 +224,11 @@
     });
     // "3 steps" called out where the milestone sits.
     const m = w.node(CR, GOAL);
-    const a = ep(t, c.goal, 0.4) * (1 - ep(t, 23.7, 0.25));
+    const a = ep(t, c.goal, 0.6);
     if (a > 0) {
       ctx.save();
       ctx.globalAlpha = a;
-      const bx = m.x + m.w / 2, by = m.y - 54 - (1 - ep(t, c.goal, 0.5)) * -18;
+      const bx = m.x + m.w / 2, by = m.y - 54 + (1 - ep(t, c.goal, 1.0)) * 26;
       const f = font(700, 26);
       const label = "3 steps left";
       const tw = E.measure(ctx, label, f);
@@ -237,14 +238,13 @@
       text(ctx, label, bx, by, { f, color: "#16120a", align: "center", base: "middle" });
       ctx.restore();
     }
+    ctx.restore();
   }
 
   // ---- 24–32: ready, and what finishing unlocks ------------------------------------------
+  /** The close-up between the zoom in and the zoom out: a base still plus cards already switched. */
   function readyState(t) {
     const r = PV.ready;
-    if (t < r.zoom) return { base: "e_init", patches: [] };
-    if (t < r.zoom + r.zoomDur) return { base: `z_${pad2(Math.round(ease.inOutCubic(prog(t, r.zoom, r.zoomDur)) * 39))}`, patches: [] };
-    if (t >= r.out) return { base: "e_after", patches: [] };
     if (t >= r.space) return { base: "r_4", patches: [] };
     let base = "r_0";
     const patches = [];
@@ -255,10 +255,11 @@
     return { base, patches };
   }
 
-  function readyOverlay(ctx, t, w) {
+  /** `geo` is the frame showing now: overlays follow the nodes while the app's camera settles. */
+  function readyOverlay(ctx, t, w, geo) {
     const r = PV.ready;
     // Spotlight: the canvas dims and each ready card lights up on its beat.
-    const dimA = ep(t, 24.7, 0.3, ease.outCubic) * (1 - ep(t, r.zoom - 0.12, 0.14));
+    const dimA = ep(t, 24.55, 0.9) * (1 - ep(t, PV.seq.z.t0 - 0.3, 0.3, ease.inCubic));
     if (dimA > 0) {
       const a = w.pt(CANVAS_PT[0], CANVAS_PT[1]);
       ctx.save();
@@ -266,14 +267,14 @@
       ctx.rect(a.x, a.y, CANVAS_PT[2] * w.s, Math.min(CANVAS_PT[3] * w.s, H - a.y));
       READY_ROWS.forEach((name, i) => {
         if (t < r.pings[i]) return;
-        const n = w.node("e_init", name);
+        const n = w.node(geo, name);
         ctx.roundRect(n.x - 5, n.y - 5, n.w + 10, n.h + 10, 8 * n.z + 4);
       });
       ctx.fillStyle = rgba("#08090c", 0.72 * dimA);
       ctx.fill("evenodd");
       ctx.restore();
       READY_ROWS.forEach((name, i) => {
-        const n = w.node("e_init", name);
+        const n = w.node(geo, name);
         const dt = t - r.pings[i];
         if (dt < 0) return;
         ctx.save();
@@ -292,17 +293,17 @@
         ctx.restore();
       });
     }
-    if (t < r.zoom + r.zoomDur || t >= r.out) return;
+    if (t < PV.seq.z.t0 + 0.7 || t >= PV.seq.w.t0) return;
 
     // Close-up: clicks finish tasks; a comet carries the news along the real edge.
     const checkOf = (title) => {
-      const m = E.meta("r_0"), n = E.nodeOf("r_0", title);
+      const m = E.meta(geo), n = E.nodeOf(geo, title);
       return { x: n.x + 19 * m.zoom, y: n.y + 22.5 * m.zoom };
     };
     const [d0, d1, d2] = r.done;
-    const apiN = E.nodeOf("r_0", TITLE.api), m = E.meta("r_0");
+    const apiN = E.nodeOf(geo, TITLE.api), m = E.meta(geo);
     const keys = [
-      { t: r.zoom + r.zoomDur - 0.1, x: 760, y: 640, hold: 26.75 },
+      { t: 26.6, x: 760, y: 640, hold: 26.62 },
       { t: d0.click - 0.03, ...checkOf(TITLE.db), hold: d0.click + 0.12 },
       { t: d1.click - 0.03, ...checkOf(TITLE.auth), hold: 28.45 },
       { t: d2.click - 0.03, ...checkOf(TITLE.ui), hold: 29.52 },
@@ -312,11 +313,11 @@
     const p = w.pt(cur.x, cur.y);
 
     for (const d of r.done) {
-      const curve = w.edge("r_0", TITLE[d.node], TITLE[d.to]);
+      const curve = w.edge(geo, TITLE[d.node], TITLE[d.to]);
       E.comet(ctx, curve, prog(t, d.click, d.arrive - d.click), C.green, 7, 0.3);
-      const n = w.node("r_0", TITLE[d.node]);
+      const n = w.node(geo, TITLE[d.node]);
       E.ringBurst(ctx, n.x, n.y, n.w, n.h, 8 * n.z, t - d.click, C.green, { grow: 22, width: 3, dur: 0.45 });
-      const to = w.node("r_0", TITLE[d.to]);
+      const to = w.node(geo, TITLE[d.to]);
       if (d.pop) {
         E.ringBurst(ctx, to.x, to.y, to.w, to.h, 8 * to.z, t - d.arrive, C.green, { grow: 70, width: 6, dur: 0.8 });
         E.ringBurst(ctx, to.x, to.y, to.w, to.h, 8 * to.z, t - d.arrive - 0.08, C.green, { grow: 40, width: 3, dur: 0.7 });
@@ -339,8 +340,8 @@
     }
 
     // Selecting the freed task and pressing Space starts it.
-    const api = w.node("r_0", TITLE.api);
-    const selA = ep(t, 29.86, 0.1) * (1 - ep(t, r.out - 0.05, 0.05));
+    const api = w.node(geo, TITLE.api);
+    const selA = ep(t, 29.86, 0.1) * (1 - ep(t, PV.seq.w.t0 - 0.05, 0.05));
     if (selA > 0) {
       ctx.save();
       ctx.globalAlpha = selA;
@@ -356,7 +357,7 @@
 
     const press = Math.max(...r.done.map((d) => hit(t, d.click, 0.1)), hit(t, 29.86, 0.1));
     ctx.save();
-    ctx.globalAlpha = ep(t, 26.7, 0.2) * (1 - ep(t, r.out - 0.2, 0.2));
+    ctx.globalAlpha = ep(t, 26.62, 0.4) * (1 - ep(t, PV.seq.w.t0 - 0.25, 0.25));
     E.cursor(ctx, p.x, p.y, 1.7, press);
     ctx.restore();
   }
@@ -399,13 +400,13 @@
     const s = PV.sync;
     const data = E.A.data;
     const flash = hit(t, s.flash, 0.35) * (t >= s.flash ? 1 : 0);
-    const outA = 1 - ep(t, 35.75, 0.25, ease.inCubic);
-    const outY = ep(t, 35.75, 0.25, ease.inCubic) * 60;
+    const outA = 1 - ep(t, 35.7, 0.5, ease.inCubic);
+    const outY = ep(t, 35.7, 0.5, ease.inCubic) * 90;
 
     // TUI: the real ratatui screen, as text.
-    const aT = ep(t, s.panels[1], 0.5) * outA;
+    const aT = ep(t, s.panels[1] - 0.05, 0.5) * outA;
     if (aT > 0) {
-      const px = 1000 + (1 - ep(t, s.panels[1], 0.55)) * 260, py = 262 + outY;
+      const px = 1000 + (1 - ep(t, s.panels[1] - 0.05, 1.3)) * 320, py = 262 + outY;
       const pw = 874, ph = 356;
       const o = E.panel(ctx, px, py, pw, ph, { title: "topo tui", alpha: aT, accent: flash > 0.02 ? rgba(C.green, flash) : null });
       ctx.save();
@@ -418,9 +419,9 @@
     }
 
     // CLI: the command that makes the edit.
-    const aC = ep(t, s.panels[2], 0.5) * outA;
+    const aC = ep(t, s.panels[2] - 0.05, 0.5) * outA;
     if (aC > 0) {
-      const px = 1090, py = 668 + (1 - ep(t, s.panels[2], 0.55)) * 240 + outY;
+      const px = 1090, py = 668 + (1 - ep(t, s.panels[2] - 0.05, 1.3)) * 300 + outY;
       const pw = 784, ph = 330;
       const o = E.panel(ctx, px, py, pw, ph, { title: "zsh", alpha: aC, accent: flash > 0.02 ? rgba(C.green, flash) : null });
       ctx.save();
@@ -453,7 +454,7 @@
     const f = PV.files;
     const data = E.A.data;
     const inA = ep(t, f.in, 0.45);
-    const outK = ep(t, 37.75, 0.25, ease.inCubic);
+    const outK = ep(t, 37.7, 0.5, ease.inCubic);
     const a = (1 - outK);
     if (t < f.in || a <= 0) return;
 
@@ -461,7 +462,7 @@
     const cardZ = 2.6;
     const c0 = { x: W / 2 - (E.NODE_W * cardZ) / 2, y: 560 - (E.NODE_H * cardZ) / 2, w: E.NODE_W * cardZ, h: E.NODE_H * cardZ };
     const p1 = { x: 160, y: 262 - outK * 60, w: 800, h: 700 };
-    const k = ease.inOutCubic(prog(t, f.in + 0.08, 0.42));
+    const k = ease.gwan(prog(t, f.in + 0.02, 1.2));
     const R = { x: lerp(c0.x, p1.x, k), y: lerp(c0.y, p1.y, k), w: lerp(c0.w, p1.w, k), h: lerp(c0.h, p1.h, k) };
     if (k < 0.5) {
       const pop = lerp(0.7, 1, ep(t, f.in, 0.3, (x) => ease.outBack(x, 2)));
@@ -473,7 +474,7 @@
       ctx.restore();
     }
     if (k > 0.3) {
-      const pa = ep(k, 0.3, 0.5, ease.linear) * a;
+      const pa = ep(k, 0.3, 0.4, ease.linear) * a;
       const o = E.panel(ctx, R.x, R.y, R.w, R.h, { title: `.topo/nodes/${data.ids.api}.md`, alpha: pa });
       ctx.save();
       ctx.globalAlpha = pa;
@@ -483,7 +484,7 @@
       const fs = 34, lh = 56;
       const lines = data.cli.file_api.trimEnd().split("\n").concat(["", "Notes go here, in plain **Markdown**."]);
       lines.forEach((line, i) => {
-        const la = ep(t, f.in + 0.3 + i * 0.03, 0.3);
+        const la = ep(t, f.in + 0.22 + i * 0.045, 0.9);
         const y = o.y + 22 + i * lh + (1 - la) * 16;
         ctx.globalAlpha = pa * la;
         text(ctx, String(i + 1).padStart(2, " "), o.x, y, { f: font(400, fs * 0.7, E.MONO), color: "#3b3e4a", base: "middle" });
@@ -500,9 +501,9 @@
     }
 
     // The same change, as git sees it.
-    const dA = ep(t, f.in + 0.3, 0.5) * a;
+    const dA = ep(t, f.in + 0.2, 0.5) * a;
     if (dA > 0) {
-      const px = 1010 + (1 - ep(t, f.in + 0.3, 0.55)) * 240, py = 330 - outK * 60, pw = 760, ph = 560;
+      const px = 1010 + (1 - ep(t, f.in + 0.2, 1.3)) * 320, py = 330 - outK * 60, pw = 760, ph = 560;
       const o = E.panel(ctx, px, py, pw, ph, { title: "git diff", alpha: dA });
       const hunk = data.cli.diff.split("\n").slice(0, 13);
       const keep = [0, 4, 5, 6, 7, 8, 9, 10];
@@ -521,7 +522,7 @@
         if (minus || plus) {
           if (t < at) return;
           const col = minus ? C.red : C.green;
-          const sweep = ep(t, at, 0.25);
+          const sweep = ep(t, at, 0.6);
           ctx.fillStyle = rgba(col, 0.16 + 0.3 * hit(t, at, 0.25));
           ctx.fillRect(px + 1, y - lh / 2 + 4, (pw - 2) * sweep, lh - 8);
           ctx.fillStyle = col;
@@ -540,11 +541,11 @@
     const ag = PV.agents;
     const data = E.A.data;
     if (t < ag.in) return;
-    const outA = 1 - ep(t, 39.72, 0.28, ease.inCubic);
-    const inK = ep(t, ag.in, 0.6);
+    const outA = 1 - ep(t, 39.6, 0.4, ease.inCubic);
+    const inK = ep(t, ag.in - 0.1, 1.4);
     const w = E.win(AGENT.x + (1 - inK) * 500, AGENT.y, AGENT.w);
     ctx.save();
-    ctx.globalAlpha = ep(t, ag.in, 0.3) * outA;
+    ctx.globalAlpha = ep(t, ag.in - 0.1, 0.5) * outA;
     w.draw(ctx, t < ag.land ? "a_before" : "a_toast");
     // New nodes land together: the batch is atomic.
     const before = new Set(E.meta("a_before").nodes.map((n) => n.title));
@@ -570,7 +571,7 @@
     ctx.restore();
 
     const px = 70 - (1 - inK) * 300, py = 330, pw = 700, ph = 640;
-    const a = ep(t, ag.in, 0.3) * outA;
+    const a = ep(t, ag.in - 0.1, 0.5) * outA;
     const o = E.panel(ctx, px, py, pw, ph, { title: "agent", alpha: a });
     ctx.save();
     ctx.globalAlpha = a;
@@ -603,49 +604,49 @@
   // ---- composition --------------------------------------------------------------------------------
   function product(ctx, t) {
     // A faint grid behind everything keeps the product's texture on screen.
-    E.dotGrid(ctx, 0, 0, 1.6, 0.5, "#1b1d24");
+    E.dotGrid(ctx, 0, 0, 1.6, 0.5 * ep(t, T.connect - 0.4, 1.0), "#1b1d24");
 
-    // The main window: enters at 16, moves aside at 32, leaves at 36. The camera keeps the
-    // middle of the app's canvas (content point 540, 428) at `at`, at `s` frame pixels per point.
+    // The main window. The video's own camera hardly moves: it goes in once when the app
+    // pulls back to the path and slides aside for the terminals. Every other move is the
+    // app's own camera, captured frame by frame. `x`, `y` is where the middle of the app's
+    // canvas (content point 540, 428) sits, at `s` frame pixels per point.
     if (t < 36.35) {
-      const inK = ep(t, T.connect, 0.75);
-      const keys = [
-        { s: 1.111, x: 760, y: 747 },
-        { s: 1.5, x: 860, y: 668, t0: T.crit, d: 0.75 },
-        { s: 1.9, x: 960, y: 668, t0: T.ready, d: 0.7 },
-        { s: 1.3, x: 880, y: 690, t0: PV.ready.zoom, d: PV.ready.zoomDur },
-        { s: 1.5, x: 560 + (540 - syncFocus().x) * 1.5, y: 650 + (428 - syncFocus().y) * 1.5, t0: PV.ready.out, d: 1.0 },
-      ];
-      let cam = keys[0];
-      for (const k of keys.slice(1)) {
-        const u = ease.inOutCubic(prog(t, k.t0, k.d));
-        cam = { s: cam.s * Math.pow(k.s / cam.s, u), x: lerp(cam.x, k.x, u), y: lerp(cam.y, k.y, u) };
-      }
-      const r = { x: cam.x - 540 * cam.s, y: cam.y - 460 * cam.s + (1 - inK) * 260, w: 1440 * cam.s };
-      const outK = ep(t, T.files, 0.32, ease.inCubic);
+      const q = PV.seq;
+      const inK = ep(t, T.connect - 0.4, 2.0);
+      const u1 = PV.swoop(prog(t, q.y.t0, q.y.d));
+      const u2 = PV.swoop(prog(t, q.w.t0, q.w.d));
+      const f = syncFocus();
+      // A slow push for as long as a framing is held.
+      const s0 = 1.2 * lerp(1, 1.03, prog(t, T.connect, 4));
+      const s1 = 1.5 * lerp(1, 1.04, prog(t, q.y.t0, 16));
+      const sc = s0 * Math.pow(s1 / s0, u1);
+      const cam = {
+        s: sc,
+        x: lerp(lerp(744, 860, u1), 560 + (540 - f.x) * sc, u2),
+        y: lerp(lerp(788, 668, u1), 650 + (428 - f.y) * sc, u2),
+      };
+      const r = { x: cam.x - 540 * cam.s, y: cam.y - 460 * cam.s + (1 - inK) * 420, w: 1440 * cam.s };
+      const outK = ep(t, T.files - 0.2, 0.5, ease.inCubic);
       const w = E.win(r.x - outK * 420, r.y, r.w);
       ctx.save();
-      ctx.globalAlpha = ep(t, T.connect, 0.25) * (1 - outK);
+      ctx.globalAlpha = ep(t, T.connect - 0.4, 0.7) * (1 - outK);
 
       const flash = hit(t, PV.sync.flash, 0.35) * (t >= PV.sync.flash ? 1 : 0);
-      if (t < T.crit) {
-        w.draw(ctx, connectShot(t));
-        connectOverlay(ctx, t, w);
-      } else if (t < T.ready) {
-        w.draw(ctx, critShot(t));
-        critOverlay(ctx, t, w);
-      } else if (t < T.sync) {
+      const name = guiShot(t);
+      if (name) {
+        w.draw(ctx, name);
+      } else {
         const st = readyState(t);
         w.draw(ctx, st.base);
-        if (t < 24.3) w.draw(ctx, critShot(23.9), { alpha: 1 - ep(t, 24, 0.3), shadow: 0 });
-        if (t >= PV.ready.out && t < PV.ready.out + 0.2) w.draw(ctx, "r_4", { alpha: 1 - ep(t, PV.ready.out, 0.2), shadow: 0 });
         for (const p of st.patches) {
           const n = E.nodeOf(p.shot, p.title), m = E.meta(p.shot);
           w.patch(ctx, p.shot, [n.x - 3, n.y - 3, m.node[0] + 6, m.node[1] + 6]);
         }
-        readyOverlay(ctx, t, w);
-      } else {
-        w.draw(ctx, t < PV.sync.flash ? "e_after" : "e_sync");
+      }
+      if (t < q.y.t0 + 0.3) connectOverlay(ctx, t, w);
+      if (t >= q.y.t0 + 0.9 && t < q.x.t0) critOverlay(ctx, t, w, name);
+      if (t >= T.ready && t < q.w.t0) readyOverlay(ctx, t, w, name || "r_0");
+      if (t >= T.sync) {
         if (flash > 0.02) {
           ctx.save();
           ctx.strokeStyle = rgba(C.green, flash);
@@ -656,12 +657,12 @@
           ctx.stroke();
           ctx.restore();
           // The task the CLI just finished, and what it freed.
-          for (const name of ["Build API", "Write docs"]) {
-            const n = w.node("e_sync", name);
+          for (const title of ["Build API", "Write docs"]) {
+            const n = w.node("e_sync", title);
             E.ringBurst(ctx, n.x, n.y, n.w, n.h, 8 * n.z, t - PV.sync.flash, C.green, { grow: 30, width: 3 });
           }
         }
-        chip(ctx, "GUI", 162, 262, ep(t, T.sync + 0.1, 0.3) * (1 - outK));
+        chip(ctx, "GUI", 162, 262, ep(t, T.sync + 0.1, 0.6) * (1 - outK));
         // The edit travels from the command line to the other two surfaces.
         const n = w.node("e_sync", "Build API");
         const from = { x: 1090, y: 760 };
@@ -672,7 +673,7 @@
       ctx.restore();
     }
 
-    if (t >= PV.ready.out && t < T.files + 0.3) {
+    if (t >= PV.seq.w.t0 && t < T.files + 0.3) {
       // Darken the right side so the terminal panels sit on a calm ground.
       const side = ctx.createLinearGradient(800, 0, 1150, 0);
       side.addColorStop(0, rgba(C.bg, 0));
@@ -692,7 +693,7 @@
     scrim.addColorStop(0, C.bg);
     scrim.addColorStop(0.64, rgba(C.bg, 0.96));
     scrim.addColorStop(1, rgba(C.bg, 0));
-    const scrimA = ep(t, T.crit, 0.5) * (1 - ep(t, T.files, 0.3));
+    const scrimA = PV.swoop(prog(t, PV.seq.y.t0, PV.seq.y.d * 0.6)) * (1 - ep(t, T.files + 0.3, 0.3));
     if (scrimA > 0) {
       ctx.save();
       ctx.globalAlpha = scrimA;
