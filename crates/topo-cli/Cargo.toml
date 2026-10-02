@@ -17,7 +17,7 @@ serde_json.workspace = true
 jiff.workspace = true
 notify.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 
 [dev-dependencies]
