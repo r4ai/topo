@@ -328,7 +328,7 @@
 
     // Kicker types on.
     const ka = ep(t, 12.9, 1.0);
-    text(ctx, "the topological todo", W / 2, 664 + (1 - ka) * 22, { f: font(400, 36), color: C.muted, align: "center", ls: 0.5, alpha: ka });
+    text(ctx, "topo", W / 2, 664 + (1 - ka) * 22, { f: font(400, 36), color: C.muted, align: "center", ls: 0.5, alpha: ka });
 
     E.riseText(ctx, "Do things in the right order.", W / 2, 830, t - 14, {
       size: 84, weight: 700, align: "center", dur: 1.0, stagger: 0.08,

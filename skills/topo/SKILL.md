@@ -1,9 +1,9 @@
 ---
-name: topological-todo
+name: topo
 description: Manage tasks and milestones as one dependency graph with the `topo` CLI. Use when the user wants to plan work, add/break down/complete tasks, track milestones, ask "what should I do next", check progress toward a deadline, or visualize dependencies — in any directory that has (or should have) a `.topo` workspace.
 ---
 
-# topological-todo (`topo`)
+# topo
 
 Everything is a node in one DAG. A **task** is concrete work; a **milestone** is a *set* of tasks. Two relations connect nodes:
 
@@ -16,7 +16,7 @@ Data lives in `.topo/nodes/<id>.md` (YAML frontmatter + Markdown notes), found b
 
 ## Rules
 
-- Always pass `--json` and parse the output. Errors go to stderr with exit code 1 and change nothing.
+- Use `--json` and parse the output, or `--format ids` / `--format jsonl` when composing pipelines. Command errors go to stderr; validation failures leave the workspace unchanged.
 - Ids are 6-char strings; any unique prefix works.
 - Put a task in a milestone with `--in <milestone>` / `topo join <task> <milestone>` (remove with `topo leave`), not with tags. Only tasks can be members.
 - Order work with `--dep <id>` / `topo link <later> <earlier>`; only for real prerequisites. Don't link a milestone to its own members.
@@ -27,7 +27,7 @@ Data lives in `.topo/nodes/<id>.md` (YAML frontmatter + Markdown notes), found b
 ```bash
 topo ready --json          # tasks that can start now
 topo milestones --json     # `members`, `done`/`total`, `critical_path` (ids of the longest remaining chain), `reached`
-topo ls --json             # open nodes (--all, --kind, --status, --under <id>)
+topo ls --json             # open nodes; filter by kind, status, tags, due date, membership, readiness, or title
 topo show <id> --json      # node (with `milestones`) + `needed_by` + milestone stats
 ```
 
@@ -54,6 +54,39 @@ EOF
 Ops: `add` (`ref`, `title`, `kind`, `due`, `tags`, `notes`, `depends_on`, `in`), `link`/`unlink` (`from`, `to`), `join`/`leave` (`task`, `milestone`), `status` (`id`, `status`), `edit` (`id`, `title`, `kind`, `due`, `tags`, `notes`), `remove` (`id`). Output: `{"refs": {"m": "<id>", ...}}`.
 
 Single edits: `topo add`, `topo link`, `topo unlink`, `topo join`, `topo leave`, `topo status <id> done`, `topo edit <id> --title ...`, `topo rm <id>`.
+
+## Pipelines
+
+`ls`, `ready`, `milestones`, `deps`, `dependents`, `members`, and `critical-path` accept `--format text|ids|tsv|jsonl`. Listings default to text even when piped; traversal commands default to IDs. `--json` keeps the existing formatted array and cannot be combined with an explicit `--format`.
+
+- `ids`: one full ID per line, suitable for the next `topo` command.
+- `tsv`: no header; columns are `id`, `kind`, `status`, `due`, `title`. Missing due dates are empty. Backslashes, tabs, newlines, and carriage returns in titles are escaped as `\\`, `\t`, `\n`, and `\r`.
+- `jsonl`: one compact JSON object per line, using the corresponding `--json` item's schema (milestone listings retain progress and critical-path fields).
+
+`topo ls -` reads whitespace-separated IDs from stdin and filters that subset. Unique prefixes are accepted and duplicates removed; empty input produces no nodes. The default open-only filter still applies; pass `--all` to include closed nodes. Filters combine with AND:
+
+- Repeat `--tag <tag>` or `--in <milestone>` to require every tag or membership. `--under <id>` includes transitive prerequisites, while `--in` tests direct membership.
+- `--due-before <date>` and `--due-after <date>` are inclusive and omit nodes without a due date. `--no-due` cannot be combined with either.
+- `--ready` selects open nodes with closed prerequisites; `--blocked` selects open nodes whose prerequisites remain open. These flags are mutually exclusive.
+- `--title <text>` matches a case-insensitive substring.
+
+For `status`, `edit`, `rm`, `join`, `leave`, `link`, and `unlink`, `-` replaces the first positional ID only. Resolve and validate all input IDs and graph changes before saving; a validation failure persists no changes, and empty input is a no-op. With `--json`, stdin batches return an array even for one result (or `[]` for none); an explicit single ID retains its object result.
+
+```bash
+topo ready --format ids | topo status - doing
+topo ls --tag gui --format ids | topo ls - --due-before 2026-10-31 --format ids | topo join - abc123
+topo deps abc123 --transitive | topo ls - --blocked --format ids
+topo ready --format jsonl | jq -r 'select(.status == "todo") | .id'
+```
+
+Graph traversal commands return nodes in the selected output format (`--json` returns an array):
+
+| Command | Scope |
+| --- | --- |
+| `topo deps <id> [--transitive]` | Direct prerequisites, including milestone members; `--transitive` follows all requirements. |
+| `topo dependents <id> [--transitive]` | Direct dependency edges; `--transitive` also follows task membership toward milestones. |
+| `topo members <milestone>` | Direct member tasks; the ID must resolve to a milestone. |
+| `topo critical-path <id>` | Longest remaining task chain in execution order, for any node. |
 
 ## Organizing with the local decision model
 

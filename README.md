@@ -144,7 +144,16 @@ topo graph --format tree
 
 ### CLI
 
-Every subcommand supports `--json` for scripting and pipelines.
+Commands support `--json` for structured output. `ls`, `ready`, `milestones`, and graph traversal commands also accept `--format text|ids|tsv|jsonl`. Listings keep text output when redirected; traversal commands default to IDs.
+
+Pass `-` as the first argument to `status`, `edit`, `rm`, `join`, `leave`, `link`, or `unlink` to read whitespace-separated IDs from stdin. All IDs and changes are validated before saving; empty input does nothing. `topo ls -` filters incoming IDs with the usual listing flags.
+
+```bash
+topo ready --format ids | topo status - doing
+topo ls --tag gui --format ids | topo ls - --due-before 2026-10-31 --format ids | topo join - a1b2c3
+topo deps a1b2c3 --transitive | topo ls - --blocked --format tsv
+topo ready --format jsonl | jq -r 'select(.status == "todo") | .id'
+```
 
 ### TUI (`topo tui`)
 
@@ -227,8 +236,8 @@ Pass `--apply` to automatically link proposals, safely skipping any that would i
 | Command | Description | Common Flags |
 | :--- | :--- | :--- |
 | `topo init` | Initialize `.topo` workspace | |
-| `topo ready` | List tasks unblocked and ready to start | `--under <id>` |
-| `topo milestones` | List milestones with progress bar and critical path | |
+| `topo ready` | List tasks unblocked and ready to start | `--under <id>`, `--format <text\|ids\|tsv\|jsonl>` |
+| `topo milestones` | List milestones with progress bar and critical path | `--format <text\|ids\|tsv\|jsonl>` |
 | `topo add <title>` | Add task or milestone | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--note <text>` |
 | `topo link <from> <to>` | Make `<from>` depend on `<to>` | |
 | `topo unlink <from> <to>` | Remove dependency of `<from>` on `<to>` | |
@@ -237,8 +246,12 @@ Pass `--apply` to automatically link proposals, safely skipping any that would i
 | `topo status <id> <st>` | Update status (`todo`, `doing`, `done`, `dropped`) | |
 | `topo edit <id>` | Modify node fields | `--title`, `--due`, `--no-due`, `--tag`, `--note` |
 | `topo rm <id>` | Delete node and adjacent edges | |
-| `topo ls` | List nodes | `--kind <task\|milestone>`, `--status <status>`, `--under <id>`, `--all` |
+| `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--format` |
 | `topo show <id>` | Show node details and adjacent nodes | |
+| `topo deps <id>` | List prerequisites, including milestone members | `--transitive`, `--format`, `--json` |
+| `topo dependents <id>` | List nodes depending on a node | `--transitive` (also follows membership), `--format`, `--json` |
+| `topo members <ms>` | List a milestone's member tasks | `--format`, `--json` |
+| `topo critical-path <id>` | List the longest remaining chain in execution order | `--format`, `--json` |
 | `topo graph` | Render dependency graph | `--format [tree\|mermaid\|dot]`, `--under <id>` |
 | `topo apply` | Atomically apply JSON batch operations | `[file]` or stdin |
 | `topo organize <what>` | Propose or apply graph optimizations via model | `deps`, `place`, `dupes`, `kinds`, `prioritize`, `--apply`, `--under <id>` |
@@ -254,7 +267,7 @@ Pass `--apply` to automatically link proposals, safely skipping any that would i
 │   ├── topo-gui/   # GPUI native canvas editor
 │   └── topo-jev/   # Jev System One client & organize logic
 └── skills/
-    └── topological-todo/ # AI coding agent instructions (SKILL.md)
+    └── topo/ # AI coding agent instructions (SKILL.md)
 ```
 
 ## License

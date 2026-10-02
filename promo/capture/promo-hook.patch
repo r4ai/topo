@@ -1,5 +1,5 @@
-diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/main.rs crates/topo-gui/src/main.rs
---- /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/main.rs	2026-10-02 01:47:10
+diff -ruN crates/topo-gui/src/main.rs crates/topo-gui/src/main.rs
+--- crates/topo-gui/src/main.rs	2026-10-02 01:47:10
 +++ crates/topo-gui/src/main.rs	2026-10-02 02:01:58
 @@ -11,6 +11,7 @@
  mod graph_view;
@@ -51,8 +51,8 @@ diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui
          let options = WindowOptions {
              window_bounds: Some(WindowBounds::Windowed(bounds)),
              titlebar: Some(gpui::TitlebarOptions { title: Some(title), ..Default::default() }),
-diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/promo.rs crates/topo-gui/src/promo.rs
---- /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/promo.rs	1970-01-01 09:00:00
+diff -ruN crates/topo-gui/src/promo.rs crates/topo-gui/src/promo.rs
+--- crates/topo-gui/src/promo.rs	1970-01-01 09:00:00
 +++ crates/topo-gui/src/promo.rs	2026-10-02 02:01:58
 @@ -0,0 +1,284 @@
 +//! Promo capture driver (scratch copy only): replays a script of app state
@@ -339,8 +339,8 @@ diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui
 +    std::fs::write(format!("{path}.json"), meta).unwrap();
 +    eprintln!("shot {path}");
 +}
-diff -ruN /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/text_input.rs crates/topo-gui/src/text_input.rs
---- /Users/r4ai/src/repos/github.com/r4ai/topological-todo/crates/topo-gui/src/text_input.rs	2026-10-02 01:27:42
+diff -ruN crates/topo-gui/src/text_input.rs crates/topo-gui/src/text_input.rs
+--- crates/topo-gui/src/text_input.rs	2026-10-02 01:27:42
 +++ crates/topo-gui/src/text_input.rs	2026-10-02 01:51:40
 @@ -123,6 +123,13 @@
      }

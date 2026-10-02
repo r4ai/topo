@@ -1,4 +1,4 @@
-//! Core of topological-todo: every task and milestone is a node in one
+//! Core of topo: every task and milestone is a node in one
 //! dependency DAG, stored as one Markdown file per node.
 
 pub mod graph;

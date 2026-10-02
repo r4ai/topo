@@ -144,7 +144,16 @@ topo graph --format tree
 
 ### CLI
 
-全コマンドで `--json` オプションを利用可能。標準入力からのパイプ処理や外部ツールとの連携に対応する。
+構造化出力には `--json` を使う。`ls`・`ready`・`milestones` とグラフ走査コマンドでは `--format text|ids|tsv|jsonl` も選べる。一覧の既定出力はリダイレクト時もテキスト、走査コマンドはID列となる。
+
+`status`・`edit`・`rm`・`join`・`leave`・`link`・`unlink` の第1引数に `-` を指定すると、標準入力の空白区切りID列を一括処理する。IDと変更を全件検証してから保存し、空入力では何も変更しない。`topo ls -` では入力されたIDを一覧のフラグで絞り込める。
+
+```bash
+topo ready --format ids | topo status - doing
+topo ls --tag gui --format ids | topo ls - --due-before 2026-10-31 --format ids | topo join - a1b2c3
+topo deps a1b2c3 --transitive | topo ls - --blocked --format tsv
+topo ready --format jsonl | jq -r 'select(.status == "todo") | .id'
+```
 
 ### TUI (`topo tui`)
 
@@ -227,8 +236,8 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 | コマンド | 説明 | 主要引数・フラグ |
 | :--- | :--- | :--- |
 | `topo init` | ワークスペース（`.topo`）の初期化 | |
-| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>` |
-| `topo milestones` | マイルストーン一覧・進捗率・クリティカルパスの表示 | |
+| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>`, `--format <text\|ids\|tsv\|jsonl>` |
+| `topo milestones` | マイルストーン一覧・進捗率・クリティカルパスの表示 | `--format <text\|ids\|tsv\|jsonl>` |
 | `topo add <title>` | タスクまたはマイルストーンの作成 | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--note <text>` |
 | `topo link <from> <to>` | `<from>` が `<to>` に依存するエッジを追加 | |
 | `topo unlink <from> <to>` | 依存関係の解除 | |
@@ -237,8 +246,12 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 | `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | |
 | `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--note` |
 | `topo rm <id>` | ノードおよび接続エッジの削除 | |
-| `topo ls` | ノードの一覧表示 | `--kind <task\|milestone>`, `--status <status>`, `--under <id>`, `--all` |
+| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--format` |
 | `topo show <id>` | ノードの詳細・隣接ノード・メモの表示 | |
+| `topo deps <id>` | 前提ノードの一覧（マイルストーンのメンバーも含む） | `--transitive`, `--format`, `--json` |
+| `topo dependents <id>` | 指定ノードに依存するノードの一覧 | `--transitive`（所属関係もたどる）, `--format`, `--json` |
+| `topo members <ms>` | マイルストーンの構成タスクの一覧 | `--format`, `--json` |
+| `topo critical-path <id>` | 残る最長の依存経路を実行順に表示 | `--format`, `--json` |
 | `topo graph` | グラフ構造の出力 | `--format [tree\|mermaid\|dot]`, `--under <id>` |
 | `topo apply` | JSONバッチによるアトミック更新 | `[file]` または標準入力 |
 | `topo organize <what>` | 決定モデルによるグラフ改善提案・適用 | `deps`, `place`, `dupes`, `kinds`, `prioritize`, `--apply`, `--under <id>` |
@@ -254,7 +267,7 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 │   ├── topo-gui/   # GPUIベースのネイティブデスクトップアプリ
 │   └── topo-jev/   # Jev互換決定モデルクライアント・整理ロジック
 └── skills/
-    └── topological-todo/ # AIエージェント向け指示セット (SKILL.md)
+    └── topo/ # AIエージェント向け指示セット (SKILL.md)
 ```
 
 ## ライセンス
