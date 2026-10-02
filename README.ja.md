@@ -9,7 +9,7 @@
 [![Storage: Markdown](https://img.shields.io/badge/storage-Markdown%20%2F%20Local--First-blue?style=flat-square)](#1ノード1ファイルのgit親和ストレージ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-https://github.com/user-attachments/assets/3131dc6f-0cb7-4bd6-aecd-baf920a84485
+https://github.com/user-attachments/assets/3fc7a9c6-5b60-459d-b1a9-038c4c9115a7
 
 ## 概要
 
