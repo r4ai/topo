@@ -9,6 +9,8 @@ English | [日本語](README.ja.md)
 [![Storage: Markdown](https://img.shields.io/badge/storage-Markdown%20%2F%20Local--First-blue?style=flat-square)](#git-friendly-markdown-storage)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
+https://github.com/user-attachments/assets/3131dc6f-0cb7-4bd6-aecd-baf920a84485
+
 ## Overview
 
 Flat task lists and nested folders fall apart as projects grow. Real-world tasks have prerequisite constraints: task B cannot begin until task A finishes.
