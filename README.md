@@ -84,7 +84,11 @@ Running `topo ready` outputs only unblocked tasks (`DB Schema` and `UI Mockups`)
 
 ### Installation
 
-Requires the Rust toolchain (2024 edition).
+Download prebuilt CLI binaries for Linux, Windows, and macOS, or macOS GUI binaries
+from [GitHub Releases](https://github.com/r4ai/topo/releases). See
+[installation, verification, and release workflow](docs/releasing.md) for details.
+
+To build from source, use the Rust toolchain pinned in `rust-toolchain.toml` (2024 edition).
 
 ```bash
 git clone https://github.com/r4ai/topo.git

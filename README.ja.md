@@ -83,7 +83,11 @@ flowchart LR
 
 ### インストール
 
-Rust 2024 edition のツールチェーンが必要である。
+Linux・Windows・macOS 向けCLIとmacOS向けGUIのビルド済みバイナリを
+[GitHub Releases](https://github.com/r4ai/topo/releases)から取得できる。
+インストール・チェックサム検証・リリース手順は[リリースガイド](docs/releasing.md)を参照。
+
+ソースからビルドする場合は、`rust-toolchain.toml`で固定したRust 2024 edition対応ツールチェーンを使用する。
 
 ```bash
 # クローン
