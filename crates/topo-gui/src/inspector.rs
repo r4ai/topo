@@ -13,9 +13,12 @@ type Removal = Option<(NodeId, NodeId, Remove)>;
 
 impl TopoApp {
     pub(crate) fn inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let content: Vec<AnyElement> = match self.selected_node() {
-            Some(node) => self.node_details(node, cx),
-            None => self.overview(cx),
+        let content: Vec<AnyElement> = match self.selected_nodes.len() {
+            n if n > 1 => self.selection_details(cx),
+            _ => match self.selected_node() {
+                Some(node) => self.node_details(node, cx),
+                None => self.overview(cx),
+            },
         };
         div()
             .id("inspector")
@@ -31,6 +34,81 @@ impl TopoApp {
             .overflow_y_scroll()
             .children(self.proposals_view(cx))
             .child(div().flex().flex_col().p_4().children(content))
+    }
+
+    fn selection_details(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let nodes: Vec<_> = self.selected_nodes.iter().filter_map(|id| self.graph().get(id)).collect();
+        let common_status = nodes.first().map(|n| n.status).filter(|s| nodes.iter().all(|n| n.status == *s));
+        let mut out = vec![
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_lg()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(format!("{} nodes selected", nodes.len())),
+                )
+                .child(icon_button("deselect", "×").on_click(cx.listener(|app, _, _, cx| {
+                    app.select(None, false);
+                    cx.notify();
+                })))
+                .into_any_element(),
+            div()
+                .mt_1()
+                .text_xs()
+                .text_color(rgb(theme::FAINT))
+                .child("Change status for all selected nodes, or click a row to edit one.")
+                .into_any_element(),
+            self.status_control(common_status, cx).into_any_element(),
+            section_label("SELECTED NODES").into_any_element(),
+        ];
+        for node in nodes {
+            out.push(self.node_row("selected", node, Some(node.id.to_string()), None, cx).into_any_element());
+        }
+        out
+    }
+
+    /// Every segment reserves its border, keeping labels still as the active status changes.
+    fn status_control(&self, current: Option<Status>, cx: &mut Context<Self>) -> Div {
+        let mut segments = div()
+            .flex()
+            .mt_3()
+            .p_0p5()
+            .gap_0p5()
+            .rounded_lg()
+            .bg(rgb(theme::CANVAS))
+            .border_1()
+            .border_color(rgb(theme::BORDER));
+        for (i, status) in [Status::Todo, Status::Doing, Status::Done, Status::Dropped].into_iter().enumerate() {
+            let active = current == Some(status);
+            let c = theme::status_color(status);
+            segments = segments.child(
+                div()
+                    .id(ElementId::Name(format!("status-{i}").into()))
+                    .debug_selector(|| format!("status-{i}"))
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .h(px(28.))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme::alpha(c, if active { 0.5 } else { 0. }))
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(rgb(if active { theme::TEXT } else { theme::MUTED }))
+                    .when(active, |d| d.bg(theme::alpha(c, 0.18)))
+                    .when(!active, |d| d.hover(|s| s.bg(rgb(theme::CARD)).text_color(rgb(theme::TEXT))))
+                    .child(div().text_color(rgb(c)).child(theme::status_icon(status)))
+                    .child(theme::status_label(status))
+                    .on_click(cx.listener(move |app, _, _, cx| app.set_selected_status(status, cx))),
+            );
+        }
+        segments
     }
 
     /// A clickable row naming a node, with an optional button that removes the relation.
@@ -237,7 +315,7 @@ impl TopoApp {
                 .child(id.to_string())
                 .child(div().flex_1())
                 .child(icon_button("deselect", "×").on_click(cx.listener(|app, _, _, cx| {
-                    app.selected = None;
+                    app.select(None, false);
                     cx.notify();
                 })))
                 .into_any_element(),
@@ -285,40 +363,7 @@ impl TopoApp {
         out.push(div().mt_1().text_xs().text_color(rgb(state_color)).child(state).into_any_element());
 
         // Status control.
-        let mut segments = div()
-            .flex()
-            .mt_3()
-            .p_0p5()
-            .gap_0p5()
-            .rounded_lg()
-            .bg(rgb(theme::CANVAS))
-            .border_1()
-            .border_color(rgb(theme::BORDER));
-        for (i, status) in [Status::Todo, Status::Doing, Status::Done, Status::Dropped].into_iter().enumerate() {
-            let active = node.status == status;
-            let id = id.clone();
-            let c = theme::status_color(status);
-            segments = segments.child(
-                div()
-                    .id(ElementId::Name(format!("status-{i}").into()))
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap_1()
-                    .h(px(28.))
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(rgb(if active { theme::TEXT } else { theme::MUTED }))
-                    .when(active, |d| d.bg(theme::alpha(c, 0.18)).border_1().border_color(theme::alpha(c, 0.5)))
-                    .when(!active, |d| d.hover(|s| s.bg(rgb(theme::CARD)).text_color(rgb(theme::TEXT))))
-                    .child(div().text_color(rgb(c)).child(theme::status_icon(status)))
-                    .child(theme::status_label(status))
-                    .on_click(cx.listener(move |app, _, _, cx| app.set_status(id.clone(), status, cx))),
-            );
-        }
-        out.push(segments.into_any_element());
+        out.push(self.status_control(Some(node.status), cx).into_any_element());
 
         // Properties.
         let due_id = id.clone();

@@ -6,6 +6,8 @@ pub fn set_app_icon() {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
 
+    // The ICNS already includes the macOS tile and transparent outer margin;
+    // AppKit does not add a rounded mask to custom application icon images.
     let bytes = include_bytes!("../../../assets/branding/topo.icns");
     // SAFETY: GPUI invokes this on AppKit's main thread. NSData copies the
     // embedded bytes; NSImage decodes that data and NSApplication retains the

@@ -164,12 +164,13 @@ Interactive dashboard in your terminal:
 Desktop interface powered by GPUI. Reflects edits from CLI or external processes live:
 
 - Canvas Navigation:
-  - Drag (background or a card) / scroll: Pan canvas
-  - Trackpad pinch / `Cmd` + scroll: Zoom canvas
+  - Drag (background, card, or middle button) / trackpad scroll: Pan canvas
+  - Mouse wheel / pinch / `Cmd` + scroll: Zoom canvas around pointer
   - Two-finger double-tap: Toggle between fit and actual size
   - `Cmd+=` / `Cmd+-` / `Cmd+0`: Zoom in / Zoom out / Actual size
   - `f`: Fit all nodes on canvas
 - Node Operations:
+  - Click: Select node (`Cmd` / `Ctrl` + click for multi-selection to batch change status or delete)
   - `n`: New task
   - `m`: New milestone
   - `Tab`: Add follow-up task for selected node
@@ -185,7 +186,7 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - `Enter` / `r` / `F2` / double-click: Edit title
   - `o`: Open the node's Markdown file (notes) in the default editor
   - Arrow keys: Move the selection along dependencies (left / right) or within a column (up / down)
-  - `c`: Center canvas on selected node
+  - `c`: Center canvas on selected node (fits all when multiple selected)
   - `Backspace` / `Delete`: Delete node
   - `Cmd+Z` / `Cmd+Shift+Z`: Undo / Redo
   - `/` or `Cmd+K` / `Cmd+F`: Search by title, tag, or ID

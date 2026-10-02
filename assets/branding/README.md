@@ -7,10 +7,14 @@ The SVG redraws the selected concept as clean curves in solid white.
 - `topo-logo.png`: 1024 × 1024 transparent PNG rendered from the SVG geometry.
 - `topo-logo-512.png`: 512 × 512 transparent PNG rendered from the SVG geometry.
 - `topo-logo-preview.png`: preview on the app's dark canvas color (`#111216`).
-- `topo.icns`: macOS app icon, using the dark preview with sizes from 16 to 512 pixels. Embedded in the GUI for direct launches and included in release app bundles.
-- `topo.ico`: Windows executable and native window icon, using resource ID 1 expected by GPUI, with 16, 32, 64, 128, and 256 pixel images.
+- `topo.icns`: macOS app icon, with an inset rounded dark tile, a subtle edge, and a transparent outer margin at sizes from 16 to 1024 pixels. Embedded in the GUI for direct launches and included in release app bundles.
+- `render-app-icon.swift`: AppKit vector renderer using the canonical SVG paths to generate the shared tile without changing the transparent brand mark.
+- `topo-app-icon.png`: 512 × 512 app icon with the same rounded tile and transparent margin, used by the Linux desktop launcher.
+- `topo.ico`: Windows executable and native window icon, using resource ID 1 expected by GPUI, with the shared rounded tile at 16, 32, 64, 128, and 256 pixels.
 
-The promo page uses the same SVG geometry in `promo/assets/favicon.svg`, with a dark background so the white mark remains visible on light browser tabs.
+The promo page uses the same rounded tile and inset SVG mark in
+`promo/assets/favicon.svg`, with a dark background so the white mark remains
+visible on light browser tabs.
 
 Linux windows use the application ID `dev.r4ai.topo` on both X11 and Wayland.
 Register the matching desktop launcher and icon for a source-built GUI:
@@ -22,9 +26,10 @@ bash assets/branding/install-linux-desktop.sh /path/to/workspace /path/to/topo-g
 The launcher opens the specified initialized workspace. It is installed for the
 current user in `$XDG_DATA_HOME` (default `~/.local/share`).
 
-Regenerate `.icns`, `.ico`, and the favicon on macOS with
-`python3 assets/branding/generate-icons.py`. This uses the existing dark preview
-for native icons and the canonical SVG for the favicon; no imaging dependency
-is required.
+Regenerate `.icns`, `.ico`, the Linux app PNG, and the favicon on macOS with
+`python3 assets/branding/generate-icons.py`. This uses Swift/AppKit and the
+canonical SVG for the native icons, and the same tile geometry for the
+vector favicon. Xcode Command Line Tools are required; no
+third-party imaging dependency is required.
 
 Use white on a dark background and preserve the diagonal gap and proportions.

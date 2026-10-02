@@ -15,7 +15,7 @@ binary=$(realpath "${2:-$(command -v topo-gui)}")
 asset_dir=$(cd "$(dirname "$0")" && pwd)
 data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 mkdir -p "$data_dir/applications" "$data_dir/icons/hicolor/512x512/apps"
-cp "$asset_dir/topo-logo-preview.png" "$data_dir/icons/hicolor/512x512/apps/dev.r4ai.topo.png"
+cp "$asset_dir/topo-app-icon.png" "$data_dir/icons/hicolor/512x512/apps/dev.r4ai.topo.png"
 # Desktop Exec has its own escaping rules, separate from shell quoting.
 python3 - "$binary" "$workspace" "$data_dir/applications/dev.r4ai.topo.desktop" <<'PY'
 import pathlib

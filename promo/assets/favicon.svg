@@ -1,7 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title">
   <title id="title">topo logo</title>
-  <rect width="512" height="512" rx="96" fill="#111216"/>
-  <g fill="#FFFFFF">
+  <defs>
+    <linearGradient id="tile-fill" x1="256" y1="50" x2="256" y2="462" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1B1C20"/>
+      <stop offset="1" stop-color="#111216"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#tile-fill)" stroke="white" stroke-opacity="0.14" d="M151 50 H361 C434 50 462 78 462 151 V361 C462 434 434 462 361 462 H151 C78 462 50 434 50 361 V151 C50 78 78 50 151 50 Z"/>
+  <g transform="translate(51.2 51.2) scale(0.8)" fill="#FFFFFF">
     <path d="M 246 64 C 180 74 150 98 150 139 L 150 203 L 246 159 Z"/>
     <path d="M 150 218 L 259 166 L 376 166 C 376 212 349 232 305 232 L 246 232 L 246 350 C 246 371 254 381 277 381 L 337 381 C 335 423 305 448 258 448 C 186 448 150 407 150 344 Z"/>
   </g>

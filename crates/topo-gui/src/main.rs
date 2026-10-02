@@ -16,6 +16,7 @@ mod text_input;
 mod theme;
 
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -58,7 +59,7 @@ enum Drag {
     /// The canvas dragged by its background or by a card; `last` is the
     /// previous mouse position. A background press that never moved is a
     /// click, which clears the selection.
-    Pan { last: Point<Pixels>, moved: bool, on_card: bool },
+    Pan { last: Point<Pixels>, moved: bool, on_card: bool, button: MouseButton },
     /// Shift-drag or handle-drag from `source`; `mouse` is in window coordinates.
     Link { source: NodeId, mouse: Point<Pixels> },
 }
@@ -163,6 +164,8 @@ struct TopoApp {
     /// Fit the whole graph once the canvas size is known.
     pending_fit: bool,
     selected: Option<NodeId>,
+    selected_nodes: BTreeSet<NodeId>,
+    graph_cache: graph_view::GraphCache,
     hovered: Option<NodeId>,
     drag: Option<Drag>,
     prompt: Option<Prompt>,
@@ -222,6 +225,8 @@ impl TopoApp {
             area: Rc::new(Cell::new(Bounds::default())),
             pending_fit: true,
             selected: None,
+            selected_nodes: BTreeSet::new(),
+            graph_cache: graph_view::GraphCache::default(),
             hovered: None,
             drag: None,
             prompt: None,
@@ -245,6 +250,9 @@ impl TopoApp {
     }
 
     fn selected_node(&self) -> Option<&Node> {
+        if self.selected_nodes.len() != 1 {
+            return None;
+        }
         self.selected.as_ref().and_then(|id| self.ws.graph.get(id))
     }
 
@@ -275,8 +283,10 @@ impl TopoApp {
     /// Drops what may refer to nodes that the graph no longer has, after it
     /// was replaced as a whole.
     fn graph_replaced(&mut self) {
-        if self.selected.as_ref().is_some_and(|id| self.ws.graph.get(id).is_none()) {
-            self.selected = None;
+        self.graph_cache.invalidate();
+        self.selected_nodes.retain(|id| self.ws.graph.get(id).is_some());
+        if self.selected.as_ref().is_none_or(|id| !self.selected_nodes.contains(id)) {
+            self.selected = self.selected_nodes.first().cloned();
         }
         self.drag = None;
     }
@@ -286,6 +296,7 @@ impl TopoApp {
         if before == self.ws.graph {
             return;
         }
+        self.graph_cache.invalidate();
         self.undo.push(before);
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
@@ -356,16 +367,6 @@ impl TopoApp {
         self.mutate(cx, |graph| graph.set_status(&id, status));
     }
 
-    fn cycle_status(&mut self, id: NodeId, cx: &mut Context<Self>) {
-        let Some(status) = self.graph().get(&id).map(|n| n.status) else { return };
-        let next = match status {
-            Status::Todo => Status::Doing,
-            Status::Doing => Status::Done,
-            Status::Done | Status::Dropped => Status::Todo,
-        };
-        self.set_status(id, next, cx);
-    }
-
     fn toggle_done(&mut self, id: NodeId, cx: &mut Context<Self>) {
         let Some(status) = self.graph().get(&id).map(|n| n.status) else { return };
         self.set_status(id, if status == Status::Done { Status::Todo } else { Status::Done }, cx);
@@ -374,7 +375,7 @@ impl TopoApp {
     fn delete(&mut self, id: NodeId, cx: &mut Context<Self>) {
         let title = self.title_of(&id);
         if self.mutate(cx, |graph| graph.remove(&id).map(drop)) {
-            self.selected = None;
+            self.clear_selection();
             self.hovered = None;
             self.toast(format!("Deleted “{title}” — ⌘Z to undo"), false, cx);
         }
@@ -690,7 +691,7 @@ impl TopoApp {
                     Ok(proposals) => {
                         app.toast(format!("{} suggestion(s) in the inspector", proposals.len()), false, cx);
                         app.proposals = proposals;
-                        app.selected = None;
+                        app.clear_selection();
                     }
                     Err(e) => app.toast(e, true, cx),
                 }
@@ -754,7 +755,8 @@ impl TopoApp {
     /// readable and anchors large graphs at their start (the left) instead.
     fn fit(&mut self, initial: bool) {
         let area = self.area.get().size;
-        let cells = layout::layout(self.graph());
+        self.ensure_graph_cache();
+        let cells = self.graph_cache.cells();
         if area.width <= px(0.) || cells.is_empty() {
             return;
         }
@@ -783,7 +785,10 @@ impl TopoApp {
     /// Zooms by `factor` keeping the canvas point `anchor` (local coordinates) fixed.
     fn zoom_by(&mut self, factor: f32, anchor: Point<Pixels>, animate: bool) {
         let (offset, zoom) = self.target();
-        let new_zoom = (zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        // A large selection can fit below the usual interactive zoom limit.
+        // Continue smoothly from that overview instead of jumping to MIN_ZOOM.
+        let min_zoom = if zoom < MIN_ZOOM { f32::MIN_POSITIVE } else { MIN_ZOOM };
+        let new_zoom = (zoom * factor).clamp(min_zoom, MAX_ZOOM);
         let new_offset = anchor - (anchor - offset) * (new_zoom / zoom);
         match animate {
             true => self.animate_to(new_offset, new_zoom),
@@ -822,7 +827,8 @@ impl TopoApp {
 
     /// Moves the camera so `id` is visible; `force` centers it even when it already is.
     fn reveal(&mut self, id: &NodeId, force: bool) {
-        let cells = layout::layout(self.graph());
+        self.ensure_graph_cache();
+        let cells = self.graph_cache.cells();
         let Some(&cell) = cells.get(id) else { return };
         let area = self.area.get().size;
         // Where the node will be once a camera move in flight has finished.
@@ -843,15 +849,101 @@ impl TopoApp {
         if reveal && let Some(id) = &id {
             self.reveal(id, false);
         }
+        self.selected_nodes = id.iter().cloned().collect();
         self.selected = id;
+    }
+
+    fn clear_selection(&mut self) {
+        self.selected = None;
+        self.selected_nodes.clear();
+    }
+
+    fn toggle_selection(&mut self, id: NodeId) {
+        if self.graph().get(&id).is_none() {
+            return;
+        }
+        if self.selected_nodes.remove(&id) {
+            if self.selected.as_ref() == Some(&id) {
+                self.selected = self.selected_nodes.first().cloned();
+            }
+        } else {
+            self.selected_nodes.insert(id.clone());
+            self.selected = Some(id);
+        }
+    }
+
+    fn select_nodes(&mut self, ids: &[NodeId], cx: &mut Context<Self>) {
+        self.selected_nodes = ids.iter().filter(|id| self.graph().get(id).is_some()).cloned().collect();
+        self.selected = self.selected_nodes.first().cloned();
+        self.frame_selection();
+        cx.notify();
+    }
+
+    fn frame_selection(&mut self) {
+        self.ensure_graph_cache();
+        let cells = self.graph_cache.cells();
+        let selected: Vec<_> = self.selected_nodes.iter().filter_map(|id| cells.get(id)).collect();
+        if selected.is_empty() {
+            return;
+        }
+        let min_col = selected.iter().map(|c| c.0).min().unwrap() as f32;
+        let max_col = selected.iter().map(|c| c.0).max().unwrap() as f32;
+        let min_row = selected.iter().map(|c| c.1).min().unwrap() as f32;
+        let max_row = selected.iter().map(|c| c.1).max().unwrap() as f32;
+        let (width, height) = ((max_col - min_col) * CELL_W + NODE_W, (max_row - min_row) * CELL_H + NODE_H);
+        let area = self.area.get().size;
+        let (aw, ah) = (f32::from(area.width), f32::from(area.height));
+        if aw <= 80. || ah <= 120. {
+            return;
+        }
+        let zoom = ((aw - 80.) / width).min((ah - 120.) / height).min(1.15);
+        let offset = point(
+            px((aw - width * zoom) / 2. - min_col * CELL_W * zoom),
+            px((ah - height * zoom) / 2. - min_row * CELL_H * zoom),
+        );
+        self.animate_to(offset, zoom);
+    }
+
+    fn set_selected_status(&mut self, status: Status, cx: &mut Context<Self>) {
+        self.change_selected_status(|_| status, cx);
+    }
+
+    fn change_selected_status(&mut self, next: impl Fn(Status) -> Status, cx: &mut Context<Self>) {
+        let ids = self.selected_nodes.clone();
+        self.mutate(cx, |graph| {
+            for id in ids {
+                let status = graph.get(&id).expect("selection exists").status;
+                graph.set_status(&id, next(status))?;
+            }
+            Ok(())
+        });
+    }
+
+    fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        if self.selected_nodes.len() == 1 {
+            self.delete(self.selected.clone().unwrap(), cx);
+            return;
+        }
+        let ids = self.selected_nodes.clone();
+        if self.mutate(cx, |graph| {
+            for id in &ids {
+                graph.remove(id)?;
+            }
+            Ok(())
+        }) {
+            self.clear_selection();
+            self.hovered = None;
+            self.toast(format!("Deleted {} nodes — ⌘Z to undo", ids.len()), false, cx);
+        }
     }
 
     /// Selects the neighbor of the selection in `direction`: requirements to
     /// the left, dependents to the right, the same column up and down.
     fn navigate(&mut self, direction: Direction) {
+        self.ensure_graph_cache();
         let graph = &self.ws.graph;
-        let cells = layout::layout(graph);
-        let Some(current) = self.selected_node() else {
+        let cells = self.graph_cache.cells();
+        let Some(current) = self.selected.as_ref().and_then(|id| graph.get(id)) else {
             let first =
                 graph.ready_tasks(None).first().map(|n| n.id.clone()).or(graph.nodes().next().map(|n| n.id.clone()));
             return self.select(first, true);
@@ -921,13 +1013,38 @@ impl TopoApp {
             ("escape", _) => match () {
                 _ if self.drag.is_some() => self.drag = None,
                 _ if self.show_help => self.show_help = false,
-                _ => self.selected = None,
+                _ => self.clear_selection(),
             },
             ("left", _) => self.navigate(Direction::Left),
             ("right", _) => self.navigate(Direction::Right),
             ("up", _) => self.navigate(Direction::Up),
             ("down", _) => self.navigate(Direction::Down),
+            _ if !self.selected_nodes.is_empty()
+                && matches!(key, "space" | "x" | "1" | "2" | "3" | "4" | "c" | "backspace" | "delete") =>
+            {
+                match key {
+                    "space" => self.change_selected_status(next_status, cx),
+                    "x" => self.change_selected_status(
+                        |status| if status == Status::Done { Status::Todo } else { Status::Done },
+                        cx,
+                    ),
+                    "1" => self.set_selected_status(Status::Todo, cx),
+                    "2" => self.set_selected_status(Status::Doing, cx),
+                    "3" => self.set_selected_status(Status::Done, cx),
+                    "4" => self.set_selected_status(Status::Dropped, cx),
+                    "c" if self.selected_nodes.len() == 1 => {
+                        let id = self.selected.clone().unwrap();
+                        self.reveal(&id, true);
+                    }
+                    "c" => self.frame_selection(),
+                    "backspace" | "delete" => self.delete_selected(cx),
+                    _ => unreachable!(),
+                }
+            }
             _ => {
+                if self.selected_nodes.len() != 1 {
+                    return;
+                }
                 let Some(id) = selected else { return };
                 let node = self.graph().get(&id).expect("selection exists").clone();
                 match key {
@@ -942,14 +1059,6 @@ impl TopoApp {
                         self.open_prompt(Prompt::Due(id), &due, window, cx)
                     }
                     "t" => self.open_prompt(Prompt::Tags(id), &node.tags.join(" "), window, cx),
-                    "space" => self.cycle_status(id, cx),
-                    "x" => self.toggle_done(id, cx),
-                    "1" => self.set_status(id, Status::Todo, cx),
-                    "2" => self.set_status(id, Status::Doing, cx),
-                    "3" => self.set_status(id, Status::Done, cx),
-                    "4" => self.set_status(id, Status::Dropped, cx),
-                    "c" => self.reveal(&id, true),
-                    "backspace" | "delete" => self.delete(id, cx),
                     _ => return,
                 }
             }
@@ -1001,6 +1110,7 @@ impl Render for TopoApp {
             )
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_drag_end))
             .child(self.toolbar(cx))
             .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(cx)).child(self.inspector(cx)))
     }
@@ -1015,6 +1125,14 @@ fn parse_tags(text: &str) -> Vec<String> {
         }
     }
     tags
+}
+
+fn next_status(status: Status) -> Status {
+    match status {
+        Status::Todo => Status::Doing,
+        Status::Doing => Status::Done,
+        Status::Done | Status::Dropped => Status::Todo,
+    }
 }
 
 fn open_workspace() -> Result<Workspace> {

@@ -364,3 +364,191 @@ fn trackpad_gestures_zoom_around_the_pointer(cx: &mut TestAppContext) {
     gesture(&mut ui, Gesture::SmartZoom);
     assert_eq!(ui.read(|app| app.target().1), 1.0);
 }
+
+#[gpui::test]
+fn multiple_selection_bulk_edits_are_single_undo_steps(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.app.update(ui.cx, |app, cx| app.select_nodes(&[id("a"), id("c")], cx));
+    assert_eq!(ui.read(|app| app.selected_nodes.len()), 2);
+    ui.keys("2");
+    assert_eq!(ui.node("a").status, Status::Doing);
+    assert_eq!(ui.node("c").status, Status::Doing);
+    ui.keys("cmd-z");
+    assert_eq!(ui.node("a").status, Status::Todo);
+    assert_eq!(ui.node("c").status, Status::Todo);
+    ui.keys("backspace");
+    assert!(ui.read(|app| app.graph().get(&id("a")).is_none() && app.graph().get(&id("c")).is_none()));
+    assert!(ui.read(|app| app.selected_nodes.is_empty()));
+    ui.keys("cmd-z");
+    assert_eq!(ui.node("b").depends_on, [id("a")]);
+    assert_eq!(ui.node("c").milestones, [id("m")]);
+}
+
+#[gpui::test]
+fn multiple_selection_does_not_rename_or_connect_only_one_node(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.app.update(ui.cx, |app, cx| app.select_nodes(&[id("a"), id("c")], cx));
+    ui.keys("enter l tab");
+    assert!(ui.read(|app| app.prompt.is_none()));
+    ui.keys("right");
+    assert_eq!(ui.selected().as_deref(), Some("b"));
+    assert_eq!(ui.read(|app| app.selected_nodes.len()), 1);
+}
+
+#[gpui::test]
+fn toolbar_selects_all_matches_and_inspector_narrows_selection(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.click_on("stat-ready");
+    assert_eq!(ui.read(|app| app.selected_nodes.clone()), [id("a"), id("c")].into_iter().collect());
+    assert!(ui.cx.debug_bounds("deselect").is_some());
+    ui.click_on("row-selected-c");
+    assert_eq!(ui.selected().as_deref(), Some("c"));
+    assert_eq!(ui.read(|app| app.selected_nodes.len()), 1);
+}
+
+#[gpui::test]
+fn graph_reload_removes_only_missing_selected_nodes(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.app.update(ui.cx, |app, cx| {
+        app.select_nodes(&[id("a"), id("c")], cx);
+        let mut disk = Workspace::open(app.ws.dir().to_owned()).unwrap();
+        disk.graph.remove(&id("a")).unwrap();
+        disk.save().unwrap();
+        app.reload(cx);
+    });
+    assert_eq!(ui.selected().as_deref(), Some("c"));
+    assert_eq!(ui.read(|app| app.selected_nodes.clone()), [id("c")].into_iter().collect());
+}
+
+#[gpui::test]
+fn modifier_click_toggles_selection_and_middle_drag_preserves_it(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let a = ui.card("a", 0.5, 0.5);
+    let c = ui.card("c", 0.5, 0.5);
+    ui.click(a);
+    let additive = Modifiers { platform: true, ..Modifiers::none() };
+    ui.cx.simulate_mouse_down(c, MouseButton::Left, additive);
+    ui.cx.simulate_mouse_up(c, MouseButton::Left, additive);
+    assert_eq!(ui.read(|app| app.selected_nodes.len()), 2);
+    let delta = point(px(60.), px(30.));
+    let before = ui.read(|app| app.offset);
+    ui.cx.simulate_mouse_down(a, MouseButton::Middle, Modifiers::none());
+    // A different button's release must not terminate the middle drag.
+    ui.cx.simulate_mouse_up(a, MouseButton::Left, Modifiers::none());
+    ui.cx.simulate_mouse_move(a + delta, Some(MouseButton::Middle), Modifiers::none());
+    ui.cx.simulate_mouse_up(a + delta, MouseButton::Middle, Modifiers::none());
+    assert_eq!(ui.read(|app| app.offset), before + delta);
+    assert_eq!(ui.read(|app| app.selected_nodes.len()), 2);
+    let c = ui.card("c", 0.5, 0.5);
+    ui.cx.simulate_mouse_down(c, MouseButton::Left, additive);
+    ui.cx.simulate_mouse_up(c, MouseButton::Left, additive);
+    assert_eq!(ui.selected().as_deref(), Some("a"));
+}
+
+#[gpui::test]
+fn wheel_zoom_is_anchored_and_modified_wheel_pans(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+    let mut ui = open(cx, SAMPLE);
+    let position = ui.card("a", 0., 0.);
+    let scroll = |ui: &mut Ui, delta, modifiers| {
+        ui.cx.simulate_event(ScrollWheelEvent { position, delta, modifiers, ..Default::default() });
+    };
+    let zoom = ui.read(|app| app.zoom);
+    scroll(&mut ui, ScrollDelta::Lines(point(0., 1.)), Modifiers::none());
+    assert!((ui.read(|app| app.zoom) - zoom * 1.12).abs() < 0.0001);
+    let corner = ui.card("a", 0., 0.);
+    assert!((corner.x - position.x).abs() < px(0.01) && (corner.y - position.y).abs() < px(0.01));
+    let before = ui.read(|app| app.offset);
+    scroll(&mut ui, ScrollDelta::Lines(point(0., 1.)), Modifiers { shift: true, ..Modifiers::none() });
+    assert_eq!(ui.read(|app| app.offset), before + point(px(40.), px(0.)));
+    scroll(&mut ui, ScrollDelta::Lines(point(0., 1.)), Modifiers { control: true, ..Modifiers::none() });
+    assert_eq!(ui.read(|app| app.offset), before + point(px(40.), px(40.)));
+    let delta = point(px(15.), px(-20.));
+    let before = ui.read(|app| app.offset);
+    scroll(&mut ui, ScrollDelta::Pixels(delta), Modifiers::none());
+    assert_eq!(ui.read(|app| app.offset), before + delta);
+}
+
+#[gpui::test]
+fn bulk_inspector_status_changes_have_stable_bounds(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.app.update(ui.cx, |app, cx| app.select_nodes(&[id("a"), id("c")], cx));
+    ui.redraw();
+    let bounds = ui.cx.debug_bounds("status-1").unwrap();
+    ui.click_on("status-1");
+    assert_eq!(ui.node("a").status, Status::Doing);
+    assert_eq!(ui.node("c").status, Status::Doing);
+    assert_eq!(ui.cx.debug_bounds("status-1"), Some(bounds));
+    ui.keys("cmd-z");
+    assert_eq!(ui.node("a").status, Status::Todo);
+    assert_eq!(ui.node("c").status, Status::Todo);
+}
+
+#[gpui::test]
+fn canvas_help_remains_within_the_smallest_window(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.resize(720., 480.);
+    ui.keys("?");
+    let help = ui.cx.debug_bounds("help-card").expect("help rendered");
+    let area = ui.read(|app| app.area.get());
+    assert!(help.left() >= area.left() && help.right() <= area.right());
+    assert!(help.top() >= area.top() && help.bottom() <= area.bottom());
+}
+
+#[gpui::test]
+fn toolbar_frames_large_selections_in_both_dimensions(cx: &mut TestAppContext) {
+    let names: Vec<String> = (0..50).map(|i| format!("task{i:02}")).collect();
+    for chained in [false, true] {
+        let dependencies: Vec<Vec<&str>> =
+            (0..names.len()).map(|i| if chained && i > 0 { vec![names[i - 1].as_str()] } else { vec![] }).collect();
+        let nodes: Vec<(&str, Kind, &[&str], &[&str])> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.as_str(), Kind::Task, dependencies[i].as_slice(), &[][..]))
+            .collect();
+        let mut ui = open(cx, &nodes);
+        if chained {
+            ui.app.update(ui.cx, |app, cx| {
+                let ids: Vec<_> = app.graph().nodes().map(|node| node.id.clone()).collect();
+                app.mutate(cx, |graph| {
+                    for id in ids {
+                        graph.set_status(&id, Status::Doing)?;
+                    }
+                    Ok(())
+                });
+            });
+            ui.redraw();
+            ui.click_on("stat-doing");
+        } else {
+            ui.click_on("stat-ready");
+        }
+        ui.read(|app| {
+            assert_eq!(app.selected_nodes.len(), names.len());
+            let (offset, zoom) = app.target();
+            assert!(zoom > 0. && zoom < crate::MIN_ZOOM);
+            let area = app.area.get().size;
+            for id in &app.selected_nodes {
+                let (col, row) = app.graph_cache.cells()[id];
+                let left = offset.x + px(col as f32 * crate::CELL_W * zoom);
+                let top = offset.y + px(row as f32 * crate::CELL_H * zoom);
+                assert!(left >= px(0.) && top >= px(0.));
+                assert!(left + px(NODE_W * zoom) <= area.width);
+                assert!(top + px(NODE_H * zoom) <= area.height);
+            }
+        });
+        ui.app.update(ui.cx, |app, cx| {
+            let (offset, zoom) = app.target();
+            app.offset = offset;
+            app.zoom = zoom;
+            app.anim = None;
+            let anchor = app.canvas_center();
+            app.zoom_by(1.12, anchor, false);
+            assert!((app.zoom - zoom * 1.12).abs() < 0.0001);
+            app.zoom_by(1. / 1.12, anchor, false);
+            assert!((app.zoom - zoom).abs() < 0.0001);
+            app.zoom_by(0.8, anchor, false);
+            assert!((app.zoom - zoom * 0.8).abs() < 0.0001);
+            cx.notify();
+        });
+    }
+}

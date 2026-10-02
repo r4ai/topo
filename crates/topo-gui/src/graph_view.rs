@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gpui::{
     AnyElement, Bounds, Context, CursorStyle, ElementId, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, Pixels, Point, ScrollWheelEvent, Window, canvas, div, fill, point, prelude::*, px, rgb,
-    size,
+    MouseUpEvent, PathBuilder, Pixels, Point, ScrollDelta, ScrollWheelEvent, Window, canvas, div, fill, point,
+    prelude::*, px, rgb, size,
 };
 use jiff::civil::Date;
 use topo_core::{Graph, Kind, Node, NodeId, Status};
@@ -32,12 +32,140 @@ struct EdgePaint {
     dashed: bool,
 }
 
-/// `id` together with everything it transitively requires and everything that requires it.
-fn chain(graph: &Graph, id: &NodeId) -> BTreeSet<NodeId> {
-    graph.descendants(id).into_iter().chain(graph.ancestors(id)).chain([id.clone()]).collect()
+/// Traverse each direction independently: changing direction at a shared requirement
+/// would include unrelated siblings in the selection's dependency/dependent chains.
+fn reachable(adjacency: &BTreeMap<NodeId, Vec<NodeId>>, seeds: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+    let mut visited = BTreeSet::new();
+    let mut pending: Vec<_> = seeds.iter().cloned().collect();
+    while let Some(id) = pending.pop() {
+        let Some(neighbors) = adjacency.get(&id) else { continue };
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        pending.extend(neighbors.iter().filter(|id| !visited.contains(*id)).cloned());
+    }
+    visited
+}
+
+/// Derived canvas data. Camera and hover updates reuse it; structural/status edits invalidate it.
+pub(crate) struct GraphCache {
+    dirty: bool,
+    cells: BTreeMap<NodeId, layout::Cell>,
+    selected: BTreeSet<NodeId>,
+    focus: Option<BTreeSet<NodeId>>,
+    critical: BTreeSet<NodeId>,
+    critical_edges: BTreeMap<NodeId, BTreeSet<NodeId>>,
+    requirements: BTreeMap<NodeId, Vec<NodeId>>,
+    dependents: BTreeMap<NodeId, Vec<NodeId>>,
+    open_requirements: BTreeMap<NodeId, usize>,
+    progress: BTreeMap<NodeId, (usize, usize)>,
+}
+
+impl Default for GraphCache {
+    fn default() -> Self {
+        Self {
+            dirty: true,
+            cells: BTreeMap::new(),
+            selected: BTreeSet::new(),
+            focus: None,
+            critical: BTreeSet::new(),
+            critical_edges: BTreeMap::new(),
+            requirements: BTreeMap::new(),
+            dependents: BTreeMap::new(),
+            open_requirements: BTreeMap::new(),
+            progress: BTreeMap::new(),
+        }
+    }
+}
+
+impl GraphCache {
+    pub(crate) fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
+    pub(crate) fn cells(&self) -> &BTreeMap<NodeId, layout::Cell> {
+        &self.cells
+    }
+
+    pub(crate) fn refresh(&mut self, graph: &Graph, selected: &BTreeSet<NodeId>) {
+        let unchanged = !self.dirty;
+        if !unchanged {
+            self.dirty = false;
+            self.cells = layout::layout(graph);
+            self.requirements = graph.nodes().map(|n| (n.id.clone(), n.depends_on.clone())).collect();
+            self.dependents = graph.nodes().map(|n| (n.id.clone(), Vec::new())).collect();
+            for node in graph.nodes() {
+                for milestone in &node.milestones {
+                    self.requirements.get_mut(milestone).expect("graph invariant").push(node.id.clone());
+                }
+            }
+            for (id, requirements) in &self.requirements {
+                for requirement in requirements {
+                    self.dependents.get_mut(requirement).expect("graph invariant").push(id.clone());
+                }
+            }
+            self.open_requirements = self
+                .requirements
+                .iter()
+                .map(|(id, requirements)| {
+                    (
+                        id.clone(),
+                        requirements
+                            .iter()
+                            .filter(|id| !graph.get(id).expect("graph invariant").status.is_closed())
+                            .count(),
+                    )
+                })
+                .collect();
+            self.progress = graph
+                .nodes()
+                .filter(|n| n.kind == Kind::Milestone)
+                .map(|n| (n.id.clone(), graph.progress(&n.id)))
+                .collect();
+        }
+        if !unchanged || self.selected != *selected {
+            self.selected.clone_from(selected);
+            self.focus = (!selected.is_empty()).then(|| {
+                let mut focus = reachable(&self.requirements, selected);
+                focus.extend(reachable(&self.dependents, selected));
+                focus
+            });
+            self.critical.clear();
+            self.critical_edges.clear();
+            for id in selected.iter().filter(|id| graph.get(id).is_some_and(|n| n.kind == Kind::Milestone)) {
+                let path = graph.critical_path(id);
+                self.critical.extend(path.iter().cloned());
+                for pair in path.windows(2) {
+                    self.critical_edges.entry(pair[0].clone()).or_default().insert(pair[1].clone());
+                }
+                if let Some(last) = path.last() {
+                    self.critical_edges.entry(last.clone()).or_default().insert(id.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Conservative Bezier bounds include both control points, including curves that cross the viewport.
+fn edge_visible(from: Point<Pixels>, to: Point<Pixels>, viewport: Bounds<Pixels>, zoom: f32) -> bool {
+    if viewport.size.width <= px(0.) {
+        return true;
+    }
+    let head = (7. * zoom).clamp(4., 10.);
+    let end_x = to.x - px(head);
+    let dx = ((end_x - from.x) / 2.).max(px(24. * zoom));
+    let min_x = from.x.min(to.x).min(end_x - dx) - px(4.);
+    let max_x = from.x.max(to.x).max(from.x + dx) + px(4.);
+    let min_y = from.y.min(to.y) - px(head + 4.);
+    let max_y = from.y.max(to.y) + px(head + 4.);
+    Bounds::new(point(min_x, min_y), size(max_x - min_x, max_y - min_y)).intersects(&viewport)
 }
 
 impl TopoApp {
+    pub(crate) fn ensure_graph_cache(&mut self) {
+        self.graph_cache.refresh(&self.ws.graph, &self.selected_nodes);
+    }
+
     /// The node whose card contains `local` (canvas coordinates).
     fn node_at(&self, local: Point<Pixels>, cells: &BTreeMap<NodeId, layout::Cell>) -> Option<NodeId> {
         let size = size(px(NODE_W * self.zoom), px(NODE_H * self.zoom));
@@ -48,7 +176,11 @@ impl TopoApp {
     }
 
     pub(crate) fn on_drag_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if event.pressed_button != Some(MouseButton::Left) {
+        let button = match self.drag {
+            Some(Drag::Pan { button, .. }) => button,
+            _ => MouseButton::Left,
+        };
+        if event.pressed_button != Some(button) {
             // The button was released outside the window.
             if self.drag.take().is_some() {
                 cx.notify();
@@ -70,12 +202,21 @@ impl TopoApp {
     }
 
     pub(crate) fn on_drag_end(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let button = match self.drag {
+            Some(Drag::Pan { button, .. }) => button,
+            Some(Drag::Link { .. }) => MouseButton::Left,
+            None => return,
+        };
+        if event.button != button {
+            return;
+        }
         match self.drag.take() {
-            Some(Drag::Pan { moved: false, on_card: false, .. }) => self.selected = None,
+            Some(Drag::Pan { moved: false, on_card: false, button: MouseButton::Left, .. }) => self.clear_selection(),
             Some(Drag::Link { source, .. }) => {
                 let area = self.area.get();
-                let cells = layout::layout(self.graph());
-                match self.node_at(event.position - area.origin, &cells) {
+                self.ensure_graph_cache();
+                let cells = self.graph_cache.cells();
+                match self.node_at(event.position - area.origin, cells) {
                     Some(target) if target == source => {}
                     Some(target) => self.finish_link(source, target, cx),
                     // Dropped on empty canvas: the link gets a new task at its end.
@@ -89,19 +230,18 @@ impl TopoApp {
     }
 
     pub(crate) fn graph_view(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_graph_cache();
         let graph = &self.ws.graph;
-        let cells = layout::layout(graph);
+        let cells = self.graph_cache.cells();
+        let viewport = Bounds::new(point(px(0.), px(0.)), self.area.get().size);
         let today = dates::today();
         let z = self.zoom;
         let origin = self.area.get().origin;
 
-        let focus = self.selected.as_ref().filter(|id| graph.get(id).is_some()).map(|id| chain(graph, id));
+        let focus = &self.graph_cache.focus;
         let matches: Option<BTreeSet<NodeId>> = self.search_matches(cx).map(|ids| ids.into_iter().collect());
         let cursor = self.list_cursor(cx);
-        let critical: BTreeSet<NodeId> = match self.selected_node() {
-            Some(n) if n.kind == Kind::Milestone => graph.critical_path(&n.id).into_iter().collect(),
-            _ => BTreeSet::new(),
-        };
+        let critical = &self.graph_cache.critical;
         let emphasized = |id: &NodeId| match (&matches, &focus) {
             (Some(m), _) => m.contains(id),
             (None, Some(f)) => f.contains(id),
@@ -112,7 +252,7 @@ impl TopoApp {
             Some(Drag::Link { source, mouse }) => Some((source.clone(), *mouse - origin)),
             _ => None,
         };
-        let over = link.as_ref().and_then(|(_, mouse)| self.node_at(*mouse, &cells));
+        let over = link.as_ref().and_then(|(_, mouse)| self.node_at(*mouse, cells));
         let drop = link.as_ref().zip(over.as_ref()).filter(|((source, _), target)| source != *target).map(
             |((source, _), target)| {
                 let (label, allowed) = self.connect_preview(source, target);
@@ -126,11 +266,10 @@ impl TopoApp {
             let p = self.to_screen(cells[id]);
             point(p.x + px(if right { NODE_W * z } else { 0. }), p.y + px(NODE_H * z / 2.))
         };
-        let selected_id = self.selected.clone();
         let edge = |from: &NodeId, to: &NodeId, membership: bool| {
             let closed = graph.get(from).expect("graph invariant").status.is_closed();
             let on_focus = focus.as_ref().is_some_and(|f| f.contains(from) && f.contains(to));
-            let on_critical = critical.contains(from) && (critical.contains(to) || Some(to) == selected_id.as_ref());
+            let on_critical = self.graph_cache.critical_edges.get(from).is_some_and(|targets| targets.contains(to));
             let (color, width) = match () {
                 _ if !emphasized(from) || !emphasized(to) => (theme::alpha(theme::BORDER_STRONG, 0.25), 1.),
                 _ if on_critical => (rgb(theme::AMBER).into(), 2.5),
@@ -148,6 +287,7 @@ impl TopoApp {
                 let deps = n.depends_on.iter().map(|d| edge(d, &n.id, false));
                 deps.chain(n.milestones.iter().map(|m| edge(&n.id, m, true))).collect::<Vec<_>>()
             })
+            .filter(|e| edge_visible(e.from, e.to, viewport, z))
             .collect();
         edges.sort_by(|a, b| a.width.total_cmp(&b.width));
         let pending = link.as_ref().map(|(source, mouse)| {
@@ -161,9 +301,14 @@ impl TopoApp {
 
         let nodes: Vec<AnyElement> = graph
             .nodes()
+            .filter(|n| {
+                viewport.size.width <= px(0.)
+                    || Bounds::new(self.to_screen(cells[&n.id]), size(px((NODE_W + 8.) * z), px(NODE_H * z)))
+                        .intersects(&viewport)
+            })
             .map(|n| {
                 let state = CardState {
-                    selected: self.selected.as_ref() == Some(&n.id),
+                    selected: self.selected_nodes.contains(&n.id),
                     hovered: self.hovered.as_ref() == Some(&n.id) && self.drag.is_none(),
                     dimmed: !emphasized(&n.id),
                     critical: critical.contains(&n.id),
@@ -176,8 +321,16 @@ impl TopoApp {
 
         let area = self.area.clone();
         let offset = self.offset;
+        let entity_id = cx.entity_id();
         let painter = canvas(
-            move |bounds, _, _| area.set(bounds),
+            move |bounds, window, _| {
+                if area.get() != bounds {
+                    area.set(bounds);
+                    // Elements were culled with the previous viewport. Re-render after layout
+                    // settles so growing the window also reveals newly visible cards.
+                    window.on_next_frame(move |_, cx| cx.notify(entity_id));
+                }
+            },
             move |bounds: Bounds<Pixels>, (), window, _| {
                 let o = bounds.origin;
                 paint_grid(window, bounds, offset, z);
@@ -252,19 +405,47 @@ impl TopoApp {
                 cx.listener(|app, ev: &MouseDownEvent, _, cx| {
                     // A click away from an open prompt only dismisses it (the window does that).
                     if app.prompt.is_none() {
-                        app.drag = Some(Drag::Pan { last: ev.position, moved: false, on_card: false });
+                        app.drag = Some(Drag::Pan {
+                            last: ev.position,
+                            moved: false,
+                            on_card: false,
+                            button: MouseButton::Left,
+                        });
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|app, ev: &MouseDownEvent, _, cx| {
+                    if app.prompt.is_none() {
+                        app.drag = Some(Drag::Pan {
+                            last: ev.position,
+                            moved: false,
+                            on_card: true,
+                            button: MouseButton::Middle,
+                        });
                         cx.notify();
                     }
                 }),
             )
             .on_scroll_wheel(cx.listener(|app, ev: &ScrollWheelEvent, _, cx| {
-                let delta = ev.delta.pixel_delta(px(20.));
-                if ev.modifiers.platform || ev.modifiers.control {
-                    let factor = (1.0 + f32::from(delta.y) / 300.0).clamp(0.5, 2.0);
-                    app.zoom_by(factor, ev.position - app.area.get().origin, false);
-                } else {
-                    app.anim = None;
-                    app.offset += delta;
+                app.anim = None;
+                match ev.delta {
+                    ScrollDelta::Lines(delta) if ev.modifiers.shift => {
+                        app.offset.x += px((delta.y + delta.x) * 40.);
+                    }
+                    ScrollDelta::Lines(delta) if ev.modifiers.platform || ev.modifiers.control => {
+                        app.offset.y += px(delta.y * 40.);
+                        app.offset.x += px(delta.x * 40.);
+                    }
+                    ScrollDelta::Lines(delta) => {
+                        app.zoom_by(1.12_f32.powf(delta.y), ev.position - app.area.get().origin, false);
+                    }
+                    ScrollDelta::Pixels(delta) if ev.modifiers.platform || ev.modifiers.control => {
+                        app.zoom_by((f32::from(delta.y) / 300.).exp(), ev.position - app.area.get().origin, false);
+                    }
+                    ScrollDelta::Pixels(delta) => app.offset += delta,
                 }
                 cx.notify();
             }))
@@ -279,7 +460,6 @@ impl TopoApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let z = self.zoom;
-        let graph = self.graph();
         let id = node.id.clone();
         let milestone = node.kind == Kind::Milestone;
         let closed = node.status.is_closed();
@@ -359,7 +539,7 @@ impl TopoApp {
             .text_color(rgb(theme::FAINT));
         let meta = match node.kind {
             Kind::Milestone => {
-                let (done, total) = graph.progress(&node.id);
+                let (done, total) = self.graph_cache.progress[&node.id];
                 let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
                 let color = if closed || (total > 0 && done == total) { theme::GREEN } else { theme::AMBER };
                 meta.child(theme::progress_bar(fraction, color, 4. * z))
@@ -367,11 +547,7 @@ impl TopoApp {
                     .children(due)
             }
             Kind::Task => {
-                let open_reqs = graph
-                    .requirements(node)
-                    .iter()
-                    .filter(|r| !graph.get(r).expect("graph invariant").status.is_closed())
-                    .count();
+                let open_reqs = self.graph_cache.open_requirements[&node.id];
                 let status = match node.status {
                     Status::Doing => mini("In progress".into(), theme::ACCENT),
                     Status::Done => mini("Done".into(), theme::GREEN),
@@ -420,7 +596,7 @@ impl TopoApp {
             .pl(px(10. * z))
             .pr(px(12. * z))
             .rounded(px(if milestone { 14. } else { 8. } * z))
-            .when_else(state.selected || state.cursor || state.drop.is_some(), |d| d.border_2(), |d| d.border_1())
+            .border_2()
             .border_color(border)
             .bg(bg)
             .when(state.selected, |d| d.shadow(theme::shadow()))
@@ -436,7 +612,12 @@ impl TopoApp {
                         app.close_prompt(window, cx);
                     }
                     window.focus(&app.focus);
-                    app.selected = Some(down_id.clone());
+                    if ev.modifiers.platform || ev.modifiers.control {
+                        app.toggle_selection(down_id.clone());
+                        cx.notify();
+                        return;
+                    }
+                    app.select(Some(down_id.clone()), false);
                     app.drag = match () {
                         _ if ev.modifiers.shift => Some(Drag::Link { source: down_id.clone(), mouse: ev.position }),
                         _ if ev.click_count >= 2 => {
@@ -445,7 +626,12 @@ impl TopoApp {
                             None
                         }
                         // Cards are placed by the layout, so dragging one moves the canvas.
-                        _ => Some(Drag::Pan { last: ev.position, moved: false, on_card: true }),
+                        _ => Some(Drag::Pan {
+                            last: ev.position,
+                            moved: false,
+                            on_card: true,
+                            button: MouseButton::Left,
+                        }),
                     };
                     cx.notify();
                 }),
@@ -454,6 +640,7 @@ impl TopoApp {
         // Wider than the card, so the pointer can reach all of the handle without leaving.
         div()
             .id(ElementId::Name(format!("node-{id}").into()))
+            .debug_selector(|| format!("node-{id}"))
             .absolute()
             .left(pos.x)
             .top(pos.y)
@@ -474,10 +661,14 @@ impl TopoApp {
     }
 }
 
-/// Dots every 28 canvas units, thinned out when zoomed far out.
+/// Dots every 28 canvas units, thinned to a minimum 28 screen pixels at low zoom.
 fn paint_grid(window: &mut Window, bounds: Bounds<Pixels>, offset: Point<Pixels>, zoom: f32) {
+    paint_grid_at_density(window, bounds, offset, zoom, 28.);
+}
+
+fn paint_grid_at_density(window: &mut Window, bounds: Bounds<Pixels>, offset: Point<Pixels>, zoom: f32, minimum: f32) {
     let mut step = 28. * zoom;
-    while step < 14. {
+    while step < minimum {
         step *= 2.;
     }
     let dot = if zoom > 1.2 { 2. } else { 1.5 };
@@ -523,5 +714,313 @@ fn paint_edge(
     );
     if let Ok(arrow) = arrow.build() {
         window.paint_path(arrow, color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(count: usize) -> Graph {
+        Graph::from_nodes((0..count).map(|i| {
+            let mut node = Node::new(NodeId(format!("n{i:04}")), Kind::Task, format!("Task {i}"));
+            if i >= 25 {
+                node.depends_on.push(NodeId(format!("n{:04}", i - 25)));
+            }
+            node
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn cached_metadata_refreshes_after_status_and_topology_edits() {
+        let mut graph = fixture(50);
+        let mut cache = GraphCache::default();
+        let selected = BTreeSet::from([NodeId("n0025".into()), NodeId("n0001".into())]);
+        cache.refresh(&graph, &selected);
+        assert_eq!(cache.open_requirements[&NodeId("n0025".into())], 1);
+        assert!(cache.focus.as_ref().unwrap().contains(&NodeId("n0000".into())));
+        assert!(cache.focus.as_ref().unwrap().contains(&NodeId("n0026".into())));
+        graph.set_status(&NodeId("n0000".into()), Status::Done).unwrap();
+        cache.invalidate();
+        cache.refresh(&graph, &selected);
+        assert_eq!(cache.open_requirements[&NodeId("n0025".into())], 0);
+        let mut extra = Node::new(NodeId("extra".into()), Kind::Task, "Extra".into());
+        extra.depends_on.push(NodeId("n0025".into()));
+        graph.insert(extra).unwrap();
+        cache.invalidate();
+        cache.refresh(&graph, &selected);
+        assert_eq!(cache.cells[&NodeId("extra".into())].0, 2);
+        assert!(cache.focus.as_ref().unwrap().contains(&NodeId("extra".into())));
+        assert_eq!(cache.dependents[&NodeId("n0025".into())], vec![NodeId("extra".into())]);
+        cache.refresh(&graph, &BTreeSet::new());
+        assert!(cache.focus.is_none());
+    }
+
+    fn id(value: &str) -> NodeId {
+        NodeId(value.into())
+    }
+
+    fn graph(nodes: &[(&str, Kind, &[&str], &[&str])]) -> Graph {
+        Graph::from_nodes(nodes.iter().map(|(name, kind, dependencies, milestones)| {
+            let mut node = Node::new(id(name), *kind, (*name).into());
+            node.depends_on = dependencies.iter().map(|value| id(value)).collect();
+            node.milestones = milestones.iter().map(|value| id(value)).collect();
+            node
+        }))
+        .unwrap()
+    }
+
+    fn chain_fixture(count: usize) -> Graph {
+        Graph::from_nodes((0..count).map(|i| {
+            let mut node = Node::new(NodeId(format!("n{i:04}")), Kind::Task, format!("Task {i}"));
+            if i > 0 {
+                node.depends_on.push(NodeId(format!("n{:04}", i - 1)));
+            }
+            node
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn selecting_every_node_in_a_long_chain_keeps_the_complete_focus() {
+        let graph = chain_fixture(1000);
+        let selected = graph.nodes().map(|node| node.id.clone()).collect();
+        let mut cache = GraphCache::default();
+        cache.refresh(&graph, &selected);
+        assert_eq!(cache.focus.as_ref(), Some(&selected));
+        assert_eq!(cache.requirements.values().map(Vec::len).sum::<usize>(), 999);
+        assert_eq!(cache.dependents.values().map(Vec::len).sum::<usize>(), 999);
+    }
+
+    #[test]
+    fn selection_focus_ignores_nodes_removed_from_the_graph() {
+        let graph = fixture(1);
+        let mut cache = GraphCache::default();
+        cache.refresh(&graph, &BTreeSet::from([id("missing"), id("n0000")]));
+        assert_eq!(cache.focus, Some(BTreeSet::from([id("n0000")])));
+    }
+
+    #[test]
+    fn selection_chains_do_not_turn_at_diamond_requirements_or_dependents() {
+        let graph = graph(&[
+            ("root", Kind::Task, &[], &[]),
+            ("left", Kind::Task, &["root"], &[]),
+            ("right", Kind::Task, &["root"], &[]),
+            ("end", Kind::Task, &["left", "right"], &[]),
+        ]);
+        let mut cache = GraphCache::default();
+        cache.refresh(&graph, &BTreeSet::from([id("left")]));
+        assert_eq!(cache.focus, Some(BTreeSet::from([id("root"), id("left"), id("end")])));
+        cache.refresh(&graph, &BTreeSet::from([id("left"), id("right")]));
+        assert_eq!(cache.focus, Some(graph.nodes().map(|node| node.id.clone()).collect()));
+    }
+
+    #[test]
+    fn membership_is_traversed_in_both_directions_without_adding_siblings() {
+        let graph = graph(&[
+            ("a", Kind::Task, &[], &["m"]),
+            ("b", Kind::Task, &[], &["m"]),
+            ("m", Kind::Milestone, &[], &[]),
+            ("next", Kind::Task, &["m"], &[]),
+        ]);
+        let mut cache = GraphCache::default();
+        cache.refresh(&graph, &BTreeSet::from([id("a")]));
+        assert_eq!(cache.focus, Some(BTreeSet::from([id("a"), id("m"), id("next")])));
+        assert_eq!(cache.open_requirements[&id("m")], 2);
+        cache.refresh(&graph, &BTreeSet::from([id("m")]));
+        assert_eq!(cache.focus, Some(graph.nodes().map(|node| node.id.clone()).collect()));
+    }
+
+    #[test]
+    fn critical_edges_end_at_each_selected_milestone_without_cross_path_edges() {
+        let mut graph = graph(&[
+            ("a", Kind::Task, &[], &[]),
+            ("b", Kind::Task, &["a"], &["m1"]),
+            // c is a shorter, off-path member of m1, but critical for m2.
+            ("c", Kind::Task, &[], &["m1"]),
+            ("d", Kind::Task, &["c"], &["m2"]),
+            ("m1", Kind::Milestone, &[], &[]),
+            ("m2", Kind::Milestone, &[], &[]),
+        ]);
+        let mut cache = GraphCache::default();
+        let selected = BTreeSet::from([id("m1"), id("m2")]);
+        cache.refresh(&graph, &selected);
+        assert_eq!(
+            cache.critical_edges,
+            BTreeMap::from([
+                (id("a"), BTreeSet::from([id("b")])),
+                (id("b"), BTreeSet::from([id("m1")])),
+                (id("c"), BTreeSet::from([id("d")])),
+                (id("d"), BTreeSet::from([id("m2")])),
+            ])
+        );
+        graph.set_status(&id("b"), Status::Done).unwrap();
+        cache.invalidate();
+        cache.refresh(&graph, &selected);
+        assert!(!cache.critical_edges.contains_key(&id("b")));
+        assert_eq!(cache.critical_edges[&id("c")], BTreeSet::from([id("d"), id("m1")]));
+        assert_eq!(cache.open_requirements[&id("m1")], 1);
+    }
+
+    /// Selection-only CPU benchmark; layout/adjacency construction is excluded.
+    #[test]
+    #[ignore]
+    fn multi_selection_chain_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        for count in [500, 1000] {
+            let graph = chain_fixture(count);
+            let selected: BTreeSet<_> = graph.nodes().map(|node| node.id.clone()).collect();
+            let mut cache = GraphCache::default();
+            cache.refresh(&graph, &BTreeSet::new());
+            let start = Instant::now();
+            let legacy: BTreeSet<_> = selected
+                .iter()
+                .flat_map(|id| graph.descendants(id).into_iter().chain(graph.ancestors(id)).chain([id.clone()]))
+                .collect();
+            let legacy_ms = start.elapsed().as_secs_f64() * 1000.;
+            let mut samples = Vec::new();
+            for _ in 0..40 {
+                cache.refresh(&graph, &BTreeSet::new());
+                let start = Instant::now();
+                cache.refresh(&graph, black_box(&selected));
+                samples.push(start.elapsed().as_secs_f64() * 1000.);
+                assert_eq!(cache.focus.as_ref(), Some(&legacy));
+                black_box(&cache.focus);
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "{count} selected chain: legacy {:.3} ms; shared traversal median {:.3} ms p95 {:.3} ms",
+                legacy_ms, samples[20], samples[38]
+            );
+        }
+    }
+
+    #[test]
+    fn culling_keeps_crossing_edges_and_rejects_distant_edges() {
+        let viewport = Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.)));
+        assert!(edge_visible(point(px(-300.), px(300.)), point(px(1000.), px(300.)), viewport, 1.));
+        assert!(!edge_visible(point(px(900.), px(800.)), point(px(1200.), px(800.)), viewport, 1.));
+        // The control hull can enter the viewport even when endpoints are outside.
+        assert!(edge_visible(point(px(790.), px(-10.)), point(px(820.), px(610.)), viewport, 1.));
+    }
+
+    #[gpui::test]
+    fn growing_viewport_reveals_previously_culled_cards(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut ws = topo_core::Workspace::init(directory.path()).unwrap();
+        ws.graph = fixture(0);
+        let (app, visual) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
+        visual.simulate_resize(size(px(700.), px(860.)));
+        visual.run_until_parked();
+        app.update(visual, |app, cx| {
+            app.ws.graph = fixture(1);
+            app.graph_cache.invalidate();
+            app.anim = None;
+            app.zoom = 1.;
+            app.offset = point(px(850.), px(100.));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("node-n0000").is_none());
+        visual.simulate_resize(size(px(1800.), px(860.)));
+        // The test platform has no display-link callback; refresh models the two
+        // scheduled display frames (bounds discovery, then culling with new bounds).
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        // Model the on_next_frame notification, absent from the test platform.
+        app.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("node-n0000").is_some());
+    }
+
+    struct GridBench {
+        minimum: Option<f32>,
+        zoom: f32,
+    }
+    impl gpui::Render for GridBench {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let minimum = self.minimum;
+            let zoom = self.zoom;
+            div().size_full().child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, (), window, _| {
+                        if let Some(minimum) = minimum {
+                            paint_grid_at_density(window, bounds, point(px(0.), px(0.)), zoom, minimum);
+                        }
+                    },
+                )
+                .size_full(),
+            )
+        }
+    }
+
+    #[gpui::test]
+    #[ignore]
+    fn grid_frame_benchmark(cx: &mut gpui::TestAppContext) {
+        use std::time::Instant;
+        let (app, visual) = cx.add_window_view(|_, _| GridBench { minimum: None, zoom: 0.5 });
+        visual.simulate_resize(size(px(1360.), px(860.)));
+        for minimum in [None, Some(14.), Some(28.)] {
+            app.update(visual, |app, cx| {
+                app.minimum = minimum;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let mut samples = Vec::new();
+            for _ in 0..80 {
+                let started = Instant::now();
+                app.update(visual, |_, cx| cx.notify());
+                visual.run_until_parked();
+                samples.push(started.elapsed().as_secs_f64() * 1000.);
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!("1360x860 grid zoom=0.5 min={minimum:?}: median {:.3} ms p95 {:.3} ms", samples[40], samples[76]);
+        }
+    }
+
+    /// Release-mode headless CPU frame benchmark, excluding GPU/compositor time.
+    /// cargo test -p topo-gui --release canvas_frame_benchmark -- --ignored --nocapture
+    #[gpui::test]
+    #[ignore]
+    fn canvas_frame_benchmark(cx: &mut gpui::TestAppContext) {
+        use std::time::Instant;
+        let directory = tempfile::tempdir().unwrap();
+        let mut ws = topo_core::Workspace::init(directory.path()).unwrap();
+        ws.graph = fixture(500);
+        let (app, visual) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
+        visual.simulate_resize(size(px(1360.), px(860.)));
+        for _ in 0..3 {
+            app.update(visual, |_, cx| cx.notify());
+            visual.run_until_parked();
+        }
+        for invalidate in [true, false] {
+            for motion in ["pan", "zoom", "hover"] {
+                let mut samples = Vec::new();
+                for frame in 0..40 {
+                    let started = Instant::now();
+                    app.update(visual, |app, cx| {
+                        app.anim = None;
+                        if invalidate {
+                            app.graph_cache.invalidate();
+                        }
+                        match motion {
+                            "pan" => app.offset.x += px(if frame % 2 == 0 { 8. } else { -8. }),
+                            "zoom" => app.zoom = if frame % 2 == 0 { 0.9 } else { 1.0 },
+                            _ => app.hovered = Some(NodeId(format!("n{:04}", frame % 25))),
+                        }
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    samples.push(started.elapsed().as_secs_f64() * 1000.);
+                }
+                samples.sort_by(f64::total_cmp);
+                eprintln!(
+                    "500 nodes {motion}, recompute={invalidate}: median {:.3} ms, p95 {:.3} ms",
+                    samples[20], samples[38]
+                );
+            }
+        }
     }
 }

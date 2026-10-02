@@ -17,18 +17,6 @@ fn stop_click<E: InteractiveElement>(element: E) -> E {
 }
 
 impl TopoApp {
-    /// Selects the entry of `ids` after the current selection, wrapping around.
-    fn cycle_through(&mut self, ids: Vec<NodeId>, cx: &mut Context<Self>) {
-        let next = match self.selected.as_ref().and_then(|s| ids.iter().position(|id| id == s)) {
-            Some(i) => ids.get((i + 1) % ids.len()),
-            None => ids.first(),
-        };
-        if let Some(next) = next.cloned() {
-            self.select(Some(next), true);
-            cx.notify();
-        }
-    }
-
     fn stat(
         &self,
         id: &'static str,
@@ -57,7 +45,7 @@ impl TopoApp {
             .when(clickable, |d| {
                 d.cursor_pointer()
                     .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
-                    .on_click(cx.listener(move |app, _, _, cx| app.cycle_through(ids.clone(), cx)))
+                    .on_click(cx.listener(move |app, _, _, cx| app.select_nodes(&ids, cx)))
             })
     }
 
@@ -214,6 +202,9 @@ impl TopoApp {
         let hint = match (&self.hovered, &self.selected) {
             (Some(_), _) => {
                 "Double-click to rename · drag ● onto a node to connect, or onto empty space for a follow-up"
+            }
+            (None, Some(_)) if self.selected_nodes.len() > 1 => {
+                "Space status · 1–4 set status · ⌫ delete selection · click a row to edit one"
             }
             (None, Some(_)) => "Tab follow-up · ⇧Tab prerequisite · L link · Space status · ⌫ delete · ←→↑↓ move",
             (None, None) => "N task · M milestone · / search · F fit · drag to pan · ? shortcuts",
@@ -529,14 +520,14 @@ impl TopoApp {
             (
                 "Edit selection",
                 &[
-                    ("↵", "Rename"),
-                    ("Space", "Next status"),
-                    ("X", "Toggle done"),
+                    ("↵", "Rename (single selection)"),
+                    ("Space", "Next status for selected nodes"),
+                    ("X", "Toggle done for selected nodes"),
                     ("1–4", "Todo / Doing / Done / Dropped"),
-                    ("D", "Due date"),
-                    ("T", "Tags"),
+                    ("D", "Due date (single selection)"),
+                    ("T", "Tags (single selection)"),
                     ("O", "Open the file (notes)"),
-                    ("⌫", "Delete"),
+                    ("⌫", "Delete selected nodes"),
                 ],
             ),
             (
@@ -550,10 +541,10 @@ impl TopoApp {
             (
                 "Move around",
                 &[
-                    ("←→", "Prerequisites / dependents"),
-                    ("↑↓", "Same column"),
+                    ("←→", "Select a prerequisite / dependent"),
+                    ("↑↓", "Select a node in the same column"),
                     ("/  ⌘K", "Search"),
-                    ("C", "Center selection"),
+                    ("C", "Center / fit selection"),
                     ("Esc", "Clear selection"),
                 ],
             ),
@@ -564,8 +555,13 @@ impl TopoApp {
                     ("Drag ●", "Connect; on empty space: new follow-up"),
                     ("⇧Drag", "Connect from anywhere on a card"),
                     ("Double-click", "Rename"),
-                    ("Drag  Scroll", "Pan"),
-                    ("Pinch  ⌘Scroll", "Zoom"),
+                    ("Drag / middle drag", "Pan canvas"),
+                    ("⌘/Ctrl-click", "Add / remove from selection"),
+                    ("Wheel", "Zoom at pointer"),
+                    ("⇧Wheel", "Pan horizontally"),
+                    ("⌘/Ctrl-wheel", "Pan vertically"),
+                    ("Trackpad scroll", "Pan; ⌘/Ctrl to zoom"),
+                    ("Pinch", "Zoom at gesture center"),
                     ("2-finger double-tap", "Fit / actual size"),
                 ],
             ),
@@ -578,7 +574,7 @@ impl TopoApp {
                         .items_center()
                         .gap_2()
                         .text_xs()
-                        .child(div().w(px(96.)).flex_shrink_0().flex().child(kbd(*keys)))
+                        .child(div().w(px(132.)).flex_shrink_0().flex().child(kbd(*keys)))
                         .child(div().flex_1().min_w(px(0.)).text_color(rgb(theme::MUTED)).child(*what))
                 }),
             )
@@ -603,7 +599,11 @@ impl TopoApp {
             )
             .child(
                 div()
+                    .id("help-card")
+                    .debug_selector(|| "help-card".to_owned())
                     .w(px(760.))
+                    .max_h(gpui::relative(0.92))
+                    .overflow_y_scroll()
                     .max_w(gpui::relative(0.92))
                     .flex()
                     .flex_col()
@@ -630,6 +630,7 @@ impl TopoApp {
                         div()
                             .flex()
                             .gap_8()
+                            .when(self.compact, |d| d.flex_col())
                             .child(
                                 div()
                                     .flex_1()
