@@ -18,6 +18,7 @@ Requires Node 22+, ffmpeg and Google Chrome (`CHROME=<path>` to override).
 - `src/scenes_*.js`: the scenes. `scenes_product.js` (16–40 s) shows the real product.
 - `audio/synth.mjs`: music and UI sound effects.
 - `assets/shots/`: frames the real GUI wrote of its own window, plus real CLI and TUI output (`cli.json`, `tui.json`). `assets/data.json` bundles their metadata.
+- `assets/moves/`: the app's own camera moves, captured one app frame per video frame with the video's easing baked in. `render.mjs` extracts them into `assets/shots/seq/` (not tracked).
 
 ## Re-capturing the product footage
 
