@@ -178,6 +178,10 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - Two-finger double-tap: Toggle between fit and actual size
   - `Cmd+=` / `Cmd+-` / `Cmd+0`: Zoom in / Zoom out / Actual size
   - `f`: Fit all nodes on canvas
+- Inspector (right panel):
+  - Drag its left border: Resize the panel (clamped so the canvas keeps its share)
+  - The chosen width is remembered across restarts in the user config, never in the workspace
+  - Titles wrap up to three lines; every overflowing one-line value ends in `…`
 - Node Operations:
   - Click: Select node (`Cmd` / `Ctrl` + click for multi-selection to batch change status or delete)
   - `n`: New task
