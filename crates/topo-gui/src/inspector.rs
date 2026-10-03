@@ -1,14 +1,20 @@
 //! The right-hand panel: the selected node, or an overview when nothing is selected.
 
+use std::cmp::Reverse;
+
 use gpui::{
     AnyElement, Context, CursorStyle, Div, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div,
     prelude::*, px, rgb,
 };
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
+use topo_core::model::pr_label;
 use topo_core::{Graph, Kind, Node, NodeId, Status};
 use topo_jev::organize::Proposal;
 
+use crate::inline::Field;
 use crate::theme::{self, button, chip, icon_button, kbd, section_label};
-use crate::{Drag, Prompt, Relation, TopoApp, dates};
+use crate::{Drag, Relation, TopoApp, dates};
 
 type Remove = fn(&mut Graph, &NodeId, &NodeId) -> Result<(), topo_core::Error>;
 /// The two ends of a relation and how to remove it.
@@ -220,16 +226,24 @@ impl TopoApp {
                 .into_any_element(),
         );
 
-        let doing: Vec<&Node> = graph.nodes().filter(|n| n.kind == Kind::Task && n.status == Status::Doing).collect();
+        // What matters most comes first; a priority is named, not only colored.
+        let detail = |node: &Node| {
+            let parts = [node.priority.map(theme::priority_text), node.due.map(|d| dates::short(d, today))];
+            Some(parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")).filter(|d| !d.is_empty())
+        };
+        let mut doing: Vec<&Node> =
+            graph.nodes().filter(|n| n.kind == Kind::Task && n.status == Status::Doing).collect();
+        doing.sort_by_key(|n| Reverse(n.priority));
         if !doing.is_empty() {
             out.push(section_label("IN PROGRESS").into_any_element());
             for node in doing {
-                out.push(self.node_row("doing", node, None, None, cx).into_any_element());
+                let who = node.assignee.as_ref().map(|a| format!("@{a}"));
+                out.push(self.node_row("doing", node, who.or_else(|| detail(node)), None, cx).into_any_element());
             }
         }
 
         let mut ready: Vec<&Node> = graph.ready_tasks(None).into_iter().filter(|n| n.status == Status::Todo).collect();
-        ready.sort_by_key(|n| (n.due.is_none(), n.due));
+        ready.sort_by_key(|n| (Reverse(n.priority), n.due.is_none(), n.due));
         out.push(section_label(format!("READY NOW · {}", ready.len())).into_any_element());
         if ready.is_empty() {
             out.push(
@@ -241,8 +255,7 @@ impl TopoApp {
             );
         }
         for node in ready {
-            let due = node.due.map(|d| dates::short(d, today));
-            out.push(self.node_row("ready", node, due, None, cx).into_any_element());
+            out.push(self.node_row("ready", node, detail(node), None, cx).into_any_element());
         }
 
         let milestones: Vec<&Node> = graph.nodes().filter(|n| n.kind == Kind::Milestone).collect();
@@ -345,27 +358,31 @@ impl TopoApp {
                 })))
                 .into_any_element(),
         );
-        let rename_id = id.clone();
-        out.push(
-            div()
+        let title = div().flex().items_start().gap_2().mt_2().p_1().mx_neg_1().rounded_md();
+        let glyph = div().pt_0p5().text_color(rgb(color)).text_lg().child(icon);
+        out.push(match self.editing(&id, Field::Title) {
+            // Edited where it stands, at its own size.
+            true => title
+                .child(glyph)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_lg()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(self.combo().clone()),
+                )
+                .into_any_element(),
+            false => title
                 .id("title")
-                .flex()
-                .items_start()
-                .gap_2()
-                .mt_2()
-                .p_1()
-                .mx_neg_1()
-                .rounded_md()
+                .debug_selector(|| "title".to_owned())
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(theme::CARD)))
-                .child(div().pt_0p5().text_color(rgb(color)).text_lg().child(icon))
+                .child(glyph)
                 .child(title_text(node.title.clone()))
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    let title = app.title_of(&rename_id);
-                    app.open_prompt(Prompt::Rename(rename_id.clone()), &title, window, cx);
-                }))
+                .on_click(cx.listener(|app, _, window, cx| app.start_inline(Field::Title, window, cx)))
                 .into_any_element(),
-        );
+        });
 
         // State line.
         let open_reqs: Vec<&Node> = graph
@@ -399,10 +416,17 @@ impl TopoApp {
         // Status control.
         out.push(self.status_control(Some(node.status), cx).into_any_element());
 
-        // Properties.
-        let due_id = id.clone();
-        let tags_id = id.clone();
-        let due_text = match node.due {
+        // Properties, each edited in place.
+        let none = || div().text_color(rgb(theme::FAINT)).child("None");
+        let priority = match node.priority {
+            Some(p) => div().truncate().text_color(rgb(theme::priority_color(p))).child(theme::priority_text(p)),
+            None => none(),
+        };
+        let assignee = match &node.assignee {
+            Some(name) => div().truncate().child(format!("@{name}")),
+            None => div().text_color(rgb(theme::FAINT)).child("Unassigned"),
+        };
+        let due = match node.due {
             Some(d) => {
                 let c = if node.status.is_closed() { theme::MUTED } else { dates::urgency_color(d, today) };
                 div().truncate().text_color(rgb(c)).child(format!(
@@ -411,49 +435,27 @@ impl TopoApp {
                     dates::relative(d, today)
                 ))
             }
-            None => div().text_color(rgb(theme::FAINT)).child("None"),
+            None => none(),
         };
         let tags = match node.tags.is_empty() {
-            true => div().text_color(rgb(theme::FAINT)).child("None"),
+            true => none(),
             false => div()
                 .flex()
                 .flex_wrap()
                 .gap_1()
                 .children(node.tags.iter().map(|t| chip(format!("#{t}"), theme::ACCENT))),
         };
-        let property = |key: &'static str, label: &'static str, shortcut: &'static str, value: Div| {
-            div()
-                .id(key)
-                .flex()
-                .items_center()
-                .gap_2()
-                .min_h(px(30.))
-                .px_2()
-                .mx_neg_2()
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
-                .child(div().w(px(56.)).flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(label))
-                .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_xs().child(value))
-                .child(kbd(shortcut))
-        };
         out.push(section_label("DETAILS").into_any_element());
-        out.push(
-            property("prop-due", "Due", "D", due_text)
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    let due = app.graph().get(&due_id).and_then(|n| n.due).map(|d| d.to_string()).unwrap_or_default();
-                    app.open_prompt(Prompt::Due(due_id.clone()), &due, window, cx);
-                }))
-                .into_any_element(),
-        );
-        out.push(
-            property("prop-tags", "Tags", "T", tags)
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    let tags = app.graph().get(&tags_id).map(|n| n.tags.join(" ")).unwrap_or_default();
-                    app.open_prompt(Prompt::Tags(tags_id.clone()), &tags, window, cx);
-                }))
-                .into_any_element(),
-        );
+        out.push(self.property(node, Field::Priority, "Priority", "P", priority, cx));
+        out.push(self.property(node, Field::Assignee, "Assignee", "A", assignee, cx));
+        out.push(self.property(node, Field::Due, "Due", "D", due, cx));
+        out.push(self.property(node, Field::Tags, "Tags", "T", tags, cx));
+        let tz = TimeZone::system();
+        out.push(moment_row("created", "Created", node.created_at, "Unknown", &tz));
+        out.push(moment_row("updated", "Updated", node.updated_at, "Unknown", &tz));
+        let not_done = if node.status == Status::Done { "Unknown" } else { "Not completed" };
+        out.push(moment_row("completed", "Completed", node.completed_at, not_done, &tz));
+        out.extend(self.pull_requests(node, cx));
 
         // Milestone progress and critical path.
         if milestone {
@@ -484,48 +486,7 @@ impl TopoApp {
             }
         }
 
-        // Notes.
-        let notes_id = id.clone();
-        out.push(
-            div()
-                .flex()
-                .items_end()
-                .justify_between()
-                .child(section_label("NOTES"))
-                .child(
-                    div()
-                        .id("open-file")
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .px_1()
-                        .mb_0p5()
-                        .rounded_sm()
-                        .text_xs()
-                        .text_color(rgb(theme::MUTED))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
-                        .child("Edit file ↗")
-                        .child(kbd("O"))
-                        .on_click(cx.listener(move |app, _, _, cx| app.open_file(&notes_id, cx))),
-                )
-                .into_any_element(),
-        );
-        out.push(match node.body.trim().is_empty() {
-            true => div().text_xs().text_color(rgb(theme::FAINT)).child("No notes").into_any_element(),
-            false => div()
-                .min_w(px(0.))
-                .p_3()
-                .rounded_lg()
-                .bg(rgb(theme::CANVAS))
-                .border_1()
-                .border_color(rgb(theme::BORDER))
-                .text_xs()
-                .text_color(rgb(theme::MUTED))
-                .line_height(px(18.))
-                .child(node.body.trim_end().to_owned())
-                .into_any_element(),
-        });
+        out.extend(self.notes_section(node, cx));
 
         // Relations: each section lists what is connected and offers to connect more.
         let section = |label: &'static str, items: Vec<(&Node, Removal)>, add: Relation, cx: &mut Context<Self>| {
@@ -608,6 +569,189 @@ impl TopoApp {
                 )
                 .into_any_element(),
         );
+        out
+    }
+
+    /// A row of DETAILS. A click, or its key, turns the value into a text field.
+    fn property(
+        &self,
+        node: &Node,
+        field: Field,
+        label: &'static str,
+        shortcut: &'static str,
+        value: Div,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = format!("prop-{}", label.to_lowercase());
+        if self.editing(&node.id, field) {
+            return self.inline_field(Some(label));
+        }
+        div()
+            .id(ElementId::Name(key.clone().into()))
+            .debug_selector(move || key)
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_h(px(30.))
+            .px_2()
+            .mx_neg_2()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
+            .child(property_label(label))
+            .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_xs().child(value))
+            .child(kbd(shortcut))
+            .on_click(cx.listener(move |app, _, window, cx| app.start_inline(field, window, cx)))
+            .into_any_element()
+    }
+
+    /// The field that replaces a row while its value is edited. It is as high
+    /// as the row, and its list floats, so nothing below moves.
+    fn inline_field(&self, label: Option<&'static str>) -> AnyElement {
+        div()
+            .id("inline-edit")
+            .debug_selector(|| "inline-edit".to_owned())
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_h(px(30.))
+            .children(label.map(property_label))
+            .child(div().flex_1().min_w(px(0.)).text_xs().child(self.combo().clone()))
+            .into_any_element()
+    }
+
+    /// The notes: shown as text, and edited in place. A workspace of files can
+    /// also open the file; a cloud workspace has none.
+    fn notes_section(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let editing = self.notes.as_ref() == Some(&node.id);
+        let action = |id: &'static str, label: &'static str, key: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.to_owned())
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_1()
+                .mb_0p5()
+                .rounded_sm()
+                .text_xs()
+                .text_color(rgb(theme::MUTED))
+                .cursor_pointer()
+                .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
+                .child(label)
+                .child(kbd(key))
+        };
+        let file_id = node.id.clone();
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .when(!editing, |d| {
+                d.child(action("edit-notes", "Edit", "E").on_click(cx.listener(|app, _, window, cx| {
+                    app.start_notes(window, cx);
+                })))
+            })
+            .when(self.ws.remote().is_none(), |d| {
+                d.child(
+                    action("open-file", "File ↗", "O")
+                        .on_click(cx.listener(move |app, _, _, cx| app.open_file(&file_id, cx))),
+                )
+            });
+        let header = div().flex().items_end().justify_between().child(section_label("NOTES")).child(actions);
+        let text =
+            div().min_w(px(0.)).p_3().rounded_lg().bg(rgb(theme::CANVAS)).border_1().text_xs().line_height(px(18.));
+        let body = match (editing, node.body.trim().is_empty()) {
+            (true, _) => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                // The editor keeps its own clicks: a click anywhere else saves and closes it.
+                .on_mouse_down(MouseButton::Left, |_, _, cx: &mut gpui::App| cx.stop_propagation())
+                .child(
+                    text.debug_selector(|| "notes-editor".to_owned())
+                        .border_color(rgb(theme::ACCENT))
+                        .child(self.notes_input().clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_x_3()
+                        .gap_y_1()
+                        .text_xs()
+                        .text_color(rgb(theme::FAINT))
+                        .children(
+                            [("⌘↵", "save"), ("esc", "discard")]
+                                .map(|(key, what)| div().flex().items_center().gap_1().child(kbd(key)).child(what)),
+                        )
+                        .child("a click elsewhere saves"),
+                )
+                .into_any_element(),
+            (false, empty) => text
+                .id("notes")
+                .debug_selector(|| "notes".to_owned())
+                .border_color(rgb(theme::BORDER))
+                .cursor_pointer()
+                .hover(|s| s.border_color(rgb(theme::BORDER_STRONG)))
+                .text_color(rgb(if empty { theme::FAINT } else { theme::MUTED }))
+                .child(if empty { "No notes — click to write".to_owned() } else { node.body.trim_end().to_owned() })
+                .on_click(cx.listener(|app, _, window, cx| app.start_notes(window, cx)))
+                .into_any_element(),
+        };
+        vec![header.into_any_element(), body]
+    }
+
+    /// The related pull requests: each opens in the browser and can be unlinked.
+    fn pull_requests(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let heading = match node.prs.len() {
+            0 => "PULL REQUESTS".to_owned(),
+            n => format!("PULL REQUESTS · {n}"),
+        };
+        let add = div().flex().items_center().gap_1().child(kbd("G")).child(icon_button("add-pr", "+").on_click(
+            cx.listener(|app, _, window, cx| {
+                app.start_inline(Field::Pr, window, cx);
+            }),
+        ));
+        let mut out = vec![
+            div().flex().items_end().justify_between().child(section_label(heading)).child(add).into_any_element(),
+        ];
+        for (index, url) in node.prs.iter().enumerate() {
+            let group = SharedString::from(format!("pr-{index}"));
+            let (id, open, unlink) = (node.id.clone(), url.clone(), url.clone());
+            out.push(
+                div()
+                    .id(ElementId::Name(group.clone()))
+                    .debug_selector(|| group.to_string())
+                    .group(group.clone())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_h(px(30.))
+                    .px_2()
+                    .mx_neg_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
+                    .child(div().flex_shrink_0().text_color(rgb(theme::ACCENT)).child("↗"))
+                    .child(div().flex_1().min_w(px(0.)).truncate().text_xs().child(pr_label(url)))
+                    .child(
+                        icon_button(format!("{group}-remove"), "×")
+                            .opacity(0.)
+                            .group_hover(group.clone(), |s| s.opacity(1.))
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                cx.stop_propagation();
+                                app.unlink_pr(id.clone(), &unlink, cx);
+                            })),
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&open)))
+                    .into_any_element(),
+            );
+        }
+        if self.editing(&node.id, Field::Pr) {
+            out.push(self.inline_field(None));
+        } else if node.prs.is_empty() {
+            out.push(div().text_xs().text_color(rgb(theme::FAINT)).child("None linked").into_any_element());
+        }
         out
     }
 
@@ -712,6 +856,38 @@ impl TopoApp {
     }
 }
 
+/// Width of the label column of DETAILS.
+const PROPERTY_LABEL_W: f32 = 64.;
+
+fn property_label(label: &'static str) -> Div {
+    div().w(px(PROPERTY_LABEL_W)).flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(label)
+}
+
+/// A read-only row of DETAILS showing a recorded moment in the time zone `tz`,
+/// or `absent` when there is none. The value is the part that gives way in a
+/// narrow panel, and it stays readable there: it has the row to itself.
+fn moment_row(
+    key: &'static str,
+    label: &'static str,
+    at: Option<Timestamp>,
+    absent: &'static str,
+    tz: &TimeZone,
+) -> AnyElement {
+    let value = match at {
+        Some(at) => div().truncate().text_color(rgb(theme::MUTED)).child(dates::moment(at, tz.clone())),
+        None => div().truncate().text_color(rgb(theme::FAINT)).child(absent),
+    };
+    div()
+        .debug_selector(move || format!("prop-{key}"))
+        .flex()
+        .items_center()
+        .gap_2()
+        .min_h(px(24.))
+        .child(property_label(label))
+        .child(div().flex_1().min_w(px(0.)).text_xs().child(value))
+        .into_any_element()
+}
+
 /// The node title, clamped to three lines that end in `…`. `line_clamp` alone
 /// limits the lines but clips the last one mid-character.
 fn title_text(title: impl Into<SharedString>) -> Stateful<Div> {
@@ -720,6 +896,12 @@ fn title_text(title: impl Into<SharedString>) -> Stateful<Div> {
         .debug_selector(|| "title-text".to_owned())
         .flex_1()
         .min_w(px(0.))
+        // Reserve the combobox's inset and border before editing, so the text
+        // wraps at the same width and the rows below it do not move.
+        .px_1p5()
+        .py_0p5()
+        .border_1()
+        .border_color(theme::alpha(theme::ACCENT, 0.))
         .line_clamp(3)
         .text_ellipsis()
         .text_lg()

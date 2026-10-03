@@ -182,6 +182,13 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - Drag its left border: Resize the panel (clamped so the canvas keeps its share)
   - The chosen width is remembered across restarts in the user config, never in the workspace
   - Titles wrap up to three lines; every overflowing one-line value ends in `…`
+  - The title and the DETAILS rows are edited in place: click one or press its key (`Enter` title, `p` priority, `a` assignee, `d` due date, `t` tags). `Enter` saves, `Esc` or a click elsewhere cancels, and input that cannot be saved keeps the field open with the reason under it
+  - The field completes like a code editor: a floating list (it moves nothing below) offers the priorities, the assignees and tags the workspace already uses, and due dates that follow what you type (`3` → `+3d`, `+3w`, `+3m`, the 3rd; `fr` → `friday`). The first match is highlighted, completed faintly in the field, and taken by `Enter`; `↓` / `↑` or a click choose another. `Esc` closes the list to save the typed text as it is, and a second `Esc` cancels
+  - Tags are edited as chips: a space or comma finishes a tag as typed, `Backspace` in the empty field removes the last one, `×` removes any
+  - `Tab` / `Shift+Tab` save the field and open the next / previous one (title → priority → assignee → due → tags → pull request)
+  - NOTES are written in the panel, in a cloud workspace too: click them or press `e`, `Enter` breaks the line, `Cmd+Enter` saves. Leaving the editor (a click elsewhere, another selection) also saves; only `Esc` discards
+  - Created / updated / completed times are shown read-only in the local time zone (`Unknown` for nodes older than the timestamps)
+  - PULL REQUESTS lists the linked pull requests: `g` or `+` links one (a URL or `owner/repo#123`), a click opens it in the browser, `×` unlinks it
 - Node Operations:
   - Click: Select node (`Cmd` / `Ctrl` + click for multi-selection to batch change status or delete)
   - `n`: New task
@@ -194,14 +201,19 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - `Space`: Cycle status
   - `x`: Toggle `done` status
   - `1` - `4`: Set status directly (Todo, Doing, Done, Dropped)
-  - `d`: Set due date
-  - `t`: Edit tags
-  - `Enter` / `r` / `F2` / double-click: Edit title
-  - `o`: Open the node's Markdown file (notes) in the default editor
+  - `p` / `a` / `d` / `t`: Edit priority / assignee / due date / tags in the inspector
+  - `g`: Link a pull request
+  - `Shift+p`: Dim nodes below a priority (urgent → high and up → medium and up → any priority → all)
+  - `Enter` / `r` / `F2` / double-click: Edit the title in the inspector
+  - `e`: Edit the notes in the inspector
+  - `o`: Open the node's Markdown file (notes) in the default editor (a cloud workspace has no file, so it edits in the inspector)
   - Arrow keys: Move the selection along dependencies (left / right) or within a column (up / down)
   - `c`: Center canvas on selected node (fits all when multiple selected)
   - `Backspace` / `Delete`: Delete node
+  - `Cmd+A`: Select every node (those the priority filter leaves undimmed)
+  - `Cmd+C` / `Cmd+X` / `Cmd+V`: Copy / cut / paste the selected nodes. A paste adds copies as new `todo` nodes with fresh ids, keeping the links between them; assignee, pull requests and times are not copied. Other applications receive a Markdown list
   - `Cmd+Z` / `Cmd+Shift+Z`: Undo / Redo
+  - While a text field (prompt, search, or an inspector row) has the focus, `Cmd+A/C/X/V/Z/Shift+Z` act on its text instead, and canvas keys are typed as text. The Edit menu follows the same rule and disables what cannot run
   - `/` or `Cmd+K` / `Cmd+F`: Search by title, tag, or ID
   - `?`: Toggle keyboard shortcuts cheatsheet
 
@@ -214,7 +226,7 @@ cargo run -p topo-gui --features screenshot -- \
   --screenshot qa.png --width 1360 --height 860 --select <id>
 ```
 
-`--select` accepts one id or a comma-separated list (an unknown id is an error), `--inspector-width` sets the panel width (otherwise derived from the window, ignoring the saved preference), and `--help-overlay` opens the shortcuts sheet. Sizes are whole points; a size larger than the display is an error. `topo-gui --help` lists every option. This is meant for visual QA and documentation.
+`--select` accepts one id or a comma-separated list (an unknown id is an error), `--inspector-width` sets the panel width (otherwise derived from the window, ignoring the saved preference), `--edit <field>` with `--type <text>` opens the title or a DETAILS row of the selected node for editing, `--edit-notes` opens its notes, `--search <query>` opens the search prompt, and `--help-overlay` opens the shortcuts sheet. Sizes are whole points; a size larger than the display is an error. `topo-gui --help` lists every option. This is meant for visual QA and documentation.
 
 ## AI & Automation
 
@@ -262,28 +274,47 @@ topo ready
 topo token create --name agent-1 --workspace <workspace-id> --expires 90d
 
 # An agent sets TOPO_TOKEN and TOPO_CLOUD_URL to the trusted server, then claims a task
-topo status <id> doing --if todo
+topo status <id> doing --if todo --assign "$TOPO_AGENT"
 ```
 
 The link is a `[cloud]` table in `.topo/config.toml`, which holds no secret and can be committed. `topo cloud pull` writes the nodes back to Markdown files and removes the link.
+
+## Priority and recorded times
+
+Priority is optional: `low`, `medium`, `high`, or `urgent`. It ranks work without changing dependencies or readiness. `ls --priority high --priority urgent` selects either value; `ls --no-priority` selects nodes without one. These filters cannot be combined. `ls --sort priority` and `ready --sort priority` put the highest value first and unset values last, keeping ID order for ties. `organize prioritize` returns model recommendation scores (0–1) and leaves saved priorities unchanged, including with `--apply`.
+
+Topo records `created_at` and `updated_at` when it saves a new node, updates `updated_at` only for actual changes, and sets `completed_at` on transition to `done`. Reopening or dropping a node clears its completion time. Reading, failed operations, and no-op edits keep the times unchanged. Times are stored as UTC seconds, using the server clock for cloud writes, and retained by cloud push/pull. Old nodes keep unknown times; topo never guesses them from file modification times.
+
+`show` and the TUI details show all three times (`Unknown` for missing records, `Not completed` for open or dropped nodes). CLI timestamps include the UTC `Z` suffix; GUI DETAILS displays the local time zone. `show --json`, `ls --json`, `ready --json`, and `--format jsonl` include known timestamps; absent times are omitted. Compact text listings and the five-column TSV format keep their existing layout.
+
+```bash
+topo add "Fix login" --priority high --assignee codex
+topo edit <id> --priority urgent --pr owner/repo#12
+topo status <id> doing --if todo --assign codex
+topo ready --sort priority
+topo ls --no-priority --format jsonl
+topo edit <id> --no-priority
+topo status <id> done
+topo show <id> # includes its completion time
+```
 
 ## Command Reference
 
 | Command | Description | Common Flags |
 | :--- | :--- | :--- |
 | `topo init` | Initialize `.topo` workspace | |
-| `topo ready` | List tasks unblocked and ready to start | `--under <id>`, `--format <text\|ids\|tsv\|jsonl>` |
+| `topo ready` | List tasks unblocked and ready to start | `--under <id>`, `--sort priority`, `--format <text\|ids\|tsv\|jsonl>` |
 | `topo milestones` | List milestones with progress bar and critical path | `--format <text\|ids\|tsv\|jsonl>` |
-| `topo add <title>` | Add task or milestone | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--note <text>` |
+| `topo add <title>` | Add task or milestone | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--priority <low\|medium\|high\|urgent>`, `--assignee <name>`, `--pr <url\|owner/repo#N>`, `--note <text>` |
 | `topo link <from> <to>` | Make `<from>` depend on `<to>` | |
 | `topo unlink <from> <to>` | Remove dependency of `<from>` on `<to>` | |
 | `topo join <task> <ms>` | Add task to milestone membership | |
 | `topo leave <task> <ms>` | Remove task from milestone | |
-| `topo status <id> <st>` | Update status (`todo`, `doing`, `done`, `dropped`) | `--if <st>` (fail unless the node has this status) |
-| `topo edit <id>` | Modify node fields | `--title`, `--due`, `--no-due`, `--tag`, `--note` |
+| `topo status <id> <st>` | Update status (`todo`, `doing`, `done`, `dropped`) | `--if <st>` (fail unless the node has this status), `--assign <name>` (set the assignee in the same atomic write) |
+| `topo edit <id>` | Modify node fields | `--title`, `--due`, `--no-due`, `--tag`, `--priority`, `--no-priority`, `--assignee`, `--no-assignee`, `--pr`, `--unpr`, `--note` |
 | `topo rm <id>` | Delete node and adjacent edges | |
-| `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--format` |
-| `topo show <id>` | Show node details and adjacent nodes | |
+| `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
+| `topo show <id>` | Show node details (priority, assignee, pull requests, created/updated/completed times) and adjacent nodes | |
 | `topo deps <id>` | List prerequisites, including milestone members | `--transitive`, `--format`, `--json` |
 | `topo dependents <id>` | List nodes depending on a node | `--transitive` (also follows membership), `--format`, `--json` |
 | `topo members <ms>` | List a milestone's member tasks | `--format`, `--json` |

@@ -182,6 +182,13 @@ Zedエディタのレンダリング基盤であるGPUIによるネイティブ�
   - 左端をドラッグ: パネル幅を変更（キャンバスが潰れないようクランプ）
   - 選んだ幅はユーザー設定に保存され、次回起動時も保持（ワークスペースには保存しない）
   - タイトルは最大3行で折り返し、溢れる1行表示は末尾を `…` に統一
+  - タイトルと DETAILS の各行はその場で編集: クリックするか対応キー（`Enter` タイトル、`p` 優先度、`a` 担当者、`d` 期日、`t` タグ）を押す。`Enter` で確定、`Esc` または他の場所のクリックでキャンセル。保存できない入力は欄を開いたまま理由を行の下に表示
+  - 入力欄はコードエディタの補完のように動く: 下の行を動かさない浮動リストに、優先度、ワークスペースで使われている担当者とタグ、入力に応じた期日（`3` → `+3d`・`+3w`・`+3m`・3日、`fr` → `friday`）を表示。先頭の一致がハイライトされ、欄内に薄い文字で補完され、`Enter` で確定。`↓` / `↑` またはクリックで別の候補を選ぶ。`Esc` でリストを閉じると入力した文字をそのまま保存でき、もう一度 `Esc` でキャンセル
+  - タグはチップとして編集: スペースかカンマで入力どおりに確定、空の欄で `Backspace` を押すと最後のタグを削除、`×` で個別に削除
+  - `Tab` / `Shift+Tab` で欄を保存して次 / 前の欄へ移動（タイトル → 優先度 → 担当者 → 期日 → タグ → PR）
+  - NOTES はパネル内で編集（クラウドのワークスペースでも可）: クリックするか `e` を押す。`Enter` で改行、`Cmd+Enter` で保存。エディタを離れる操作（他の場所のクリック、別のノードの選択）でも保存され、破棄するのは `Esc` だけ
+  - 作成・更新・完了日時をローカルタイムゾーンで読み取り専用表示（日時の記録より前のノードは `Unknown`）
+  - PULL REQUESTS に関連 PR を一覧表示: `g` または `+` で登録（URL か `owner/repo#123`）、クリックでブラウザで開く、`×` で解除
 - ノード操作:
   - クリック: ノードを選択（`Cmd` / `Ctrl` + クリックで複数選択、ステータス変更や削除を一括適用）
   - `n`: 新規タスクの作成
@@ -194,14 +201,19 @@ Zedエディタのレンダリング基盤であるGPUIによるネイティブ�
   - `Space`: ステータスの循環切り替え
   - `x`: `done` 状態のトグル
   - `1`〜`4`: ステータスの直接指定（Todo, Doing, Done, Dropped）
-  - `d`: 期日（Due date）の設定
-  - `t`: タグ（Tags）の編集
-  - `Enter` / `r` / `F2` / ダブルクリック: タイトルの編集
-  - `o`: ノードの Markdown ファイル（ノート）を既定のエディタで開く
+  - `p` / `a` / `d` / `t`: 優先度 / 担当者 / 期日 / タグを右パネルで編集
+  - `g`: PR を紐付ける
+  - `Shift+p`: 指定した優先度未満のノードを薄く表示（urgent → high 以上 → medium 以上 → 優先度あり → すべて）
+  - `Enter` / `r` / `F2` / ダブルクリック: タイトルを右パネルで編集
+  - `e`: ノートを右パネルで編集
+  - `o`: ノードの Markdown ファイル（ノート）を既定のエディタで開く（クラウドのワークスペースにはファイルがないため右パネルで編集）
   - 矢印キー: 依存関係に沿って（左右）または同じ列の中で（上下）選択を移動
   - `c`: 選択ノードを中央に表示（複数選択時は全体を表示）
   - `Backspace` / `Delete`: ノードの削除
+  - `Cmd+A`: 全ノードを選択（優先度フィルタで薄くなっていないもの）
+  - `Cmd+C` / `Cmd+X` / `Cmd+V`: 選択ノードのコピー / 切り取り / 貼り付け。貼り付けは新しい ID の `todo` ノードとして複製し、複製同士のリンクを保つ。担当者・PR・日時はコピーしない。他のアプリには Markdown のリストとして渡る
   - `Cmd+Z` / `Cmd+Shift+Z`: アンドゥ / リドゥ
+  - 入力欄（プロンプト、検索、右パネルの行）にフォーカスがある間は、`Cmd+A/C/X/V/Z/Shift+Z` はその文字列に作用し、キャンバスのキーは文字として入力される。Edit メニューも同じ規則に従い、実行できない項目は無効になる
   - `/` または `Cmd+K` / `Cmd+F`: タイトル・タグ・IDによる検索
   - `?`: キーバインドヘルプの表示
 
@@ -214,7 +226,7 @@ cargo run -p topo-gui --features screenshot -- \
   --screenshot qa.png --width 1360 --height 860 --select <id>
 ```
 
-`--select` はID1つまたはカンマ区切りの複数（存在しないIDはエラー）、`--inspector-width` はパネル幅の指定（省略時は保存済みの設定を使わず、ウィンドウ幅から決定）、`--help-overlay` はショートカット一覧を表示します。サイズは整数のポイントで指定し、ディスプレイより大きいサイズはエラーになります。全オプションは `topo-gui --help` で確認できます。視覚QAとドキュメント用です。
+`--select` はID1つまたはカンマ区切りの複数（存在しないIDはエラー）、`--inspector-width` はパネル幅の指定（省略時は保存済みの設定を使わず、ウィンドウ幅から決定）、`--edit <field>` と `--type <text>` は選択ノードのタイトルまたは DETAILS の行を編集状態で開き、`--edit-notes` はノートを開き、`--search <query>` は検索プロンプトを開き、`--help-overlay` はショートカット一覧を表示します。サイズは整数のポイントで指定し、ディスプレイより大きいサイズはエラーになります。全オプションは `topo-gui --help` で確認できます。視覚QAとドキュメント用です。
 
 ## AI・自動化との連携
 
@@ -262,28 +274,47 @@ topo ready
 topo token create --name agent-1 --workspace <workspace-id> --expires 90d
 
 # エージェントは TOPO_TOKEN を設定してタスクを確保する。複数が競合しても成功するのは 1 つ
-topo status <id> doing --if todo
+topo status <id> doing --if todo --assign "$TOPO_AGENT"
 ```
 
 リンクは `.topo/config.toml` の `[cloud]` テーブルに保存される。秘密情報を含まないためコミットできる。`topo cloud pull` はノードを Markdown ファイルへ書き戻し、リンクを解除する。
+
+## 優先度と記録日時
+
+priority は任意の属性で、`low`・`medium`・`high`・`urgent` の4段階。依存関係や着手可能かどうかの判定は変えない。`ls --priority high --priority urgent` はいずれかの値、`ls --no-priority` は未設定のノードを選ぶ。この2つのフィルタは併用できない。`ls --sort priority` と `ready --sort priority` は優先度の高い順、未設定は最後に並べ、同順位では ID 順を保つ。`organize prioritize` のモデル推奨スコア（0〜1）は保存された priority を変更しない（`--apply` 指定時も同様）。
+
+新規ノードの保存時に `created_at` と `updated_at` を記録し、実際に内容が変わったときだけ `updated_at` を更新する。`done` への遷移で `completed_at` を記録し、再オープンや `dropped` への変更で解除する。読み取り・失敗した操作・変更のない編集では日時は変わらない。日時は UTC の秒精度で保存し、クラウドの書き込みではサーバー時刻を使う。cloud push/pull は既存日時を保持し、旧ノードの不明な日時をファイルの更新時刻から推測しない。
+
+`show` と TUI の詳細欄には3つの日時を表示する（不明は `Unknown`、未完了や dropped の完了日時は `Not completed`）。CLI の日時は UTC を示す `Z` 付き、GUI の DETAILS はローカルタイムゾーンで表示する。`show --json`・`ls --json`・`ready --json` と `--format jsonl` は既知の日時を含み、不明な日時はフィールドを省略する。簡潔なテキスト一覧と5列の TSV は既存の形式を維持する。
+
+```bash
+topo add "ログインを修正" --priority high --assignee codex
+topo edit <id> --priority urgent --pr owner/repo#12
+topo status <id> doing --if todo --assign codex
+topo ready --sort priority
+topo ls --no-priority --format jsonl
+topo edit <id> --no-priority
+topo status <id> done
+topo show <id> # 完了日時も確認できる
+```
 
 ## コマンドリファレンス
 
 | コマンド | 説明 | 主要引数・フラグ |
 | :--- | :--- | :--- |
 | `topo init` | ワークスペース（`.topo`）の初期化 | |
-| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>`, `--format <text\|ids\|tsv\|jsonl>` |
+| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>`, `--sort priority`, `--format <text\|ids\|tsv\|jsonl>` |
 | `topo milestones` | マイルストーン一覧・進捗率・クリティカルパスの表示 | `--format <text\|ids\|tsv\|jsonl>` |
-| `topo add <title>` | タスクまたはマイルストーンの作成 | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--note <text>` |
+| `topo add <title>` | タスクまたはマイルストーンの作成 | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--priority <low\|medium\|high\|urgent>`, `--assignee <name>`, `--pr <url\|owner/repo#N>`, `--note <text>` |
 | `topo link <from> <to>` | `<from>` が `<to>` に依存するエッジを追加 | |
 | `topo unlink <from> <to>` | 依存関係の解除 | |
 | `topo join <task> <ms>` | タスクをマイルストーンの構成員に追加 | |
 | `topo leave <task> <ms>` | タスクをマイルストーンから除外 | |
-| `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | `--if <st>`（現在のステータスが一致しなければ失敗） |
-| `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--note` |
+| `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | `--if <st>`（現在のステータスが一致しなければ失敗）, `--assign <name>`（同じアトミックな書き込みで担当者を設定） |
+| `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--priority`, `--no-priority`, `--assignee`, `--no-assignee`, `--pr`, `--unpr`, `--note` |
 | `topo rm <id>` | ノードおよび接続エッジの削除 | |
-| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--format` |
-| `topo show <id>` | ノードの詳細・隣接ノード・メモの表示 | |
+| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
+| `topo show <id>` | ノードの詳細（優先度・担当者・プルリクエスト・作成/更新/完了日時）・隣接ノード・メモの表示 | |
 | `topo deps <id>` | 前提ノードの一覧（マイルストーンのメンバーも含む） | `--transitive`, `--format`, `--json` |
 | `topo dependents <id>` | 指定ノードに依存するノードの一覧 | `--transitive`（所属関係もたどる）, `--format`, `--json` |
 | `topo members <ms>` | マイルストーンの構成タスクの一覧 | `--format`, `--json` |

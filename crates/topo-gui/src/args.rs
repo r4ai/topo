@@ -41,6 +41,22 @@ pub struct Args {
     #[arg(long, requires = "screenshot", value_name = "ID", value_delimiter = ',', value_parser = node_id)]
     pub select: Vec<String>,
 
+    /// Capture with this property of the one selected node open for editing
+    #[arg(long, requires = "select", value_name = "FIELD")]
+    pub edit: Option<crate::inline::Field>,
+
+    /// Text typed into the field opened by `--edit`
+    #[arg(long = "type", requires = "edit", value_name = "TEXT")]
+    pub typed: Option<String>,
+
+    /// Capture with the notes of the one selected node open for editing
+    #[arg(long, requires = "select", conflicts_with = "edit")]
+    pub edit_notes: bool,
+
+    /// Capture with the search prompt open on this query
+    #[arg(long, requires = "screenshot", value_name = "QUERY")]
+    pub search: Option<String>,
+
     /// Capture with the keyboard-shortcuts overlay open
     #[arg(long, requires = "screenshot")]
     pub help_overlay: bool,

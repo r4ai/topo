@@ -62,6 +62,29 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
     })
     .context("--select")?;
 
+    if let Some(field) = options.edit {
+        cx.update_window(handle.into(), |_, window, cx| {
+            entity.update(cx, |app, cx| {
+                app.start_inline(field, window, cx);
+                if let Some(text) = &options.typed {
+                    app.combo().update(cx, |combo, cx| combo.set_text(text, cx));
+                }
+            })
+        })?;
+    }
+
+    if options.edit_notes || options.search.is_some() {
+        cx.update_window(handle.into(), |_, window, cx| {
+            entity.update(cx, |app, cx| match &options.search {
+                Some(query) => {
+                    app.open_prompt(crate::Prompt::Search, window, cx);
+                    app.palette.update(cx, |palette, cx| palette.set_text(query, cx));
+                }
+                None => app.start_notes(window, cx),
+            })
+        })?;
+    }
+
     // The first frames settle layout and the camera fit.
     for _ in 0..4 {
         cx.run_until_parked();

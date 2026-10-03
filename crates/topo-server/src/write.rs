@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use jiff::Timestamp;
 use serde::Deserialize;
 use topo_core::wire::ApplyResult;
 use topo_core::{Graph, Node, NodeId, Op};
@@ -32,10 +33,13 @@ pub struct Changed {
 /// How often a write is recomputed after losing its version to another write.
 const ATTEMPTS: usize = 3;
 
+/// `change` gets the graph as stored and the time of the database. It decides
+/// whether that time is recorded on the nodes: a batch of operations stamps
+/// what it changed, an import keeps the timestamps it was given.
 pub async fn write(
     state: &AppState,
     write: &Write<'_>,
-    change: impl Fn(&Graph) -> Result<Changed, ApiError>,
+    change: impl Fn(&Graph, Timestamp) -> Result<Changed, ApiError>,
 ) -> Result<ApplyResult, ApiError> {
     let wid = write.workspace_id;
     for _ in 0..ATTEMPTS {
@@ -45,9 +49,10 @@ pub async fn write(
             sql::version(wid),
             sql::change_by_key(wid, write.idempotency_key),
             sql::nodes(wid),
+            sql::clock(),
         ];
-        let [membership, current, recorded, nodes] =
-            <[Rows; 4]>::try_from(state.db.batch(read).await?).expect("one result per statement");
+        let [membership, current, recorded, nodes, clock] =
+            <[Rows; 5]>::try_from(state.db.batch(read).await?).expect("one result per statement");
         permit(write.caller.role(wid, membership)?, &WRITERS)?;
         if let Some(recorded) = recorded.first::<Recorded>()? {
             let created = serde_json::from_str(&recorded.created).map_err(internal)?;
@@ -58,7 +63,7 @@ pub async fn write(
             return Err(ApiError::PreconditionFailed(current));
         }
         let before = graph(nodes)?;
-        let changed = change(&before)?;
+        let changed = change(&before, now(clock)?)?;
         let (old, new) = (before.into_nodes(), changed.graph.into_nodes());
         let upserts: Vec<&Node> = new.values().filter(|node| old.get(&node.id) != Some(node)).collect();
         let deletes: Vec<&NodeId> = old.keys().filter(|id| !new.contains_key(id)).collect();
@@ -97,6 +102,16 @@ pub fn version(rows: Rows) -> Result<u64, ApiError> {
     }
     let row: Option<Row> = rows.first()?;
     Ok(row.expect("an aggregate returns one row").version)
+}
+
+/// The row of a `sql::clock` statement.
+fn now(rows: Rows) -> Result<Timestamp, ApiError> {
+    #[derive(Deserialize)]
+    struct Row {
+        now: i64,
+    }
+    let row: Option<Row> = rows.first()?;
+    Timestamp::from_second(row.expect("a select without a table returns one row").now).map_err(internal)
 }
 
 /// The rows of a `sql::nodes` statement.

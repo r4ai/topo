@@ -51,6 +51,13 @@ CREATE TABLE nodes (
   depends_on   TEXT NOT NULL,              -- JSON array of node ids
   milestones   TEXT NOT NULL,              -- JSON array of node ids
   body         TEXT NOT NULL,              -- Markdown notes
+  priority     TEXT CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
+                                           -- NULL: no priority
+  assignee     TEXT,                       -- who works on the node, or NULL
+  prs          TEXT NOT NULL DEFAULT '[]', -- JSON array of pull request URLs
+  created_at   TEXT,                       -- RFC 3339 in UTC, or NULL when unknown
+  updated_at   TEXT,                       -- RFC 3339 in UTC, or NULL when unknown
+  completed_at TEXT,                       -- RFC 3339 in UTC; set only while status is 'done'
   PRIMARY KEY (workspace_id, id)
 );
 
@@ -77,6 +84,12 @@ graph queries, which it never does, and they would lose the order of the
 `depends_on` and `milestones` vectors that a round trip through files has to
 preserve.
 
+The columns from `priority` on were added by the migration
+`0002_node_metadata.sql`. Each is nullable or has a default, so the Worker
+deployed before the migration, which names none of them, kept working. The
+three times are `NULL` on rows written before the migration and stay `NULL`
+until the node changes.
+
 A workspace's version is `MAX(version)` over its `changes` rows, or 0 when it
 has none. No other column stores it.
 
@@ -84,12 +97,13 @@ has none. No other column stores it.
 
 The schema enforces what the server relies on before a graph is loaded:
 ownership of rows by a workspace, uniqueness of ids, and the closed sets of
-`kind`, `status`, and `role`. Everything about the graph itself stays in
+`kind`, `status`, `priority`, and `role`. Everything about the graph itself stays in
 `topo-core::Graph`:
 
 - every reference names an existing node, with no self or duplicate references;
 - only tasks have milestones, and those name milestones;
-- the requirement relation (dependencies plus milestone membership) is acyclic.
+- the requirement relation (dependencies plus milestone membership) is acyclic;
+- assignees and pull request URLs are in canonical form, each URL once per node.
 
 `Graph::from_nodes` checks these when the workspace is loaded and every
 mutation checks them again, so the server never writes a graph the local
@@ -103,13 +117,17 @@ batch. The primary key of `changes` is the lock: of two writers that computed
 the same next version, the second insert fails and its whole batch rolls back.
 
 1. Read, in one batch: the caller's role, the workspace version, the `changes`
-   row with the request's idempotency key if any, and every node.
+   row with the request's idempotency key if any, every node, and the time
+   (`SELECT unixepoch()`).
 2. If the idempotency key is already recorded, return that row's `version` and
    `created`. The request was a retry of a write that succeeded.
 3. If the request carries `If-Match` and it differs from the version, fail with
    `precondition_failed`.
 4. Build a `Graph` from the nodes and apply the operations. `Graph` rejects
-   cycles and invalid references.
+   cycles and invalid references. Then `Graph::stamp` compares the result with
+   the loaded nodes and records the time of step 1 as `created_at`,
+   `updated_at`, and `completed_at` of the nodes that changed. An import skips
+   the stamping and keeps the times of the nodes it was given.
 5. Diff the resulting nodes against the loaded ones, as `Workspace::save` does
    for files.
 6. Write, in one batch:
@@ -120,14 +138,19 @@ the same next version, the second insert fails and its whole batch rolls back.
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
    INSERT INTO "nodes" ("workspace_id", "id", "kind", "title", "status", "due",
-                        "tags", "depends_on", "milestones", "body")
+                        "tags", "depends_on", "milestones", "body", "priority", "assignee",
+                        "prs", "created_at", "updated_at", "completed_at")
    SELECT ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?,
+          "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?,
           "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?
    FROM json_each(?) AS "rows" WHERE ?
    ON CONFLICT ("workspace_id", "id") DO UPDATE SET
      "kind" = "excluded"."kind", "title" = "excluded"."title", "status" = "excluded"."status",
      "due" = "excluded"."due", "tags" = "excluded"."tags", "depends_on" = "excluded"."depends_on",
-     "milestones" = "excluded"."milestones", "body" = "excluded"."body";
+     "milestones" = "excluded"."milestones", "body" = "excluded"."body",
+     "priority" = "excluded"."priority", "assignee" = "excluded"."assignee", "prs" = "excluded"."prs",
+     "created_at" = "excluded"."created_at", "updated_at" = "excluded"."updated_at",
+     "completed_at" = "excluded"."completed_at";
 
    DELETE FROM "nodes"
    WHERE "workspace_id" = ? AND "id" IN (SELECT "value" FROM json_each(?) AS "ids");
@@ -153,4 +176,6 @@ as parameters; none is ever concatenated into SQL text. The statements shown
 here are what the builder renders.
 
 Times are computed in SQL (`unixepoch()`), including token expiry, so the
-server never reads a clock.
+server never reads a clock. The times of nodes come from the same clock: the
+read batch of a write selects `unixepoch()`, and the server writes that second
+on the nodes the write changed.

@@ -203,8 +203,7 @@ pub fn cloud(dir: &Option<PathBuf>, server: Server, command: CloudCommand, json:
             let cloud = topo_cloud::open(topo.clone())?;
             std::fs::create_dir_all(cloud.nodes_dir()).with_context(|| cloud.nodes_dir().display().to_string())?;
             let mut files = Workspace::open(topo.clone())?;
-            files.graph = cloud.graph;
-            files.save()?;
+            files.replace_files(cloud.graph)?;
             config::store(&topo, None)?;
             let count = files.graph.nodes().count();
             print(json, json!({ "nodes": count }), || format!("wrote {count} nodes to {}", files.nodes_dir().display()))

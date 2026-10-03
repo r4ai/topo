@@ -13,7 +13,7 @@ pub mod wire;
 use std::path::PathBuf;
 
 pub use graph::{Edit, Graph};
-pub use model::{Kind, Node, NodeId, Status};
+pub use model::{Kind, Node, NodeId, Priority, Status};
 pub use ops::Op;
 #[cfg(feature = "fs")]
 pub use store::{Remote, Workspace};
@@ -54,6 +54,14 @@ pub enum Error {
     NotLinked { from: NodeId, to: NodeId },
     #[error("invalid node id `{0}` (expected 1 to 32 characters of 0-9 and a-z)")]
     InvalidId(String),
+    #[error("invalid priority `{0}` (expected low, medium, high, or urgent)")]
+    InvalidPriority(String),
+    #[error("invalid assignee `{0}` (expected 1 to 64 characters on one line)")]
+    InvalidAssignee(String),
+    #[error("invalid pull request `{0}` (expected an http(s) URL or `owner/repo#123`)")]
+    InvalidPr(String),
+    #[error("`{node}` lists the pull request `{url}` twice")]
+    DuplicatePr { node: NodeId, url: String },
     #[error("unknown ref `${0}`")]
     UnknownRef(String),
     #[error("ref `${0}` is defined twice")]

@@ -83,7 +83,8 @@ pub async fn get(
 
 /// Replace every node of a workspace, keeping the given ids.
 ///
-/// This imports a local workspace. The nodes must form a valid graph.
+/// This imports a local workspace. The nodes must form a valid graph. They are
+/// stored with the timestamps they carry; an import records no times of its own.
 #[utoipa::path(
     put, path = "/v1/workspaces/{wid}/graph", tag = "graph",
     params(
@@ -109,7 +110,7 @@ pub async fn import(
     Json(request): Json<ImportRequest>,
 ) -> Result<axum::Json<ApplyResult>, ApiError> {
     let write = write_headers(&caller, &wid, &headers)?;
-    let result = write::write(&state, &write, |before| {
+    let result = write::write(&state, &write, |before, _| {
         let nodes: Vec<Node> = request.nodes.iter().cloned().map(Into::into).collect();
         let graph = Graph::from_nodes(nodes)?;
         let ops = ops::diff(&before.clone().into_nodes(), &graph.clone().into_nodes());
@@ -121,7 +122,8 @@ pub async fn import(
 /// Apply a batch of operations to the current graph, all or nothing.
 ///
 /// This is the only way to change nodes. References are exact ids, or `$ref`
-/// for a node added earlier in the batch.
+/// for a node added earlier in the batch. The server records `created_at`,
+/// `updated_at`, and `completed_at` of the nodes the batch changes.
 #[utoipa::path(
     post, path = "/v1/workspaces/{wid}/apply", tag = "graph",
     params(
@@ -148,9 +150,10 @@ pub async fn apply(
     Json(request): Json<ApplyRequest>,
 ) -> Result<axum::Json<ApplyResult>, ApiError> {
     let write = write_headers(&caller, &wid, &headers)?;
-    let result = write::write(&state, &write, |before| {
+    let result = write::write(&state, &write, |before, now| {
         let (mut graph, mut ops) = (before.clone(), request.ops.clone());
         let created = ops::apply(&mut graph, &mut ops)?;
+        graph.stamp(&before.clone().into_nodes(), now);
         Ok(Changed { graph, ops, created })
     });
     Ok(axum::Json(result.await?))

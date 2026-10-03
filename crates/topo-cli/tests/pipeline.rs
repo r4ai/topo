@@ -5,7 +5,7 @@ use std::process::{Child, Command, Output, Stdio};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use topo_core::{Graph, Kind, Node, NodeId, Status, Workspace};
+use topo_core::{Graph, Kind, Node, NodeId, Priority, Status, Workspace};
 
 struct Fixture {
     root: TempDir,
@@ -527,4 +527,208 @@ fn empty_queries_have_no_phantom_lines_in_any_line_format() {
         }
         assert_eq!(fixture.json(&[command, "--json"], ""), json!([]));
     }
+}
+
+#[test]
+fn metadata_is_added_edited_and_cleared() {
+    let fixture = Fixture::new(vec![node("other1", Kind::Task, "Other")]);
+    let (first, third) = ("https://github.com/o/r/pull/1", "https://github.com/o/r/pull/3");
+    let added = fixture.json(
+        &["add", "Task", "--priority", "High", "--assignee", " alice ", "--json"]
+            .into_iter()
+            .chain([
+                "--pr",
+                "o/r#1",
+                "--pr",
+                "https://github.com/o/r/pull/1/files",
+                "--pr",
+                "https://example.com/pr/2/",
+            ])
+            .collect::<Vec<_>>(),
+        "",
+    );
+    assert_eq!((&added["priority"], &added["assignee"]), (&json!("high"), &json!("alice")));
+    assert_eq!(added["prs"], json!([first, "https://example.com/pr/2"]));
+    let id = added["id"].as_str().unwrap();
+
+    // `--pr` adds what is not linked yet and `--unpr` removes, both by the canonical URL.
+    let edited = fixture.json(
+        &["edit", id, "--priority", "urgent", "--assignee", "bob", "--pr", "o/r#1", "--pr", "o/r#3", "--json"]
+            .into_iter()
+            .chain(["--unpr", "https://example.com/pr/2/", "--unpr", "https://example.com/pr/2#top"])
+            .collect::<Vec<_>>(),
+        "",
+    );
+    assert_eq!((&edited["priority"], &edited["assignee"]), (&json!("urgent"), &json!("bob")));
+    assert_eq!(edited["prs"], json!([first, third]));
+    let shown = fixture.text(&["show", id], "");
+    assert!(shown.contains(&format!("{id}  Task  !urgent  @bob\n")), "{shown}");
+    assert!(shown.contains(&format!("pull requests:\n  {first}\n  {third}\n")), "{shown}");
+    // The id is random, so the node is on either line.
+    assert!(
+        fixture.text(&["ls", "--format", "tsv"], "").lines().any(|line| line == format!("{id}\ttask\ttodo\t\tTask"))
+    );
+    assert_eq!(fixture.json(&["ls", "--format", "jsonl", "--priority", "urgent"], "")["prs"], edited["prs"]);
+
+    let before = fixture.files();
+    for (args, error) in [
+        (vec!["edit", id, "--unpr", "o/r#9"], "is not linked to the pull request https://github.com/o/r/pull/9"),
+        (vec!["edit", "-", "--unpr", "o/r#1"], "other1 is not linked"),
+        (vec!["edit", id, "--pr", "nope"], "invalid pull request"),
+        (vec!["edit", id, "--assignee", " "], "invalid assignee"),
+        (vec!["edit", id, "--priority", "p0"], "invalid priority"),
+        (vec!["edit", id, "--priority", "low", "--no-priority"], "cannot be used with"),
+        (vec!["edit", id, "--assignee", "x", "--no-assignee"], "cannot be used with"),
+        (vec!["add", "x", "--pr", "ftp://example.com"], "invalid pull request"),
+        (vec!["ls", "--assignee", "x", "--unassigned"], "cannot be used with"),
+    ] {
+        failure(fixture.run(&args, &format!("{id} other1")), error);
+        assert_eq!(fixture.files(), before, "{args:?}");
+    }
+
+    let batch = fixture.json(&["edit", "-", "--priority", "low", "--pr", "o/r#1", "--json"], &format!("{id} other1"));
+    assert_eq!(batch[0]["prs"], json!([first, third]));
+    assert_eq!((&batch[1]["prs"], &batch[1]["priority"]), (&json!([first]), &json!("low")));
+    let cleared = fixture
+        .json(&["edit", id, "--no-priority", "--no-assignee", "--unpr", "o/r#1", "--unpr", "o/r#3", "--json"], "");
+    assert!(["priority", "assignee", "prs"].iter().all(|field| cleared.get(field).is_none()), "{cleared}");
+
+    let ops = json!([
+        { "op": "add", "ref": "n", "title": "Applied", "priority": "medium", "assignee": "carol", "prs": ["o/r#4"] },
+        { "op": "edit", "id": id, "priority": "high", "prs": ["o/r#5"] },
+        { "op": "edit", "id": "other1", "priority": null, "assignee": null, "prs": [] },
+    ]);
+    let refs = fixture.json(&["apply", "--json"], &ops.to_string());
+    let applied = fixture.json(&["show", refs["refs"]["n"].as_str().unwrap(), "--json"], "");
+    assert_eq!(applied["prs"], json!(["https://github.com/o/r/pull/4"]));
+    assert_eq!((&applied["priority"], &applied["assignee"]), (&json!("medium"), &json!("carol")));
+    assert_eq!(fixture.json(&["show", id, "--json"], "")["prs"], json!(["https://github.com/o/r/pull/5"]));
+    assert!(fixture.json(&["show", "other1", "--json"], "").get("prs").is_none());
+}
+
+#[test]
+fn ls_filters_and_sorts_by_priority_and_assignee() {
+    let task = |id: &str, priority: Option<Priority>, assignee: Option<&str>| {
+        let mut n = node(id, Kind::Task, id);
+        n.priority = priority;
+        n.assignee = assignee.map(str::to_owned);
+        n
+    };
+    let fixture = Fixture::new(vec![
+        task("a", Some(Priority::Low), Some("alice")),
+        task("b", None, None),
+        task("c", Some(Priority::Urgent), Some("bob")),
+        task("d", Some(Priority::High), None),
+        task("e", Some(Priority::Urgent), Some("alice")),
+    ]);
+    for (filters, expected) in [
+        (vec!["--priority", "urgent"], vec!["c", "e"]),
+        (vec!["--priority", "low", "--priority", "high"], vec!["a", "d"]),
+        (vec!["--no-priority"], vec!["b"]),
+        (vec!["--no-priority", "--assignee", "alice"], vec![]),
+        (vec!["--assignee", " alice "], vec!["a", "e"]),
+        (vec!["--unassigned"], vec!["b", "d"]),
+        (vec!["--unassigned", "--priority", "high"], vec!["d"]),
+        (vec!["--sort", "priority"], vec!["c", "e", "d", "a", "b"]),
+        (vec!["--sort", "priority", "--assignee", "alice"], vec!["e", "a"]),
+    ] {
+        let args: Vec<&str> = ["ls", "--format", "ids"].into_iter().chain(filters).collect();
+        assert_eq!(fixture.ids(&args, ""), expected, "{args:?}");
+    }
+    assert_eq!(fixture.ids(&["ready", "--sort", "priority", "--format", "ids"], ""), ["c", "e", "d", "a", "b"]);
+    assert_eq!(fixture.text(&["ls", "--priority", "low"], ""), "[ ] a  a  !low  @alice\n");
+    failure(fixture.run(&["ls", "--priority", "p0"], ""), "invalid priority");
+    failure(fixture.run(&["ls", "--priority", "high", "--no-priority"], ""), "cannot be used with");
+    assert_eq!(fixture.ids(&["ls", "-", "--no-priority", "--format", "ids"], "a b c"), ["b"]);
+    assert_eq!(fixture.json(&["ls", "--no-priority", "--format", "jsonl"], "")["id"], "b");
+}
+
+#[test]
+fn a_claim_sets_the_assignee_only_when_the_status_change_holds() {
+    let fixture = Fixture::new(vec![node("task01", Kind::Task, "Task"), node("task02", Kind::Task, "Other")]);
+    let claim = |who: &'static str| fixture.run(&["status", "task01", "doing", "--if", "todo", "--assign", who], "");
+    assert!(success(claim(" one ")).is_empty());
+    let before = fixture.files();
+    failure(claim("two"), "`task01` is doing, not todo");
+    // Neither does a batch assign anything when one of its status changes fails.
+    failure(
+        fixture.run(&["status", "-", "doing", "--if", "todo", "--assign", "two"], "task02 task01"),
+        "`task01` is doing, not todo",
+    );
+    failure(fixture.run(&["status", "task02", "doing", "--assign", " "], ""), "invalid assignee");
+    assert_eq!(fixture.files(), before);
+    let ws = fixture.workspace();
+    let claimed = ws.graph.get(&id("task01")).unwrap();
+    assert_eq!((claimed.status, claimed.assignee.as_deref()), (Status::Doing, Some("one")));
+    assert_eq!(ws.graph.get(&id("task02")).unwrap().assignee, None);
+
+    let done = fixture.json(&["status", "task01", "done", "--assign", "three", "--json"], "");
+    assert_eq!((&done["status"], &done["assignee"]), (&json!("done"), &json!("three")));
+}
+
+#[test]
+fn timestamps_record_creation_change_and_completion() {
+    let fixture = Fixture::new(vec![]);
+    let nodes = fixture.root.path().join(".topo/nodes");
+    let (created, updated) = ("2020-01-01T00:00:00Z", "2020-01-02T00:00:00Z");
+    let timed = format!("---\nid: timed1\ntitle: Timed\ncreated_at: {created}\nupdated_at: {updated}\n---\n");
+    fs::write(nodes.join("timed1.md"), timed).unwrap();
+    // A file from before the timestamps existed.
+    fs::write(nodes.join("old001.md"), "---\nid: old001\nkind: task\ntitle: Old\nstatus: todo\n---\n").unwrap();
+    let show = |id: &str| fixture.json(&["show", id, "--json"], "");
+    let times = |id: &str| ["created_at", "updated_at", "completed_at"].map(|field| show(id)[field].clone());
+    let moment = |value: &Value| value.as_str().unwrap().parse::<jiff::Timestamp>().unwrap();
+
+    // Reading and changing nothing leave the files, and so the times, as they are.
+    let before = fixture.files();
+    for args in [
+        vec!["ls", "--all"],
+        vec!["show", "timed1"],
+        vec!["ready"],
+        vec!["graph"],
+        vec!["edit", "timed1", "--title", "Timed", "--no-priority", "--no-due"],
+        vec!["status", "timed1", "todo"],
+    ] {
+        fixture.text(&args, "");
+        assert_eq!(fixture.files(), before, "{args:?}");
+    }
+    assert_eq!(times("timed1"), [json!(created), json!(updated), Value::Null]);
+    let shown = fixture.text(&["show", "timed1"], "");
+    assert!(shown.contains(&format!("\ncreated {created}\nupdated {updated}\n")), "{shown}");
+
+    let start = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(1);
+    fixture.text(&["edit", "timed1", "--priority", "high"], "");
+    let [was_created, changed, completed] = times("timed1");
+    assert_eq!((was_created, completed), (json!(created), Value::Null));
+    assert!(moment(&changed) >= start, "{changed}");
+    assert_eq!(fixture.files()["old001.md"], before["old001.md"], "only the changed node is written");
+
+    fixture.text(&["status", "timed1", "done"], "");
+    let [_, changed, completed] = times("timed1");
+    assert_eq!(completed, changed);
+    assert!(fixture.text(&["show", "timed1"], "").contains(&format!("\ncompleted {}\n", completed.as_str().unwrap())));
+    // A change to a done node keeps its completion; reopening clears it.
+    fixture.text(&["edit", "timed1", "--title", "Renamed"], "");
+    assert_eq!(times("timed1")[2], completed);
+    fixture.text(&["status", "timed1", "doing"], "");
+    assert_eq!(times("timed1")[2], Value::Null);
+    assert!(fixture.text(&["show", "timed1"], "").contains("\ncompleted Not completed\n"));
+
+    let added = fixture.json(&["add", "New", "--json"], "");
+    assert_eq!(added["created_at"], added["updated_at"]);
+    assert!(moment(&added["created_at"]) >= start);
+    assert!(added.get("completed_at").is_none());
+
+    // Unknown times are shown as unknown and never guessed, even once the node changes.
+    assert_eq!(times("old001"), [Value::Null, Value::Null, Value::Null]);
+    let shown = fixture.text(&["show", "old001"], "");
+    assert_eq!(shown, "[ ] old001  Old\ncreated Unknown\nupdated Unknown\ncompleted Not completed\n");
+    let mut old_done = node("old002", Kind::Task, "Old done");
+    old_done.status = Status::Done;
+    fs::write(nodes.join("old002.md"), topo_core::store::render(&old_done)).unwrap();
+    assert!(fixture.text(&["show", "old002"], "").contains("\ncompleted Unknown\n"));
+    fixture.text(&["status", "old001", "done"], "");
+    let [was_created, changed, completed] = times("old001");
+    assert_eq!(was_created, Value::Null);
+    assert!(moment(&changed) >= start && completed == changed);
 }

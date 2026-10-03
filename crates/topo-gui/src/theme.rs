@@ -1,7 +1,7 @@
 //! Colors, glyphs and small styled building blocks shared by every view.
 
 use gpui::{BoxShadow, Div, Hsla, Rgba, SharedString, Stateful, Styled, div, hsla, point, prelude::*, px, rgb, rgba};
-use topo_core::{Kind, Node, Status};
+use topo_core::{Kind, Node, Priority, Status};
 
 pub const CANVAS: u32 = 0x111216;
 pub const SURFACE: u32 = 0x17181d;
@@ -63,6 +63,35 @@ pub fn status_label(status: Status) -> &'static str {
         Status::Done => "Done",
         Status::Dropped => "Dropped",
     }
+}
+
+pub fn priority_color(priority: Priority) -> u32 {
+    match priority {
+        Priority::Urgent => RED,
+        Priority::High => AMBER,
+        Priority::Medium => ACCENT,
+        Priority::Low => MUTED,
+    }
+}
+
+pub fn priority_label(priority: Priority) -> &'static str {
+    match priority {
+        Priority::Urgent => "Urgent",
+        Priority::High => "High",
+        Priority::Medium => "Medium",
+        Priority::Low => "Low",
+    }
+}
+
+/// The priority as a glyph and its name, so it reads without its color.
+pub fn priority_text(priority: Priority) -> String {
+    let glyph = match priority {
+        Priority::Urgent => "!!",
+        Priority::High => "↑",
+        Priority::Medium => "=",
+        Priority::Low => "↓",
+    };
+    format!("{glyph} {}", priority_label(priority))
 }
 
 /// Glyph and color that identify a node at a glance.

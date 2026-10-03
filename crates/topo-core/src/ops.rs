@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::Error;
 use crate::graph::{Edit, Graph};
-use crate::model::{Kind, Node, NodeId, Status};
+use crate::model::{self, Kind, Node, NodeId, Priority, Status};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -31,6 +31,13 @@ pub enum Op {
         due: Option<Date>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<Priority>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assignee: Option<String>,
+        /// Pull requests: URLs, or `owner/repo#123` on GitHub.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prs: Vec<String>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         notes: String,
         /// Nodes the new node depends on.
@@ -75,6 +82,17 @@ pub enum Op {
         due: Option<Option<Date>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tags: Option<Vec<String>>,
+        /// Absent leaves the priority unchanged; `null` clears it.
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present")]
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<Priority>))]
+        priority: Option<Option<Priority>>,
+        /// Absent leaves the assignee unchanged; `null` clears it.
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "present")]
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<String>))]
+        assignee: Option<Option<String>>,
+        /// Replaces the pull requests; an empty list clears them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prs: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notes: Option<String>,
     },
@@ -121,7 +139,21 @@ fn apply_one(graph: &mut Graph, refs: &mut BTreeMap<String, NodeId>, op: &mut Op
     }
     let id = |s: &String| NodeId(s.clone());
     match op {
-        Op::Add { id: new_id, name, title, kind, due, tags, notes, depends_on, milestones } => {
+        Op::Add {
+            id: new_id,
+            name,
+            title,
+            kind,
+            due,
+            tags,
+            priority,
+            assignee,
+            prs,
+            notes,
+            depends_on,
+            milestones,
+        } => {
+            normalize(assignee.as_mut(), prs)?;
             let new_id = new_id.get_or_insert_with(|| graph.fresh_id()).clone();
             new_id.validate()?;
             let mut node = Node::new(new_id.clone(), *kind, title.clone());
@@ -129,6 +161,9 @@ fn apply_one(graph: &mut Graph, refs: &mut BTreeMap<String, NodeId>, op: &mut Op
             node.milestones = milestones.iter().map(id).collect();
             node.due = *due;
             node.tags = tags.clone();
+            node.priority = *priority;
+            node.assignee = assignee.clone();
+            node.prs = prs.clone();
             node.body = notes.clone();
             graph.insert(node)?;
             if let Some(name) = name
@@ -151,8 +186,18 @@ fn apply_one(graph: &mut Graph, refs: &mut BTreeMap<String, NodeId>, op: &mut Op
             }
             graph.set_status(&target, *status)?;
         }
-        Op::Edit { id: target, title, kind, due, tags, notes } => {
-            let edit = Edit { title: title.clone(), kind: *kind, due: *due, tags: tags.clone(), body: notes.clone() };
+        Op::Edit { id: target, title, kind, due, tags, priority, assignee, prs, notes } => {
+            normalize(assignee.as_mut().and_then(Option::as_mut), prs.as_mut().map_or(&mut [], Vec::as_mut_slice))?;
+            let edit = Edit {
+                title: title.clone(),
+                kind: *kind,
+                due: *due,
+                tags: tags.clone(),
+                body: notes.clone(),
+                priority: *priority,
+                assignee: assignee.clone(),
+                prs: prs.clone(),
+            };
             graph.edit(&id(target), edit)?;
         }
         Op::Remove { id: target } => {
@@ -162,9 +207,21 @@ fn apply_one(graph: &mut Graph, refs: &mut BTreeMap<String, NodeId>, op: &mut Op
     Ok(())
 }
 
+/// Rewrites an assignee and pull requests as given by a person to their canonical form.
+fn normalize(assignee: Option<&mut String>, prs: &mut [String]) -> Result<(), Error> {
+    if let Some(assignee) = assignee {
+        *assignee = model::normalize_assignee(assignee)?;
+    }
+    for pr in prs {
+        *pr = model::normalize_pr(pr)?;
+    }
+    Ok(())
+}
+
 /// Operations that turn the nodes `before` into the nodes `after`.
 ///
-/// Both must be valid graphs. The order keeps every intermediate graph valid:
+/// Both must be valid graphs. Timestamps are not part of the result: whoever
+/// applies the operations records them ([`Graph::stamp`]). The order keeps every intermediate graph valid:
 /// removals come first because a removed node can be what makes a new edge look
 /// like a cycle; edges are dropped before kinds change and added after, so each
 /// membership meets a task and a milestone; and every edge added is an edge of
@@ -194,6 +251,9 @@ pub fn diff(before: &BTreeMap<NodeId, Node>, after: &BTreeMap<NodeId, Node>) -> 
         kind: n.kind,
         due: n.due,
         tags: n.tags.clone(),
+        priority: n.priority,
+        assignee: n.assignee.clone(),
+        prs: n.prs.clone(),
         notes: n.body.clone(),
         depends_on: Vec::new(),
         milestones: Vec::new(),
@@ -213,9 +273,22 @@ pub fn diff(before: &BTreeMap<NodeId, Node>, after: &BTreeMap<NodeId, Node>) -> 
             kind: (old.kind != new.kind).then_some(new.kind),
             due: (old.due != new.due).then_some(new.due),
             tags: (old.tags != new.tags).then(|| new.tags.clone()),
+            priority: (old.priority != new.priority).then_some(new.priority),
+            assignee: (old.assignee != new.assignee).then(|| new.assignee.clone()),
+            prs: (old.prs != new.prs).then(|| new.prs.clone()),
             notes: (old.body != new.body).then(|| new.body.clone()),
         };
-        let unchanged = Op::Edit { id: s(&new.id), title: None, kind: None, due: None, tags: None, notes: None };
+        let unchanged = Op::Edit {
+            id: s(&new.id),
+            title: None,
+            kind: None,
+            due: None,
+            tags: None,
+            priority: None,
+            assignee: None,
+            prs: None,
+            notes: None,
+        };
         (edit != unchanged).then_some(edit)
     });
     let links = pairs().flat_map(|(old, new)| {
@@ -320,6 +393,56 @@ mod tests {
         assert!(graph.get(&id).unwrap().due.is_none());
     }
 
+    #[test]
+    fn metadata_is_normalized_set_and_cleared() {
+        let mut graph = Graph::default();
+        let a = NodeId("a".into());
+        let mut add = parse(
+            r#"[{"op": "add", "id": "a", "title": "a", "priority": "high", "assignee": " me ", "prs": ["o/r#7"]}]"#,
+        );
+        apply(&mut graph, &mut add).unwrap();
+        let node = graph.get(&a).unwrap();
+        assert_eq!(node.priority, Some(Priority::High));
+        assert_eq!(node.assignee.as_deref(), Some("me"));
+        assert_eq!(node.prs, ["https://github.com/o/r/pull/7"]);
+        // The batch records what was applied.
+        assert!(
+            serde_json::to_string(&add).unwrap().contains(r#""assignee":"me","prs":["https://github.com/o/r/pull/7"]"#)
+        );
+
+        apply(&mut graph, &mut parse(r#"[{"op": "edit", "id": "a", "title": "b"}]"#)).unwrap();
+        assert_eq!(graph.get(&a).unwrap().priority, Some(Priority::High));
+        apply(&mut graph, &mut parse(r#"[{"op": "edit", "id": "a", "priority": null, "assignee": null, "prs": []}]"#))
+            .unwrap();
+        let node = graph.get(&a).unwrap();
+        assert_eq!((node.priority, node.assignee.clone(), node.prs.len()), (None, None, 0));
+
+        let err = |json: &str| apply(&mut graph.clone(), &mut parse(json)).unwrap_err().to_string();
+        assert!(
+            err(r#"[{"op": "edit", "id": "a", "prs": ["o/r#1", "https://github.com/o/r/pull/1"]}]"#).contains("twice")
+        );
+        assert!(err(r#"[{"op": "edit", "id": "a", "prs": ["nope"]}]"#).contains("invalid pull request"));
+        assert!(err(r#"[{"op": "edit", "id": "a", "assignee": ""}]"#).contains("invalid assignee"));
+        assert!(serde_json::from_str::<Vec<Op>>(r#"[{"op": "edit", "id": "a", "priority": "p0"}]"#).is_err());
+    }
+
+    #[test]
+    fn a_claim_assigns_only_when_it_wins() {
+        let mut graph = Graph::default();
+        apply(&mut graph, &mut parse(r#"[{"op": "add", "id": "a", "title": "a"}]"#)).unwrap();
+        let claim = |who: &str| {
+            parse(&format!(
+                r#"[{{"op": "status", "id": "a", "status": "doing", "if_status": "todo"}},
+                    {{"op": "edit", "id": "a", "assignee": "{who}"}}]"#
+            ))
+        };
+        apply(&mut graph, &mut claim("one")).unwrap();
+        // A batch is all or nothing: the caller discards the graph of a failed one.
+        let mut lost = graph.clone();
+        assert!(apply(&mut lost, &mut claim("two")).is_err());
+        assert_eq!(graph.get(&NodeId("a".into())).unwrap().assignee.as_deref(), Some("one"));
+    }
+
     fn node(id: &str, kind: Kind, deps: &[&str], milestones: &[&str]) -> Node {
         let mut n = Node::new(NodeId(id.into()), kind, id.into());
         n.depends_on = deps.iter().map(|d| NodeId((*d).into())).collect();
@@ -375,7 +498,10 @@ mod tests {
                     let due = Some(rng.bool().then(|| jiff::civil::date(2026, 1, rng.i8(1..28))));
                     let tags = Some(vec!["t".to_owned(); rng.usize(..2)]);
                     let body = Some(rng.alphabetic().to_string());
-                    let edit = Edit { title: None, kind: Some(kind), due, tags, body };
+                    let priority = Some(rng.bool().then(|| Priority::ALL[rng.usize(..4)]));
+                    let assignee = Some(rng.bool().then(|| rng.alphabetic().to_string()));
+                    let prs = Some(vec![format!("https://github.com/o/r/pull/{}", rng.u8(1..3)); rng.usize(..2)]);
+                    let edit = Edit { title: None, kind: Some(kind), due, tags, body, priority, assignee, prs };
                     graph.set_status(&x, status).and_then(|()| graph.edit(&x, edit))
                 }
             };
