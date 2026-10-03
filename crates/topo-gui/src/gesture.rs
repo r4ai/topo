@@ -3,16 +3,35 @@
 
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 
+#[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
 pub enum Gesture {
     /// Relative zoom step: the new scale is `1 + magnification` times the old one.
     Pinch(f32),
     SmartZoom,
 }
 
-/// Starts forwarding the gestures of this app's windows. The monitor lives
-/// as long as the app. Tests have no AppKit event loop to monitor.
+/// Owns the AppKit monitor; switching workspaces must remove the old one.
+pub struct Monitor {
+    #[cfg(all(target_os = "macos", not(test)))]
+    native: *mut objc::runtime::Object,
+}
+
 #[cfg(all(target_os = "macos", not(test)))]
-pub fn watch() -> UnboundedReceiver<Gesture> {
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        use objc::{class, msg_send, sel, sel_impl};
+        // SAFETY: GPUI drops this view on the AppKit main thread. `native`
+        // is the registered token returned by addLocalMonitorForEventsMatchingMask.
+        unsafe {
+            let _: () = msg_send![class!(NSEvent), removeMonitor: self.native];
+        }
+    }
+}
+
+/// Starts forwarding the gestures of this app's windows. The monitor lives
+/// as long as its workspace view. Tests have no AppKit event loop to monitor.
+#[cfg(all(target_os = "macos", not(test)))]
+pub fn watch() -> (UnboundedReceiver<Gesture>, Monitor) {
     use block::ConcreteBlock;
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
@@ -39,13 +58,12 @@ pub fn watch() -> UnboundedReceiver<Gesture> {
     .copy();
     let mask: u64 = (1 << MAGNIFY) | (1 << SMART_MAGNIFY);
     // SAFETY: the block has the `NSEvent *(^)(NSEvent *)` signature AppKit expects.
-    let _monitor: *mut Object =
+    let monitor: *mut Object =
         unsafe { msg_send![class!(NSEvent), addLocalMonitorForEventsMatchingMask: mask handler: &*handler] };
-    std::mem::forget(handler);
-    rx
+    (rx, Monitor { native: monitor })
 }
 
 #[cfg(any(not(target_os = "macos"), test))]
-pub fn watch() -> UnboundedReceiver<Gesture> {
-    unbounded().1
+pub fn watch() -> (UnboundedReceiver<Gesture>, Monitor) {
+    (unbounded().1, Monitor {})
 }

@@ -20,6 +20,9 @@ pub struct UserConfig {
     /// Saved inspector width in pixels, or `None` to derive it from the window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inspector_width: Option<f32>,
+    /// Canonical `.topo` paths, most recently opened first. Never includes credentials.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_workspaces: Vec<PathBuf>,
 }
 
 /// `topo-gui/config.toml` under the platform configuration directory.
@@ -31,6 +34,12 @@ pub fn path() -> Option<PathBuf> {
 }
 
 impl UserConfig {
+    pub fn remember(&mut self, path: PathBuf) {
+        self.recent_workspaces.retain(|old| old != &path);
+        self.recent_workspaces.insert(0, path);
+        self.recent_workspaces.truncate(10);
+    }
+
     /// Loads the saved settings, or the defaults when none are readable.
     pub fn load() -> Self {
         path().and_then(|path| Self::load_from(&path)).unwrap_or_default()
@@ -93,8 +102,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         assert_eq!(UserConfig::load_from(&path), None);
-        let config = UserConfig { inspector_width: Some(412.) };
+        let config = UserConfig { inspector_width: Some(412.), ..Default::default() };
         fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
         assert_eq!(UserConfig::load_from(&path), Some(config));
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn history_round_trips_with_width_and_old_configs_still_load() {
+        let mut config: UserConfig = toml::from_str("inspector_width = 412").unwrap();
+        for index in 0..15 {
+            config.remember(PathBuf::from(format!("/repo-{index}/.topo")));
+        }
+        config.remember(PathBuf::from("/repo-10/.topo"));
+        assert_eq!(config.recent_workspaces.len(), 10);
+        assert_eq!(config.recent_workspaces[0], PathBuf::from("/repo-10/.topo"));
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), config);
+        assert_eq!(config.inspector_width, Some(412.));
     }
 }

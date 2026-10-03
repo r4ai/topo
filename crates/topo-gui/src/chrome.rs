@@ -111,7 +111,14 @@ impl TopoApp {
                     )
                     // The workspace name is the first thing to give way in a narrow window.
                     .child(div().text_color(rgb(theme::FAINT)).text_sm().child("/"))
-                    .child(div().min_w(px(0.)).text_sm().text_color(rgb(theme::MUTED)).truncate().child(name)),
+                    .child(
+                        stop_click(
+                            button("repository", "").child(div().min_w(px(0.)).truncate().child(name)).child("▾"),
+                        )
+                        .max_w(px(if self.compact { 110. } else { 220. }))
+                        .overflow_hidden()
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::repository::OpenRepository))),
+                    ),
             )
             .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(rgb(theme::BORDER)))
             .child(
@@ -496,6 +503,7 @@ impl TopoApp {
             (
                 "Standard shortcuts",
                 &[
+                    ("⌘O / Ctrl+O", "Open repository / recent repositories"),
                     ("⌘A", "Canvas: select all nodes · field: all text"),
                     ("⌘C  ⌘X", "Canvas: copy / cut nodes · field: text"),
                     ("⌘V", "Canvas: paste nodes as new · field: text"),

@@ -18,6 +18,8 @@ mod inline;
 mod inspector;
 mod layout;
 mod notes;
+mod polling;
+mod repository;
 #[cfg(feature = "screenshot")]
 mod screenshot;
 mod text_input;
@@ -25,7 +27,9 @@ mod theme;
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "screenshot")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -200,7 +204,15 @@ struct TopoApp {
     toast_serial: u64,
     /// Watches the Markdown files. A cloud workspace is polled instead.
     _watcher: Option<notify::RecommendedWatcher>,
+    /// Dropping a workspace cancels its scheduler, including inactive waits.
+    _sync_task: Option<gpui::Task<()>>,
+    retired: bool,
+    poll_active: bool,
+    poll_visible: bool,
+    poll_wake: Option<futures::channel::mpsc::UnboundedSender<()>>,
     _subscriptions: Vec<Subscription>,
+    _gesture_monitor: Option<gesture::Monitor>,
+    _gesture_task: Option<gpui::Task<()>>,
 }
 
 impl TopoApp {
@@ -209,28 +221,40 @@ impl TopoApp {
         Self::with_inspector_width(ws, None, window, cx)
     }
 
+    #[cfg(any(test, feature = "screenshot"))]
     fn with_inspector_width(
         ws: Workspace,
         inspector_width: Option<f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Self> {
-        let watcher = match ws.remote() {
-            Some(_) => {
-                Self::poll_remote(cx);
-                None
+        let source = if ws.remote().is_none() { Some(Self::file_watcher(&ws)?) } else { None };
+        Ok(Self::with_source(ws, inspector_width, source, window, cx))
+    }
+
+    fn with_source(
+        ws: Workspace,
+        inspector_width: Option<f32>,
+        source: Option<(notify::RecommendedWatcher, mpsc::Receiver<()>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let active = window.is_window_active();
+        let (watcher, sync_task, poll_wake) = match source {
+            None => {
+                let (wake, task) = Self::poll_remote(cx);
+                (None, task, Some(wake))
             }
-            None => Some(Self::watch_files(&ws, cx)?),
+            Some((watcher, rx)) => (Some(watcher), Self::watch_files(rx, cx), None),
         };
-        let mut gestures = gesture::watch();
-        cx.spawn_in(window, async move |this, cx| {
+        let (mut gestures, gesture_monitor) = gesture::watch();
+        let gesture_task = cx.spawn_in(window, async move |this, cx| {
             while let Some(gesture) = gestures.next().await {
                 if this.update_in(cx, |app, window, cx| app.on_gesture(gesture, window, cx)).is_err() {
                     break;
                 }
             }
-        })
-        .detach();
+        });
         let palette = cx.new(Combobox::palette);
         let notes_input = cx.new(TextInput::multiline);
         let combo = cx.new(Combobox::new);
@@ -238,10 +262,13 @@ impl TopoApp {
             cx.subscribe_in(&palette, window, Self::on_palette_event),
             cx.subscribe_in(&notes_input, window, Self::on_notes_event),
             cx.subscribe_in(&combo, window, Self::on_combo_event),
+            cx.observe_window_activation(window, |app, window, _| {
+                app.set_poll_active(window.is_window_active());
+            }),
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Ok(Self {
+        Self {
             ws,
             focus,
             offset: point(px(40.), px(40.)),
@@ -272,8 +299,25 @@ impl TopoApp {
             toast: None,
             toast_serial: 0,
             _watcher: watcher,
+            _sync_task: Some(sync_task),
+            retired: false,
+            poll_active: active,
+            poll_visible: true,
+            poll_wake,
             _subscriptions: subscriptions,
-        })
+            _gesture_monitor: Some(gesture_monitor),
+            _gesture_task: Some(gesture_task),
+        }
+    }
+
+    /// Invalidates the old target immediately, even if a previous frame still owns it.
+    fn retire(&mut self) {
+        self.retired = true;
+        self._sync_task.take();
+        self._watcher.take();
+        self._gesture_task.take();
+        self._gesture_monitor.take();
+        self._subscriptions.clear();
     }
 
     fn graph(&self) -> &Graph {
@@ -304,7 +348,9 @@ impl TopoApp {
     fn persist_inspector_width(&self) {
         #[cfg(not(test))]
         if let Some(width) = self.inspector_width {
-            let _ = config::UserConfig { inspector_width: Some(width) }.save();
+            let mut config = config::UserConfig::load();
+            config.inspector_width = Some(width);
+            let _ = config.save();
         }
     }
 
@@ -329,7 +375,7 @@ impl TopoApp {
     // ---- persistence ---------------------------------------------------
 
     /// Reloads the graph whenever a Markdown file changes.
-    fn watch_files(ws: &Workspace, cx: &mut Context<Self>) -> Result<notify::RecommendedWatcher> {
+    fn file_watcher(ws: &Workspace) -> Result<(notify::RecommendedWatcher, mpsc::Receiver<()>)> {
         let (tx, rx) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             if event.is_ok() {
@@ -337,6 +383,10 @@ impl TopoApp {
             }
         })?;
         watcher.watch(&ws.nodes_dir(), RecursiveMode::NonRecursive)?;
+        Ok((watcher, rx))
+    }
+
+    fn watch_files(rx: mpsc::Receiver<()>, cx: &mut Context<Self>) -> gpui::Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(300)).await;
@@ -345,30 +395,13 @@ impl TopoApp {
                 }
             }
         })
-        .detach();
-        Ok(watcher)
-    }
-
-    /// Asks the server every few seconds whether the workspace changed. The
-    /// request runs off the main thread, so a slow network does not stall the window.
-    fn poll_remote(cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(REMOTE_POLL).await;
-                let Ok(Some((remote, version))) = this.update(cx, |app, _| app.ws.remote()) else {
-                    break;
-                };
-                let fetched = cx.background_executor().spawn(async move { remote.fetch(Some(version)) }).await;
-                if this.update(cx, |app, cx| app.fetched(fetched, cx)).is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
     }
 
     /// Takes over what a poll of the server returned.
     fn fetched(&mut self, fetched: Result<Option<Snapshot>, topo_core::Error>, cx: &mut Context<Self>) {
+        if self.retired {
+            return;
+        }
         let known = self.ws.remote().map(|(_, version)| version);
         let result = match fetched {
             // A save of ours may have overtaken the poll; then the snapshot is the older one.
@@ -393,7 +426,7 @@ impl TopoApp {
     /// Finishes a reload that says whether it changed the graph.
     fn reloaded(&mut self, changed: Result<bool, topo_core::Error>, notice: &'static str, cx: &mut Context<Self>) {
         match changed {
-            Ok(false) => {}
+            Ok(false) => return,
             Ok(true) => {
                 self.undo.clear();
                 self.redo.clear();
@@ -841,6 +874,9 @@ impl TopoApp {
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |app, cx| {
+                if app.retired {
+                    return;
+                }
                 app.busy = false;
                 match result {
                     Ok(proposals) if proposals.is_empty() => {
@@ -1356,6 +1392,7 @@ fn next_status(status: Status) -> Status {
     }
 }
 
+#[cfg(feature = "screenshot")]
 fn open_workspace(start: Option<&Path>) -> Result<Workspace> {
     Ok(match (std::env::var_os("TOPO_DIR"), start) {
         (Some(dir), _) => topo_cloud::open(PathBuf::from(dir))?,
@@ -1372,23 +1409,39 @@ fn main() -> Result<()> {
             "--screenshot needs a build with the `screenshot` feature (cargo build -p topo-gui --features screenshot)"
         );
     }
-    let ws = open_workspace(args.workspace.as_deref())?;
     #[cfg(feature = "screenshot")]
     if let Some(path) = &args.screenshot {
-        return screenshot::render(ws, path, &args);
+        return screenshot::render(open_workspace(args.workspace.as_deref())?, path, &args);
     }
-    run(ws)
+    let config = config::UserConfig::load();
+    let start = repository::startup_target(
+        std::env::var_os("TOPO_DIR").map(PathBuf::from),
+        args.workspace,
+        &config,
+        std::env::current_dir()?,
+    );
+    run(start, config)
 }
 
-fn run(ws: Workspace) -> Result<()> {
-    let title: SharedString = format!("topo — {}", ws.dir().parent().unwrap_or(ws.dir()).display()).into();
+fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
+    let title: SharedString = "topo — Open repository".into();
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx: &mut App| {
         branding::set_app_icon();
         text_input::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None), KeyBinding::new("cmd-w", CloseWindow, None)]);
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-w", CloseWindow, None),
+            KeyBinding::new("cmd-o", repository::OpenRepository, None),
+            KeyBinding::new("ctrl-o", repository::OpenRepository, None),
+        ]);
         cx.set_menus(vec![
             Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)], disabled: false },
+            Menu {
+                name: "File".into(),
+                items: vec![MenuItem::action("Open Repository…", repository::OpenRepository)],
+                disabled: false,
+            },
             // Each item acts on the text of a focused field, and on the graph otherwise.
             Menu {
                 name: "Edit".into(),
@@ -1412,11 +1465,8 @@ fn run(ws: Workspace) -> Result<()> {
             window_min_size: Some(size(px(720.), px(480.))),
             ..Default::default()
         };
-        cx.open_window(options, |window, cx| {
-            let width = config::UserConfig::load().inspector_width;
-            cx.new(|cx| TopoApp::with_inspector_width(ws, width, window, cx).expect("failed to watch the workspace"))
-        })
-        .expect("failed to open window");
+        cx.open_window(options, |window, cx| cx.new(|cx| repository::RepositoryWindow::new(start, config, window, cx)))
+            .expect("failed to open window");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });

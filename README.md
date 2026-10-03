@@ -172,6 +172,16 @@ Interactive dashboard in your terminal:
 
 Desktop interface powered by GPUI. Reflects edits from CLI or external processes live:
 
+- Repositories:
+  - Click the repository name in the toolbar, or use File → Open Repository / `Cmd+O` (`Ctrl+O` on Linux/Windows), to choose a folder or reopen a recent target
+  - A selected folder opens its own `.topo`; Git is optional. Existing cloud links are honored. An uninitialized folder offers an explicit **Initialize workspace here** action
+  - Startup precedence: `TOPO_DIR` (exact workspace directory) → positional path (ancestor discovery) → last successfully opened workspace → current directory (ancestor discovery). Missing targets and connection failures leave the chooser available
+  - The last ten canonical workspace paths are saved with the inspector width in `topo-gui/config.toml` under the platform config directory (`TOPO_CONFIG_DIR` overrides that directory). No repository task files or credentials are written to the history
+  - Cancel keeps the current editor and draft; failed loads keep the current target. A successful switch discards unsubmitted fields, notes and creation/search prompts, clears selection, suggestions and undo/redo, and fits the new graph. Choosing the same workspace keeps its editor
+- Cloud synchronization:
+  - Active editor windows check for changes every five seconds. Inactive, minimized or hidden windows, and editors hidden by the repository chooser, issue no new periodic requests; returning syncs immediately
+  - One fetch runs at a time per editor. A request already in flight can finish safely; activation bursts are coalesced. Switching cancels the old scheduler and invalidates its replies
+  - Failed requests retry after 10, 20, 40, then at most 60 seconds, with one error toast per outage; returning retries immediately. Unchanged snapshots do not redraw the editor. Explicit saves still run independently
 - Canvas Navigation:
   - Drag (background, card, or middle button) / trackpad scroll: Pan canvas
   - Mouse wheel / pinch / `Cmd` + scroll: Zoom canvas around pointer
@@ -186,7 +196,7 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - The field completes like a code editor: a floating list (it moves nothing below) offers the priorities, the assignees and tags the workspace already uses, and due dates that follow what you type (`3` → `+3d`, `+3w`, `+3m`, the 3rd; `fr` → `friday`). The first match is highlighted, completed faintly in the field, and taken by `Enter`; `↓` / `↑` or a click choose another. `Esc` closes the list to save the typed text as it is, and a second `Esc` cancels
   - Tags are edited as chips: a space or comma finishes a tag as typed, `Backspace` in the empty field removes the last one, `×` removes any
   - `Tab` / `Shift+Tab` save the field and open the next / previous one (title → priority → assignee → due → tags → pull request)
-  - NOTES are written in the panel, in a cloud workspace too: click them or press `e`, `Enter` breaks the line, `Cmd+Enter` saves. Leaving the editor (a click elsewhere, another selection) also saves; only `Esc` discards
+  - NOTES are written in the panel, in a cloud workspace too: click them or press `e`, `Enter` breaks the line, `Cmd+Enter` saves. Leaving the editor (a click elsewhere, another selection) also saves; `Esc` or a successful repository switch discards unsubmitted notes
   - Created / updated / completed times are shown read-only in the local time zone (`Unknown` for nodes older than the timestamps)
   - PULL REQUESTS lists the linked pull requests: `g` or `+` links one (a URL or `owner/repo#123`), a click opens it in the browser, `×` unlinks it
 - Node Operations:

@@ -63,7 +63,9 @@ impl Ui<'_> {
     }
 
     fn keys(&mut self, keystrokes: &str) {
-        self.cx.simulate_keystrokes(keystrokes);
+        // Test the platform's standard modifier, just like text_input::bind_keys.
+        let keys = if cfg!(target_os = "macos") { keystrokes.to_owned() } else { keystrokes.replace("cmd-", "ctrl-") };
+        self.cx.simulate_keystrokes(&keys);
     }
 
     fn type_text(&mut self, text: &str) {
