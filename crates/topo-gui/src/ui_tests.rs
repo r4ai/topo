@@ -128,9 +128,8 @@ impl Ui<'_> {
 
     /// The field being edited in the inspector, and the text typed into it.
     fn inline(&mut self) -> Option<(Field, String)> {
-        self.app.read_with(self.cx, |app, cx| {
-            app.inline.as_ref().map(|edit| (edit.field, app.inline_text(cx).trim().to_owned()))
-        })
+        self.app
+            .read_with(self.cx, |app, cx| app.inline.as_ref().map(|edit| (edit.field, app.combo.read(cx).value(cx))))
     }
 
     fn select(&mut self, node: &str) {
@@ -1013,7 +1012,7 @@ fn a_field_offers_values_to_choose_from(cx: &mut TestAppContext) {
         app.mutate(cx, |graph| graph.edit(&id("c"), edit));
     });
     let choices = |ui: &mut Ui| -> Vec<String> {
-        ui.app.read_with(ui.cx, |app, cx| app.inline_choices(cx).into_iter().map(|c| c.value).collect())
+        ui.app.read_with(ui.cx, |app, cx| app.combo.read(cx).choices().iter().map(|c| c.value.clone()).collect())
     };
     ui.select("a");
 
@@ -1022,18 +1021,41 @@ fn a_field_offers_values_to_choose_from(cx: &mut TestAppContext) {
     assert_eq!(choices(&mut ui), ["urgent", "high", "medium", "low"]);
     ui.keys("down down up down enter");
     assert_eq!(ui.node("a").priority, Some(Priority::High));
-    // The list stands in for the preview line, which returns for an error or a value of its own.
+    // The list says what Enter does: a highlighted choice, or else a note on the typed text or the refusal.
+    let highlight = |ui: &mut Ui| ui.app.read_with(ui.cx, |app, cx| app.combo.read(cx).highlight());
     ui.keys("d");
-    assert!(ui.cx.debug_bounds("choice-0").is_some() && ui.cx.debug_bounds("inline-hint").is_none());
+    assert!(ui.cx.debug_bounds("choice-0").is_some() && ui.cx.debug_bounds("combo-note").is_some());
+    assert_eq!(highlight(&mut ui), None, "Enter on an untouched empty field clears");
     ui.type_text("2026-12-24");
-    assert!(ui.cx.debug_bounds("choice-0").is_none() && ui.cx.debug_bounds("inline-hint").is_some());
-    ui.keys("escape p");
+    assert_eq!(choices(&mut ui), ["2026-12-24"]);
+    assert_eq!(highlight(&mut ui), Some(0));
+    assert!(ui.cx.debug_bounds("combo-note").is_none());
+    // Escape first closes the list, leaving the typed text; the second one cancels.
+    ui.keys("escape");
+    assert_eq!((ui.inline(), highlight(&mut ui)), (Some((Field::Due, "2026-12-24".into())), None));
+    assert!(ui.cx.debug_bounds("choice-0").is_none());
+    ui.keys("escape");
+    assert_eq!(ui.inline(), None);
+    ui.keys("p");
     ui.type_text("zz");
     ui.keys("enter");
     ui.redraw();
     assert!(ui.read(|app| app.inline.as_ref().unwrap().error.is_some()));
-    assert!(ui.cx.debug_bounds("inline-hint").is_some(), "an error is always shown");
+    assert!(ui.cx.debug_bounds("combo-note").is_some(), "an error is always shown");
     ui.keys("escape");
+
+    // The list floats: opening a field moves no row below it.
+    let below = ui.cx.debug_bounds("prop-tags").unwrap();
+    ui.keys("p");
+    ui.redraw();
+    let list = ui.cx.debug_bounds("combo-list").expect("the list is open");
+    assert_eq!(ui.cx.debug_bounds("prop-tags"), Some(below));
+    assert!(list.bottom() > below.top(), "the list covers the rows below instead of pushing them");
+    // The field completes the highlighted choice, and reopened it marks the current value.
+    assert_eq!(highlight(&mut ui), Some(1), "the current priority, high");
+    ui.type_text("u");
+    assert_eq!((choices(&mut ui), highlight(&mut ui)), (vec!["urgent".to_owned()], Some(0)));
+    ui.keys("escape escape");
     // Reopened, the list is whole again although the field holds a value; typing narrows it.
     ui.keys("p");
     assert_eq!(choices(&mut ui).len(), 4);
@@ -1054,7 +1076,7 @@ fn a_field_offers_values_to_choose_from(cx: &mut TestAppContext) {
     ui.keys("t");
     assert_eq!(choices(&mut ui), ["core", "gui"]);
     ui.type_text("new ");
-    assert_eq!(ui.read(|app| app.inline.as_ref().unwrap().chips.clone()), ["new"]);
+    assert_eq!(ui.app.read_with(ui.cx, |app, cx| app.combo.read(cx).chips().to_vec()), ["new"]);
     ui.type_text("g");
     assert_eq!(choices(&mut ui), ["gui"]);
     ui.keys("down enter");

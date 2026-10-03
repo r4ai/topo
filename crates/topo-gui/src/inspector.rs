@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 
 use gpui::{
-    AnyElement, App, Context, CursorStyle, Div, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div,
+    AnyElement, Context, CursorStyle, Div, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div,
     prelude::*, px, rgb,
 };
 use jiff::Timestamp;
@@ -620,8 +620,8 @@ impl TopoApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = format!("prop-{}", label.to_lowercase());
-        if self.editing(&node.id, field).is_some() {
-            return self.inline_field(node, field, Some(label), cx);
+        if self.editing(&node.id, field) {
+            return self.inline_field(Some(label));
         }
         div()
             .id(ElementId::Name(key.clone().into()))
@@ -642,105 +642,18 @@ impl TopoApp {
             .into_any_element()
     }
 
-    /// The text field that replaces a row while its value is edited, and under
-    /// it the values to choose from, or what Enter would save when there are
-    /// none, and why the last Enter saved nothing.
-    fn inline_field(
-        &self,
-        node: &Node,
-        field: Field,
-        label: Option<&'static str>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let edit = self.editing(&node.id, field).expect("the caller checked that the field is edited");
-        let text = self.inline_text(cx);
-        let (hint, color) = match &edit.error {
-            Some(error) => (error.clone(), theme::RED),
-            None => field.preview(&text, node, dates::today()),
-        };
-        let chips = edit.chips.iter().enumerate().map(|(index, tag)| {
-            chip(format!("#{tag}"), theme::ACCENT).flex().items_center().gap_1().child(
-                div()
-                    .id(ElementId::Name(format!("chip-{index}-remove").into()))
-                    .debug_selector(move || format!("chip-{index}-remove"))
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(rgb(theme::TEXT)))
-                    .child("×")
-                    .on_click(cx.listener(move |app, _, _, cx| app.remove_chip(index, cx))),
-            )
-        });
-        let row = div().flex().items_center().gap_2().min_h(px(30.)).children(label.map(property_label)).child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_1()
-                .px_1p5()
-                .py_0p5()
-                .rounded_md()
-                .bg(rgb(theme::CANVAS))
-                .border_1()
-                .border_color(rgb(if edit.error.is_some() { theme::RED } else { theme::ACCENT }))
-                .text_xs()
-                .children(chips)
-                .child(div().flex_1().min_w(px(64.)).child(self.inline_input().clone())),
-        );
-        let highlight = edit.highlight;
-        let choices = self.inline_choices(cx);
-        let list = (!choices.is_empty()).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .mb_1()
-                .p_0p5()
-                .rounded_md()
-                .bg(rgb(theme::CARD))
-                .border_1()
-                .border_color(rgb(theme::BORDER))
-                .text_xs()
-                .children(choices.into_iter().enumerate().map(|(index, choice)| {
-                    div()
-                        .id(ElementId::Name(format!("choice-{index}").into()))
-                        .debug_selector(move || format!("choice-{index}"))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .h(px(24.))
-                        .px_1p5()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .when(highlight == Some(index), |d| d.bg(rgb(theme::RAISED)))
-                        .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
-                        .child(div().flex_1().min_w(px(0.)).truncate().child(choice.value))
-                        .child(div().flex_shrink_0().text_color(rgb(theme::FAINT)).child(choice.detail))
-                        .on_click(cx.listener(move |app, _, window, cx| app.pick_choice(index, window, cx)))
-                }))
-        });
-        let indent = |d: Div| d.when(label.is_some(), |d| d.pl(px(PROPERTY_LABEL_W + 8.)));
-        // The field keeps its own clicks: a click anywhere else closes it.
+    /// The field that replaces a row while its value is edited. It is as high
+    /// as the row, and its list floats, so nothing below moves.
+    fn inline_field(&self, label: Option<&'static str>) -> AnyElement {
         div()
             .id("inline-edit")
             .debug_selector(|| "inline-edit".to_owned())
             .flex()
-            .flex_col()
-            .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
-            .child(row)
-            // The list already shows what can be saved; the line is for an error, or a value the list does not have.
-            .when(list.is_none() || edit.error.is_some(), |d| {
-                d.child(
-                    indent(div())
-                        .debug_selector(|| "inline-hint".to_owned())
-                        .pb_1()
-                        .min_w(px(0.))
-                        .truncate()
-                        .text_xs()
-                        .text_color(rgb(color))
-                        .child(hint),
-                )
-            })
-            .children(list.map(|list| indent(div()).pt_0p5().child(list)))
+            .items_center()
+            .gap_2()
+            .min_h(px(30.))
+            .children(label.map(property_label))
+            .child(div().flex_1().min_w(px(0.)).child(self.combo().clone()))
             .into_any_element()
     }
 
@@ -790,8 +703,8 @@ impl TopoApp {
                     .into_any_element(),
             );
         }
-        if self.editing(&node.id, Field::Pr).is_some() {
-            out.push(self.inline_field(node, Field::Pr, None, cx));
+        if self.editing(&node.id, Field::Pr) {
+            out.push(self.inline_field(None));
         } else if node.prs.is_empty() {
             out.push(div().text_xs().text_color(rgb(theme::FAINT)).child("None linked").into_any_element());
         }

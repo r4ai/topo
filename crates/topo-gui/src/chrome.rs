@@ -570,7 +570,7 @@ impl TopoApp {
                     ("⌘C  ⌘X", "Canvas: copy / cut nodes · field: text"),
                     ("⌘V", "Canvas: paste nodes as new · field: text"),
                     ("⌘Z  ⇧⌘Z", "Canvas: undo / redo edits · field: typing"),
-                    ("↵  Esc", "Field: save / cancel"),
+                    ("↵  Esc", "Field: save / close the list, then cancel"),
                     ("Tab  ⇧Tab", "Inspector field: save, next / previous"),
                     ("↓ ↑", "Inspector field: choose a suggestion"),
                 ],

@@ -67,7 +67,7 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
             entity.update(cx, |app, cx| {
                 app.start_inline(field, window, cx);
                 if let Some(text) = &options.typed {
-                    app.inline_input().update(cx, |input, cx| input.reset(text, "", cx));
+                    app.combo().update(cx, |combo, cx| combo.set_text(text, cx));
                 }
             })
         })?;

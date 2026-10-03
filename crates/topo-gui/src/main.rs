@@ -9,6 +9,7 @@ mod args;
 mod branding;
 mod chrome;
 mod clipboard;
+mod combobox;
 mod config;
 mod dates;
 mod gesture;
@@ -42,6 +43,7 @@ use topo_jev::{Client, Config};
 
 use futures::StreamExt;
 
+use crate::combobox::Combobox;
 use crate::gesture::Gesture;
 use crate::inline::{Field, InlineEdit};
 use crate::text_input::{InputEvent, TextInput};
@@ -178,7 +180,7 @@ struct TopoApp {
     input: Entity<TextInput>,
     /// The property of the selected node being edited in its inspector row.
     inline: Option<InlineEdit>,
-    inline_input: Entity<TextInput>,
+    combo: Entity<Combobox>,
     /// Nodes below this priority, and nodes without one, are dimmed.
     priority_filter: Option<Priority>,
     /// Position of the highlighted entry in the list of a search or pick prompt.
@@ -230,10 +232,10 @@ impl TopoApp {
         })
         .detach();
         let input = cx.new(TextInput::new);
-        let inline_input = cx.new(TextInput::new);
+        let combo = cx.new(Combobox::new);
         let subscriptions = vec![
             cx.subscribe_in(&input, window, Self::on_input_event),
-            cx.subscribe_in(&inline_input, window, Self::on_inline_event),
+            cx.subscribe_in(&combo, window, Self::on_combo_event),
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -253,7 +255,7 @@ impl TopoApp {
             prompt: None,
             input,
             inline: None,
-            inline_input,
+            combo,
             priority_filter: None,
             search_index: 0,
             show_help: false,
@@ -1246,7 +1248,7 @@ impl Render for TopoApp {
         }
         // The field belongs to the one selected node and lives while it has the
         // focus. Leaving the window does not move the focus, so it survives that.
-        let focused = self.inline_input.focus_handle(cx).is_focused(window);
+        let focused = self.combo.focus_handle(cx).is_focused(window);
         match &self.inline {
             Some(edit) if !focused || self.selected_node().is_none_or(|n| n.id != edit.node) => {
                 self.inline = None;

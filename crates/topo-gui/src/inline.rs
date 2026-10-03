@@ -1,22 +1,19 @@
 //! Editing one property of the selected node in place, in its row of the inspector.
 //!
-//! Enter saves, Escape cancels, and so does a click elsewhere or anything else
-//! that moves the focus: a half-typed value is never saved by accident. Input that cannot be
-//! saved keeps the field open and says why under it. Tab and Shift-Tab save and
-//! open the next or previous field.
+//! The row becomes a [`Combobox`]. Enter saves, Escape cancels, and so does a
+//! click elsewhere or anything else that moves the focus: a half-typed value is
+//! never saved by accident. Input that cannot be saved keeps the field open
+//! and says why. Tab and Shift-Tab save and open the next or previous field.
 //!
-//! Under the field is a list of values to choose from, narrowed by what is
-//! typed: the priorities, the assignees and tags the workspace already uses,
-//! and common due dates. Down and Up move through it and Enter takes the
-//! highlighted one. Tags are edited as chips: a space or comma finishes one,
-//! and Backspace in the empty field removes the last.
+//! This module says what each field offers and how its text becomes an edit;
+//! how the field and its list behave is the combobox's business.
 
-use gpui::{App, Context, Entity, Focusable, Window};
+use gpui::{Context, Entity, Focusable, Window};
 use jiff::civil::Date;
 use topo_core::model::{normalize_assignee, normalize_pr, pr_label};
 use topo_core::{Edit, Graph, Node, NodeId, Priority};
 
-use crate::text_input::{InputEvent, TextInput};
+use crate::combobox::{Choice, ComboEvent, Combobox};
 use crate::{TopoApp, dates, parse_tags, theme};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
@@ -35,18 +32,6 @@ pub(crate) struct InlineEdit {
     pub field: Field,
     /// Why the last Enter saved nothing.
     pub error: Option<String>,
-    /// The text the field opened with. Until it is changed the list is not narrowed by it.
-    initial: String,
-    /// The finished tags of [`Field::Tags`]; the text field holds the one being typed.
-    pub chips: Vec<String>,
-    /// The entry of the list that Enter takes.
-    pub highlight: Option<usize>,
-}
-
-/// A value offered under the field, and what tells it apart there.
-pub(crate) struct Choice {
-    pub value: String,
-    pub detail: String,
 }
 
 /// Entries of the list shown at once.
@@ -59,7 +44,7 @@ impl Field {
         match self {
             Field::Priority => "low, medium, high, urgent — empty clears",
             Field::Assignee => "Name or agent — empty clears",
-            Field::Due => "2026-10-31, 10-31, +3d, tomorrow — empty clears",
+            Field::Due => "2026-10-31, friday, +3d — empty clears",
             Field::Tags => "Add a tag…",
             Field::Pr => "URL or owner/repo#123",
         }
@@ -140,14 +125,15 @@ impl Field {
                 let mut names: Vec<&String> = graph.nodes().filter_map(|n| n.assignee.as_ref()).collect();
                 names.sort();
                 names.dedup();
-                let matching = names.into_iter().filter(|name| name.to_lowercase().contains(&typed));
-                matching.map(|name| choice(name.clone(), String::new())).collect()
+                let mut matching: Vec<&String> =
+                    names.into_iter().filter(|name| name.to_lowercase().contains(&typed)).collect();
+                // Names that start with what is typed come before those that only contain it.
+                matching.sort_by_key(|name| !name.to_lowercase().starts_with(&typed));
+                matching.into_iter().map(|name| choice(name.clone(), String::new())).collect()
             }
-            Field::Due => ["today", "tomorrow", "+3d", "+1w", "+2w"]
+            Field::Due => dates::suggestions(&typed, today)
                 .into_iter()
-                .filter(|preset| preset.starts_with(&typed))
-                .filter_map(|preset| Some((preset, dates::parse_due(preset, today).ok()??)))
-                .map(|(preset, date)| choice(preset.to_owned(), format!("{} {date}", date.strftime("%a"))))
+                .map(|(text, date)| choice(text, format!("{} {date}", date.strftime("%a"))))
                 .collect(),
             Field::Tags => {
                 let mut uses: Vec<(&String, usize)> = Vec::new();
@@ -160,8 +146,9 @@ impl Field {
                 // The most used tags first.
                 uses.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
                 let unused = uses.into_iter().filter(|(tag, _)| !chips.contains(tag));
-                let matching = unused.filter(|(tag, _)| tag.to_lowercase().starts_with(&typed));
-                matching.map(|(tag, count)| choice(tag.clone(), format!("{count}×"))).collect()
+                let mut matching: Vec<_> = unused.filter(|(tag, _)| tag.to_lowercase().contains(&typed)).collect();
+                matching.sort_by_key(|(tag, _)| !tag.to_lowercase().starts_with(&typed));
+                matching.into_iter().map(|(tag, count)| choice(tag.clone(), format!("{count}×"))).collect()
             }
             Field::Pr => Vec::new(),
         };
@@ -184,23 +171,24 @@ fn parse_priority(text: &str) -> Result<Option<Priority>, String> {
 
 impl TopoApp {
     /// Whether `field` of `node` is being edited in place.
-    pub(crate) fn editing(&self, node: &NodeId, field: Field) -> Option<&InlineEdit> {
-        self.inline.as_ref().filter(|edit| edit.node == *node && edit.field == field)
+    pub(crate) fn editing(&self, node: &NodeId, field: Field) -> bool {
+        self.inline.as_ref().is_some_and(|edit| edit.node == *node && edit.field == field)
     }
 
-    pub(crate) fn inline_input(&self) -> &Entity<TextInput> {
-        &self.inline_input
+    pub(crate) fn combo(&self) -> &Entity<Combobox> {
+        &self.combo
     }
 
     /// Turns the row of `field` of the selected node into a text field.
     pub(crate) fn start_inline(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
         let Some(node) = self.selected_node() else { return };
         let (id, initial) = (node.id.clone(), field.initial(node));
-        let chips = if field == Field::Tags { node.tags.clone() } else { Vec::new() };
-        self.inline_input.update(cx, |input, cx| input.reset(&initial, field.placeholder(), cx));
-        self.inline = Some(InlineEdit { node: id, field, error: None, initial, chips, highlight: None });
+        let chips = (field == Field::Tags).then(|| node.tags.clone());
+        self.combo.update(cx, |combo, cx| combo.open(&initial, field.placeholder(), chips, cx));
+        self.inline = Some(InlineEdit { node: id, field, error: None });
         self.show_help = false;
-        window.focus(&self.inline_input.focus_handle(cx), cx);
+        self.refresh_inline(cx);
+        window.focus(&self.combo.focus_handle(cx), cx);
         cx.notify();
     }
 
@@ -212,22 +200,18 @@ impl TopoApp {
         }
     }
 
-    /// What the field holds as one text: for tags, the chips and the tag being typed.
-    pub(crate) fn inline_text(&self, cx: &App) -> String {
-        let typed = self.inline_input.read(cx).text();
-        match &self.inline {
-            Some(edit) if edit.field == Field::Tags => format!("{} {typed}", edit.chips.join(" ")),
-            _ => typed.to_owned(),
-        }
-    }
-
-    /// The list under the field.
-    pub(crate) fn inline_choices(&self, cx: &App) -> Vec<Choice> {
-        let Some(edit) = &self.inline else { return Vec::new() };
-        let text = self.inline_input.read(cx).text();
-        // The value the field opened with is not a query.
-        let typed = if text == edit.initial { "" } else { text };
-        edit.field.choices(typed, &edit.chips, self.graph(), dates::today())
+    /// Gives the field the choices and the preview for what it holds now.
+    fn refresh_inline(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = &self.inline else { return };
+        let Some(node) = self.graph().get(&edit.node) else { return };
+        let (field, error, today) = (edit.field, edit.error.clone(), dates::today());
+        let combo = self.combo.read(cx);
+        let choices = field.choices(combo.query(cx), combo.chips(), self.graph(), today);
+        let preview = field.preview(&combo.value(cx), node, today);
+        self.combo.update(cx, |combo, cx| {
+            combo.set_choices(choices, cx);
+            combo.set_feedback(preview, error, cx);
+        });
     }
 
     /// Saves the field and returns whether it did. A pull request field with nothing typed has nothing to save.
@@ -235,41 +219,17 @@ impl TopoApp {
         let Some(InlineEdit { node, field, .. }) = &self.inline else { return false };
         let (id, field) = (node.clone(), *field);
         let Some(node) = self.graph().get(&id) else { return true };
-        let text = self.inline_text(cx);
-        if field == Field::Pr && text.trim().is_empty() {
+        let text = self.combo.read(cx).value(cx);
+        if field == Field::Pr && text.is_empty() {
             return true;
         }
         match field.parse(&text, node, dates::today()) {
             Ok(edit) => self.mutate(cx, |graph| graph.edit(&id, edit)),
             Err(error) => {
                 self.inline.as_mut().expect("checked above").error = Some(error);
-                cx.notify();
+                self.refresh_inline(cx);
                 false
             }
-        }
-    }
-
-    fn submit_inline(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.inline.as_ref().and_then(|edit| edit.highlight) {
-            Some(index) => self.pick_choice(index, window, cx),
-            None if self.save_inline(cx) => self.cancel_inline(window, cx),
-            None => {}
-        }
-    }
-
-    /// Takes entry `index` of the list: a tag joins the chips, any other value is saved.
-    pub(crate) fn pick_choice(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(choice) = self.inline_choices(cx).into_iter().nth(index) else { return };
-        let edit = self.inline.as_mut().expect("the list belongs to a field");
-        edit.highlight = None;
-        if edit.field == Field::Tags {
-            edit.chips.push(choice.value);
-            self.inline_input.update(cx, |input, cx| input.set_text("", cx));
-            return cx.notify();
-        }
-        self.inline_input.update(cx, |input, cx| input.set_text(&choice.value, cx));
-        if self.save_inline(cx) {
-            self.cancel_inline(window, cx);
         }
     }
 
@@ -284,70 +244,28 @@ impl TopoApp {
         self.start_inline(next, window, cx);
     }
 
-    /// Moves finished tags from the text field to the chips: a tag is
-    /// finished by the space or comma after it.
-    fn collect_chips(&mut self, cx: &mut Context<Self>) {
-        let Some(edit) = self.inline.as_mut().filter(|edit| edit.field == Field::Tags) else { return };
-        let input = self.inline_input.read(cx);
-        let text = input.text().to_owned();
-        let separators = [',', ' ', '　'];
-        // A composition may still turn its space into something else.
-        if input.composing() || !text.contains(separators) {
-            return;
-        }
-        let (finished, typing) = text.rsplit_once(separators).expect("the text has a separator");
-        for tag in parse_tags(finished) {
-            if !edit.chips.contains(&tag) {
-                edit.chips.push(tag);
-            }
-        }
-        let typing = typing.to_owned();
-        self.inline_input.update(cx, |input, cx| input.set_text(&typing, cx));
-    }
-
-    pub(crate) fn remove_chip(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(edit) = &mut self.inline {
-            edit.chips.remove(index);
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn on_inline_event(
+    pub(crate) fn on_combo_event(
         &mut self,
-        _: &Entity<TextInput>,
-        event: &InputEvent,
+        _: &Entity<Combobox>,
+        event: &ComboEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            InputEvent::Changed => {
+            ComboEvent::Changed => {
                 if let Some(edit) = &mut self.inline {
                     edit.error = None;
-                    edit.highlight = None;
                 }
-                self.collect_chips(cx);
+                self.refresh_inline(cx);
             }
-            InputEvent::Cancel => self.cancel_inline(window, cx),
-            InputEvent::Submit => self.submit_inline(window, cx),
-            InputEvent::Up | InputEvent::Down => {
-                let last = self.inline_choices(cx).len().checked_sub(1);
-                if let Some(edit) = &mut self.inline {
-                    edit.highlight = match (event, edit.highlight, last) {
-                        (_, _, None) => None,
-                        (InputEvent::Down, None, _) => Some(0),
-                        (InputEvent::Down, Some(i), Some(last)) => Some((i + 1).min(last)),
-                        (_, Some(0) | None, _) => None,
-                        (_, Some(i), _) => Some(i - 1),
-                    };
+            ComboEvent::Cancel => self.cancel_inline(window, cx),
+            ComboEvent::Submit => {
+                if self.save_inline(cx) {
+                    self.cancel_inline(window, cx);
                 }
             }
-            InputEvent::Next => self.step_inline(true, window, cx),
-            InputEvent::Previous => self.step_inline(false, window, cx),
-            InputEvent::BackspaceEmpty => {
-                if let Some(edit) = &mut self.inline {
-                    edit.chips.pop();
-                }
-            }
+            ComboEvent::Next => self.step_inline(true, window, cx),
+            ComboEvent::Previous => self.step_inline(false, window, cx),
         }
         cx.notify();
     }
@@ -417,7 +335,7 @@ mod tests {
         // The most used tag first; tags already in the field are not offered again.
         assert_eq!(values(Field::Tags, "", &[]), ["gui", "cloud", "core"]);
         assert_eq!(values(Field::Tags, "#c", &["core"]), ["cloud"]);
-        assert_eq!(values(Field::Due, "+", &[]), ["+3d", "+1w", "+2w"]);
+        assert_eq!(values(Field::Due, "2", &[]), ["+2d", "+2w", "+2m", "2026-11-02"]);
         assert_eq!(Field::Due.choices("tom", &[], &graph, today)[0].detail, "Sun 2026-10-04");
         assert!(values(Field::Pr, "", &[]).is_empty());
     }

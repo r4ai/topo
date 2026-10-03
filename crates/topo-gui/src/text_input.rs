@@ -120,6 +120,8 @@ pub struct TextInput {
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
+    /// A completion shown faintly after the text while the cursor is at its end.
+    ghost: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -144,6 +146,7 @@ impl TextInput {
             focus_handle: cx.focus_handle(),
             content: SharedString::default(),
             placeholder: SharedString::default(),
+            ghost: SharedString::default(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -179,6 +182,15 @@ impl TextInput {
         let placeholder = self.placeholder.clone();
         self.reset(text, &placeholder, cx);
         self.selected_range = self.content.len()..self.content.len();
+    }
+
+    /// Sets the completion shown after the text. It is display only: the owner
+    /// decides what accepts it.
+    pub fn set_ghost(&mut self, ghost: &str, cx: &mut Context<Self>) {
+        if self.ghost.as_ref() != ghost {
+            self.ghost = ghost.to_owned().into();
+            cx.notify();
+        }
     }
 
     /// Whether an input method is composing text that is not final yet.
@@ -359,7 +371,8 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        // The completion after the text is not part of it.
+        line.closest_index_for_x(position.x - bounds.left()).min(self.content.len())
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -610,15 +623,22 @@ impl Element for TextElement {
             true => (input.placeholder.clone(), theme::faint().into()),
             false => (input.content.clone(), style.color),
         };
+        let typed = display_text.len();
+        let at_end = selected_range.is_empty() && cursor == input.content.len() && input.marked_range.is_none();
+        let ghost = match !input.content.is_empty() && at_end {
+            true => input.ghost.clone(),
+            false => SharedString::default(),
+        };
         let run = TextRun {
-            len: display_text.len(),
+            len: typed,
             font: style.font(),
             color: text_color,
             background_color: None,
             underline: None,
             strikethrough: None,
         };
-        let runs = match input.marked_range.as_ref() {
+        let ghost_run = TextRun { len: ghost.len(), color: theme::faint().into(), ..run.clone() };
+        let mut runs: Vec<TextRun> = match input.marked_range.as_ref() {
             Some(marked) => [
                 TextRun { len: marked.start, ..run.clone() },
                 TextRun {
@@ -626,12 +646,19 @@ impl Element for TextElement {
                     underline: Some(UnderlineStyle { color: Some(run.color), thickness: px(1.0), wavy: false }),
                     ..run.clone()
                 },
-                TextRun { len: display_text.len() - marked.end, ..run },
+                TextRun { len: typed - marked.end, ..run },
             ]
             .into_iter()
             .filter(|run| run.len > 0)
             .collect(),
             None => vec![run],
+        };
+        let display_text = match ghost.is_empty() {
+            true => display_text,
+            false => {
+                runs.push(ghost_run);
+                format!("{display_text}{ghost}").into()
+            }
         };
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line = window.text_system().shape_line(display_text, font_size, &runs, None);
