@@ -379,7 +379,13 @@ mod tests {
             Status::Doing
         );
         shell.read_with(cx, |app, _| {
-            assert_eq!(app.config.recent_workspaces, [second.path().join(".topo"), first.path().join(".topo")]);
+            assert_eq!(
+                app.config.recent_workspaces,
+                [
+                    second.path().join(".topo").canonicalize().unwrap(),
+                    first.path().join(".topo").canonicalize().unwrap()
+                ]
+            );
         });
     }
 
@@ -463,7 +469,7 @@ mod tests {
         let (shell, cx) = cx.add_window_view(|window, cx| RepositoryWindow::new(start, config, window, cx));
         cx.run_until_parked();
         let before = shell.read_with(cx, |app, _| app.editor.clone().unwrap());
-        assert_eq!(before.read_with(cx, |app, _| app.ws.dir().to_owned()), custom);
+        assert_eq!(before.read_with(cx, |app, _| app.ws.dir().to_owned()), custom.canonicalize().unwrap());
         assert_eq!(before.read_with(cx, |app, _| app.inspector_width), Some(412.));
         shell.update_in(cx, |app, window, cx| {
             app.show_chooser(window, cx);
@@ -515,7 +521,10 @@ mod tests {
         let second = tempfile::tempdir().unwrap();
         workspace(first.path(), "first");
         workspace(second.path(), "second");
-        let config = UserConfig { recent_workspaces: vec![second.path().join(".topo")], ..Default::default() };
+        let config = UserConfig {
+            recent_workspaces: vec![second.path().join(".topo").canonicalize().unwrap()],
+            ..Default::default()
+        };
         let (shell, cx) =
             cx.add_window_view(|window, cx| RepositoryWindow::new(first.path().to_owned(), config, window, cx));
         cx.simulate_resize(size(px(720.), px(480.)));
@@ -532,9 +541,9 @@ mod tests {
         click(cx, "recent-repository-1");
         assert_eq!(
             shell.read_with(cx, |app, cx| app.editor.as_ref().unwrap().read(cx).ws.dir().to_owned()),
-            second.path().join(".topo")
+            second.path().join(".topo").canonicalize().unwrap()
         );
-        assert!(cx.window_title().unwrap().contains(&second.path().display().to_string()));
+        assert!(cx.window_title().unwrap().contains(&second.path().canonicalize().unwrap().display().to_string()));
         cx.dispatch_action(OpenRepository);
         cx.run_until_parked();
         assert!(cx.debug_bounds("open-folder").is_some());
@@ -552,7 +561,7 @@ mod tests {
             })
             .collect();
         let config = UserConfig {
-            recent_workspaces: folders.iter().map(|d| d.path().join(".topo")).collect(),
+            recent_workspaces: folders.iter().map(|d| d.path().join(".topo").canonicalize().unwrap()).collect(),
             ..Default::default()
         };
         let (shell, cx) =
@@ -580,7 +589,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             shell.read_with(cx, |app, cx| app.editor.as_ref().unwrap().read(cx).ws.dir().to_owned()),
-            folders[9].path().join(".topo")
+            folders[9].path().join(".topo").canonicalize().unwrap()
         );
     }
 }
