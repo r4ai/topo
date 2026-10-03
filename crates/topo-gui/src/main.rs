@@ -7,6 +7,7 @@
 
 mod branding;
 mod chrome;
+mod config;
 mod dates;
 mod gesture;
 mod graph_view;
@@ -65,6 +66,8 @@ enum Drag {
     Pan { last: Point<Pixels>, moved: bool, on_card: bool, button: MouseButton },
     /// Shift-drag or handle-drag from `source`; `mouse` is in window coordinates.
     Link { source: NodeId, mouse: Point<Pixels> },
+    /// The inspector's left border dragged to resize it.
+    Resize,
 }
 
 /// How a node picked from a list relates to the node it is picked for.
@@ -178,6 +181,10 @@ struct TopoApp {
     show_help: bool,
     /// Narrow window: the toolbar and inspector drop secondary text.
     compact: bool,
+    /// Width of the inspector in pixels; `None` follows the window proportion.
+    inspector_width: Option<f32>,
+    /// The window width the inspector width was last clamped against.
+    viewport_width: f32,
     undo: Vec<Graph>,
     redo: Vec<Graph>,
     proposals: Vec<Proposal>,
@@ -190,7 +197,17 @@ struct TopoApp {
 }
 
 impl TopoApp {
+    #[cfg(test)]
     fn new(ws: Workspace, window: &mut Window, cx: &mut Context<Self>) -> Result<Self> {
+        Self::with_inspector_width(ws, None, window, cx)
+    }
+
+    fn with_inspector_width(
+        ws: Workspace,
+        inspector_width: Option<f32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Self> {
         let watcher = match ws.remote() {
             Some(_) => {
                 Self::poll_remote(cx);
@@ -229,6 +246,8 @@ impl TopoApp {
             search_index: 0,
             show_help: false,
             compact: false,
+            inspector_width,
+            viewport_width: 0.,
             undo: Vec::new(),
             redo: Vec::new(),
             proposals: Vec::new(),
@@ -242,6 +261,41 @@ impl TopoApp {
 
     fn graph(&self) -> &Graph {
         &self.ws.graph
+    }
+
+    // ---- inspector width ----------------------------------------------
+
+    /// The current inspector width: the saved value, or the window proportion.
+    pub(crate) fn inspector_width(&self) -> f32 {
+        self.inspector_width.unwrap_or_else(|| config::default_inspector_width(self.viewport_width))
+    }
+
+    /// Makes an explicit width take effect, clamped to the current window.
+    fn set_inspector_width(&mut self, width: f32) {
+        self.inspector_width = Some(config::clamp_inspector_width(width, self.viewport_width));
+    }
+
+    /// The width a pointer at `position` asks for while dragging the left border:
+    /// the distance from the pointer to the window's right edge, which the
+    /// inspector is flush against.
+    fn resized_width(&self, position: Point<Pixels>) -> f32 {
+        self.viewport_width - f32::from(position.x)
+    }
+
+    /// Saves the width so the next launch starts with the same panel.
+    #[cfg_attr(test, allow(unused_variables))]
+    fn persist_inspector_width(&self) {
+        #[cfg(not(test))]
+        if let Some(width) = self.inspector_width {
+            let _ = config::UserConfig { inspector_width: Some(width) }.save();
+        }
+    }
+
+    /// Clamps an explicit width when the window shrinks below what it needs.
+    fn clamp_inspector_width_to_viewport(&mut self) {
+        if let Some(width) = self.inspector_width {
+            self.inspector_width = Some(config::clamp_inspector_width(width, self.viewport_width));
+        }
     }
 
     fn selected_node(&self) -> Option<&Node> {
@@ -1162,7 +1216,10 @@ impl Render for TopoApp {
                 false => window.request_animation_frame(),
             }
         }
-        self.compact = window.viewport_size().width < px(1180.);
+        let viewport = window.viewport_size().width;
+        self.viewport_width = f32::from(viewport);
+        self.compact = viewport < px(1180.);
+        self.clamp_inspector_width_to_viewport();
         if self.step_anim() {
             window.request_animation_frame();
         }
@@ -1238,7 +1295,8 @@ fn main() -> Result<()> {
             ..Default::default()
         };
         cx.open_window(options, |window, cx| {
-            cx.new(|cx| TopoApp::new(ws, window, cx).expect("failed to watch the workspace"))
+            let width = config::UserConfig::load().inspector_width;
+            cx.new(|cx| TopoApp::with_inspector_width(ws, width, window, cx).expect("failed to watch the workspace"))
         })
         .expect("failed to open window");
         cx.on_window_closed(|cx| cx.quit()).detach();

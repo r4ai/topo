@@ -196,6 +196,10 @@ impl TopoApp {
                 self.anim = None;
             }
             Some(Drag::Link { mouse, .. }) => *mouse = event.position,
+            Some(Drag::Resize) => {
+                let width = self.resized_width(event.position);
+                self.set_inspector_width(width);
+            }
             None => return,
         }
         cx.notify();
@@ -204,7 +208,7 @@ impl TopoApp {
     pub(crate) fn on_drag_end(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         let button = match self.drag {
             Some(Drag::Pan { button, .. }) => button,
-            Some(Drag::Link { .. }) => MouseButton::Left,
+            Some(Drag::Link { .. } | Drag::Resize) => MouseButton::Left,
             None => return,
         };
         if event.button != button {
@@ -212,6 +216,7 @@ impl TopoApp {
         }
         match self.drag.take() {
             Some(Drag::Pan { moved: false, on_card: false, button: MouseButton::Left, .. }) => self.clear_selection(),
+            Some(Drag::Resize) => self.persist_inspector_width(),
             Some(Drag::Link { source, .. }) => {
                 let area = self.area.get();
                 self.ensure_graph_cache();

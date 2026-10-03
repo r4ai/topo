@@ -499,6 +499,42 @@ fn modifier_click_toggles_selection_and_middle_drag_preserves_it(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn dragging_the_inspector_border_resizes_and_clamps(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let handle = ui.cx.debug_bounds("inspector-resize").expect("resize handle is rendered");
+    let before = ui.read(|app| app.inspector_width());
+    // Drag the border left, widening the panel.
+    let to = handle.center() - point(px(80.), px(0.));
+    ui.drag(handle.center(), to);
+    assert!((ui.read(|app| app.inspector_width()) - (before + 80.)).abs() < 1.5);
+
+    // Dragging the border to the far left clamps to a share of the window.
+    let handle = ui.cx.debug_bounds("inspector-resize").unwrap();
+    ui.drag(handle.center(), point(px(20.), handle.center().y));
+    let max = 1360. * crate::config::INSPECTOR_MAX_FRACTION;
+    assert!((ui.read(|app| app.inspector_width()) - max).abs() < 1.5);
+
+    // Dragging it to the far right clamps the other way.
+    let handle = ui.cx.debug_bounds("inspector-resize").unwrap();
+    ui.drag(handle.center(), point(px(1340.), handle.center().y));
+    assert!((ui.read(|app| app.inspector_width()) - crate::config::INSPECTOR_MIN_WIDTH).abs() < 1.5);
+
+    // The canvas never overlaps the panel it sits next to.
+    let area = ui.read(|app| app.area.get());
+    let inspector = ui.read(|app| app.inspector_width());
+    assert!((f32::from(area.right()) - (1360. - inspector)).abs() < 1.5);
+}
+
+#[gpui::test]
+fn the_inspector_starts_with_the_window_proportion(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    assert_eq!(ui.read(|app| app.inspector_width()), 1360. * crate::config::INSPECTOR_DEFAULT_FRACTION);
+    // A narrow window falls back to the compact width.
+    ui.resize(900., 700.);
+    assert_eq!(ui.read(|app| app.inspector_width()), crate::config::INSPECTOR_COMPACT_WIDTH);
+}
+
+#[gpui::test]
 fn wheel_zoom_is_anchored_and_modified_wheel_pans(cx: &mut TestAppContext) {
     use gpui::{ScrollDelta, ScrollWheelEvent};
     let mut ui = open(cx, SAMPLE);
