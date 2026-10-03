@@ -434,6 +434,7 @@ fn graph_reload_removes_only_missing_selected_nodes(cx: &mut TestAppContext) {
         disk.save().unwrap();
         app.reload(cx);
     });
+    ui.cx.run_until_parked();
     assert_eq!(ui.selected().as_deref(), Some("c"));
     assert_eq!(ui.read(|app| app.selected_nodes.clone()), [id("c")].into_iter().collect());
 }
@@ -460,6 +461,7 @@ fn cloud_workspace_merges_other_writers_and_drops_stale_undo_steps(cx: &mut Test
 
     // An edit goes to the server and can be undone.
     app.update(cx, |app, cx| assert!(app.mutate(cx, |g| g.set_status(&id("a"), Status::Done))));
+    cx.run_until_parked();
     assert_eq!(server(&remote), [("a".into(), Status::Done), ("b".into(), Status::Todo)]);
     assert_eq!(app.read_with(cx, |app, _| app.undo.len()), 1);
 
@@ -468,6 +470,9 @@ fn cloud_workspace_merges_other_writers_and_drops_stale_undo_steps(cx: &mut Test
     app.update(cx, |app, cx| {
         let (remote, version) = app.ws.remote().unwrap();
         app.fetched(remote.fetch(Some(version)), cx);
+    });
+    cx.run_until_parked();
+    app.update(cx, |app, cx| {
         assert!(app.graph().get(&id("c")).is_some());
         assert!(app.undo.is_empty());
         // A poll that was overtaken by a save of ours is ignored.
@@ -480,6 +485,9 @@ fn cloud_workspace_merges_other_writers_and_drops_stale_undo_steps(cx: &mut Test
     remote.apply(&[status("b", Status::Doing)]).unwrap();
     app.update(cx, |app, cx| {
         assert!(app.mutate(cx, |g| g.set_status(&id("a"), Status::Todo)));
+    });
+    cx.run_until_parked();
+    app.update(cx, |app, cx| {
         assert_eq!(app.graph().get(&id("b")).unwrap().status, Status::Doing);
         assert!(app.undo.is_empty());
         assert!(app.mutate(cx, |g| g.set_status(&id("c"), Status::Done)));
@@ -488,6 +496,7 @@ fn cloud_workspace_merges_other_writers_and_drops_stale_undo_steps(cx: &mut Test
         assert_eq!((app.undo.len(), app.redo.len()), (0, 1));
     });
     let expected = [("a".into(), Status::Todo), ("b".into(), Status::Doing), ("c".into(), Status::Todo)];
+    cx.run_until_parked();
     assert_eq!(server(&remote), expected);
 }
 

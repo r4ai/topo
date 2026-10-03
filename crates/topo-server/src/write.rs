@@ -43,12 +43,11 @@ pub async fn write(
 ) -> Result<ApplyResult, ApiError> {
     let wid = write.workspace_id;
     for _ in 0..ATTEMPTS {
-        write.caller.require(state, wid, &WRITERS).await?;
         let read = vec![
             write.caller.membership(wid),
             sql::version(wid),
             sql::change_by_key(wid, write.idempotency_key),
-            sql::nodes(wid),
+            sql::nodes_for_write(wid, write.idempotency_key, write.caller.user_id, &write.caller.token_id),
             sql::clock(),
         ];
         let [membership, current, recorded, nodes, clock] =
@@ -78,7 +77,14 @@ pub async fn write(
             ops: serde_json::to_string(&changed.ops).map_err(internal)?,
             created: serde_json::to_string(&changed.created).map_err(internal)?,
         });
-        match state.db.batch(vec![record, sql::upsert_nodes(wid, &upserts), sql::delete_nodes(wid, &deletes)]).await {
+        let mut statements = vec![record];
+        if !upserts.is_empty() {
+            statements.push(sql::upsert_nodes(wid, &upserts));
+        }
+        if !deletes.is_empty() {
+            statements.push(sql::delete_nodes(wid, &deletes));
+        }
+        match state.db.batch(statements).await {
             Ok(_) => return Ok(ApplyResult { version: current + 1, created: changed.created }),
             // Another write took this version or this key. Reading again tells which.
             Err(DbError::Constraint) => continue,

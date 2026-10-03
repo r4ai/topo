@@ -20,6 +20,9 @@ mod inline;
 mod inspector;
 mod layout;
 mod notes;
+#[cfg(test)]
+mod perf_tests;
+mod persistence;
 mod polling;
 mod repository;
 #[cfg(feature = "screenshot")]
@@ -27,13 +30,13 @@ mod screenshot;
 mod text_input;
 mod theme;
 
+use futures::channel::mpsc;
 use std::cell::Cell;
 use std::collections::BTreeSet;
 #[cfg(feature = "screenshot")]
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -167,6 +170,7 @@ enum Direction {
 
 struct TopoApp {
     ws: Workspace,
+    persistence: persistence::Persistence,
     focus: FocusHandle,
     offset: Point<Pixels>,
     zoom: f32,
@@ -208,6 +212,7 @@ struct TopoApp {
     _watcher: Option<notify::RecommendedWatcher>,
     /// Dropping a workspace cancels its scheduler, including inactive waits.
     _sync_task: Option<gpui::Task<()>>,
+    _date_task: Option<gpui::Task<()>>,
     retired: bool,
     poll_active: bool,
     poll_visible: bool,
@@ -241,6 +246,8 @@ impl TopoApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let editor = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| editor.update(cx, |app, cx| app.can_leave(cx)).unwrap_or(true));
         let active = window.is_window_active();
         let (watcher, sync_task, poll_wake) = match source {
             None => {
@@ -271,6 +278,7 @@ impl TopoApp {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
+            persistence: persistence::Persistence::new(ws.clone()),
             ws,
             focus,
             offset: point(px(40.), px(40.)),
@@ -302,6 +310,7 @@ impl TopoApp {
             toast_serial: 0,
             _watcher: watcher,
             _sync_task: Some(sync_task),
+            _date_task: Some(Self::date_clock(cx)),
             retired: false,
             poll_active: active,
             poll_visible: true,
@@ -316,6 +325,7 @@ impl TopoApp {
     fn retire(&mut self) {
         self.retired = true;
         self._sync_task.take();
+        self._date_task.take();
         self._watcher.take();
         self._gesture_task.take();
         self._gesture_monitor.take();
@@ -378,21 +388,22 @@ impl TopoApp {
 
     /// Reloads the graph whenever a Markdown file changes.
     fn file_watcher(ws: &Workspace) -> Result<(notify::RecommendedWatcher, mpsc::Receiver<()>)> {
-        let (tx, rx) = mpsc::channel();
+        let (mut tx, rx) = mpsc::channel(1);
         let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
             if event.is_ok() {
-                let _ = tx.send(());
+                let _ = tx.try_send(());
             }
         })?;
         watcher.watch(&ws.nodes_dir(), RecursiveMode::NonRecursive)?;
         Ok((watcher, rx))
     }
 
-    fn watch_files(rx: mpsc::Receiver<()>, cx: &mut Context<Self>) -> gpui::Task<()> {
+    fn watch_files(mut rx: mpsc::Receiver<()>, cx: &mut Context<Self>) -> gpui::Task<()> {
         cx.spawn(async move |this, cx| {
-            loop {
+            while rx.next().await.is_some() {
                 cx.background_executor().timer(Duration::from_millis(300)).await;
-                if rx.try_iter().count() > 0 && this.update(cx, |app, cx| app.reload(cx)).is_err() {
+                while rx.try_recv().is_ok() {}
+                if this.update(cx, |app, cx| app.reload(cx)).is_err() {
                     break;
                 }
             }
@@ -404,63 +415,18 @@ impl TopoApp {
         if self.retired {
             return;
         }
-        let known = self.ws.remote().map(|(_, version)| version);
-        let result = match fetched {
-            // A save of ours may have overtaken the poll; then the snapshot is the older one.
-            Ok(Some(snapshot)) if Some(snapshot.version) > known => {
-                let before = self.ws.graph.clone();
-                self.ws.install(snapshot).map(|()| self.ws.graph != before)
-            }
-            Ok(_) => Ok(false),
-            Err(e) => Err(e),
-        };
-        self.reloaded(result, "Updated from the cloud", cx);
-    }
-
-    /// Picks up edits made outside the app. Our own saves also trigger the
-    /// watcher; those reload an identical graph and are ignored so the undo
-    /// history survives.
-    fn reload(&mut self, cx: &mut Context<Self>) {
-        let result = self.ws.reload();
-        self.reloaded(result, "Updated from disk", cx);
-    }
-
-    /// Finishes a reload that says whether it changed the graph.
-    fn reloaded(&mut self, changed: Result<bool, topo_core::Error>, notice: &'static str, cx: &mut Context<Self>) {
-        match changed {
-            Ok(false) => return,
-            Ok(true) => {
-                self.undo.clear();
-                self.redo.clear();
-                self.graph_replaced();
-                self.toast(notice, false, cx);
-            }
+        match fetched {
+            Ok(Some(snapshot)) => self.receive_snapshot(snapshot, cx),
+            Ok(None) => {}
             Err(e) => self.toast(format!("Reload failed: {e}"), true, cx),
         }
-        cx.notify();
     }
 
-    /// Saves the graph and returns whether it is still exactly what was saved.
-    /// A cloud workspace can come back with the changes of other writers
-    /// merged in. The undo history predates those, and stepping back to an
-    /// older graph would undo them too, so it is dropped.
-    fn save(&mut self) -> Result<bool, topo_core::Error> {
-        let intended = self.ws.graph.clone();
-        self.ws.save()?;
-        // Saving records timestamps, which are not part of what was intended.
-        let exact = self.ws.graph.same_content(&intended);
-        if !exact {
-            self.undo.clear();
-            self.redo.clear();
-            self.graph_replaced();
-        }
-        Ok(exact)
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.reload_background(cx);
     }
 
-    /// Drops what may refer to nodes that the graph no longer has, after it
-    /// was replaced as a whole.
-    fn graph_replaced(&mut self) {
-        self.graph_cache.invalidate();
+    fn prune_selection(&mut self) {
         self.selected_nodes.retain(|id| self.ws.graph.get(id).is_some());
         if self.selected.as_ref().is_none_or(|id| !self.selected_nodes.contains(id)) {
             self.selected = self.selected_nodes.first().cloned();
@@ -473,7 +439,7 @@ impl TopoApp {
         if before.same_content(&self.ws.graph) {
             return;
         }
-        self.graph_cache.invalidate();
+        self.graph_cache.changed(&before, &self.ws.graph);
         self.undo.push(before);
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
@@ -481,44 +447,33 @@ impl TopoApp {
         self.redo.clear();
     }
 
-    /// Applies a graph mutation, saves it and records it for undo. On failure
-    /// the graph is left untouched and the error is shown.
+    /// Validate and display an edit immediately, then enqueue its persistence.
     fn mutate(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Graph) -> Result<(), topo_core::Error>) -> bool {
         let before = self.ws.graph.clone();
-        let result = f(&mut self.ws.graph).and_then(|()| self.save());
-        cx.notify();
-        match result {
-            Ok(exact) => {
-                if exact {
-                    self.record_undo(before);
-                }
-                true
-            }
-            Err(e) => {
-                self.ws.graph = before;
-                self.toast(e.to_string(), true, cx);
-                false
-            }
+        if let Err(e) = f(&mut self.ws.graph) {
+            self.ws.graph = before;
+            self.toast(e.to_string(), true, cx);
+            return false;
         }
+        self.enqueue_save(&before, cx);
+        self.record_undo(before);
+        if self.prompt.is_some() {
+            self.refresh_palette(cx);
+        }
+        cx.notify();
+        true
     }
 
-    /// Swaps the graph with the top of `from`, pushing the current one onto `to`.
+    /// Undo/redo are ordered edits, including when the original write is pending.
     fn restore(&mut self, undo: bool, cx: &mut Context<Self>) {
         let Some(graph) = (if undo { &mut self.undo } else { &mut self.redo }).pop() else {
             return self.toast(if undo { "Nothing to undo" } else { "Nothing to redo" }, false, cx);
         };
         let current = std::mem::replace(&mut self.ws.graph, graph);
-        match self.save() {
-            Ok(true) => (if undo { &mut self.redo } else { &mut self.undo }).push(current),
-            Ok(false) => {}
-            Err(e) => {
-                // Nothing was restored, so the step stays where it was.
-                let graph = std::mem::replace(&mut self.ws.graph, current);
-                (if undo { &mut self.undo } else { &mut self.redo }).push(graph);
-                return self.toast(e.to_string(), true, cx);
-            }
-        }
-        self.graph_replaced();
+        self.graph_cache.changed(&current, &self.ws.graph);
+        self.enqueue_save(&current, cx);
+        (if undo { &mut self.redo } else { &mut self.undo }).push(current);
+        self.prune_selection();
         self.toast(if undo { "Undone" } else { "Redone" }, false, cx);
     }
 
@@ -839,9 +794,11 @@ impl TopoApp {
 
     /// Nodes to emphasize while a list is open, or `None` when the whole graph is of interest.
     fn search_matches(&self, cx: &App) -> Option<Vec<NodeId>> {
+        let ids =
+            || self.palette.read(cx).choices().iter().filter_map(|c| c.key.clone().map(NodeId)).collect::<Vec<_>>();
         match &self.prompt {
-            Some(Prompt::Search) if !self.palette.read(cx).text(cx).trim().is_empty() => Some(self.listed(cx)),
-            Some(Prompt::Pick { node, .. }) => Some(self.listed(cx).into_iter().chain([node.clone()]).collect()),
+            Some(Prompt::Search) if !self.palette.read(cx).text(cx).trim().is_empty() => Some(ids()),
+            Some(Prompt::Pick { node, .. }) => Some(ids().into_iter().chain([node.clone()]).collect()),
             _ => None,
         }
     }
@@ -905,21 +862,12 @@ impl TopoApp {
         let before = self.ws.graph.clone();
         let applied = organize::apply(&mut self.ws.graph, picked);
         let skipped: Vec<&String> = applied.iter().filter_map(|a| a.skipped.as_ref()).collect();
-        match self.save() {
-            Ok(exact) => {
-                if exact {
-                    self.record_undo(before);
-                }
-                let done = applied.len() - skipped.len();
-                match skipped.first() {
-                    None => self.toast(format!("Applied {done}"), false, cx),
-                    Some(why) => self.toast(format!("Applied {done}, skipped {}: {why}", skipped.len()), true, cx),
-                }
-            }
-            Err(e) => {
-                self.ws.graph = before;
-                self.toast(e.to_string(), true, cx);
-            }
+        self.enqueue_save(&before, cx);
+        self.record_undo(before);
+        let done = applied.len() - skipped.len();
+        match skipped.first() {
+            None => self.toast(format!("Applied {done}"), false, cx),
+            Some(why) => self.toast(format!("Applied {done}, skipped {}: {why}", skipped.len()), true, cx),
         }
         cx.notify();
     }
@@ -1293,6 +1241,7 @@ impl Focusable for TopoApp {
 
 impl Render for TopoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_graph_cache();
         if self.pending_fit {
             match self.area.get().size.width > px(0.) {
                 true => {
@@ -1339,7 +1288,16 @@ impl Render for TopoApp {
             .font_family(".SystemUIFont")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
-            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
+                if app.can_leave(cx) {
+                    window.remove_window();
+                }
+            }))
+            .on_action(cx.listener(|app, _: &Quit, _, cx| {
+                if app.can_leave(cx) {
+                    cx.quit();
+                }
+            }))
             .when(canvas && can_undo, |d| {
                 d.on_action(cx.listener(|app, _: &text_input::Undo, _, cx| app.restore(true, cx)))
             })
@@ -1371,6 +1329,7 @@ impl Render for TopoApp {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_drag_end))
             .child(self.toolbar(cx))
+            .when(self.persistence.pending_count() > 0, |d| d.child(self.persistence_bar(cx)))
             .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(cx)).child(self.inspector(cx)))
     }
 }

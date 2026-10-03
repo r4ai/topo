@@ -11,7 +11,7 @@ use gpui::{
 };
 use topo_core::Workspace;
 
-use crate::{CloseWindow, TopoApp, config::UserConfig, theme};
+use crate::{CloseWindow, Quit, TopoApp, config::UserConfig, theme};
 
 #[path = "repository_view.rs"]
 mod view;
@@ -113,6 +113,11 @@ impl RepositoryWindow {
         if self.loading {
             return;
         }
+        if let Some(editor) = &self.editor
+            && !editor.update(cx, |app, cx| app.can_leave(cx))
+        {
+            return;
+        }
         self.chooser = true;
         if let Some(editor) = &self.editor {
             editor.update(cx, |app, _| app.set_poll_visible(false));
@@ -193,6 +198,11 @@ impl RepositoryWindow {
 
     fn open_selection(&mut self, selection: Selection, initialize: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading {
+            return;
+        }
+        if let Some(editor) = &self.editor
+            && !editor.update(cx, |app, cx| app.can_leave(cx))
+        {
             return;
         }
         self.loading = true;
@@ -290,7 +300,16 @@ impl Render for RepositoryWindow {
             .text_color(rgb(theme::TEXT))
             .font_family(".SystemUIFont")
             .on_action(cx.listener(|app, _: &OpenRepository, window, cx| app.show_chooser(window, cx)))
-            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
+                if app.editor.as_ref().is_none_or(|editor| editor.update(cx, |app, cx| app.can_leave(cx))) {
+                    window.remove_window();
+                }
+            }))
+            .on_action(cx.listener(|app, _: &Quit, _, cx| {
+                if app.editor.as_ref().is_none_or(|editor| editor.update(cx, |app, cx| app.can_leave(cx))) {
+                    cx.quit();
+                }
+            }))
             .when(!chooser, |d| d.child(self.editor.as_ref().unwrap().clone()))
             .when(chooser, |d| {
                 d.track_focus(&self.focus).on_key_down(cx.listener(Self::key_down)).child(self.chooser_view(window, cx))
@@ -350,6 +369,7 @@ mod tests {
             app.selected = Some(NodeId("same".into()));
             app.selected_nodes.insert(NodeId("same".into()));
         });
+        cx.run_until_parked();
         shell.update_in(cx, |app, window, cx| app.open_path(second.path().to_owned(), false, window, cx));
         cx.run_until_parked();
         let new = shell.read_with(cx, |app, _| app.editor.clone().unwrap());
@@ -370,6 +390,7 @@ mod tests {
         new.update(cx, |app, cx| {
             app.mutate(cx, |g| g.set_status(&NodeId("same".into()), Status::Doing));
         });
+        cx.run_until_parked();
         assert_eq!(
             Workspace::discover(first.path()).unwrap().graph.get(&NodeId("same".into())).unwrap().status,
             Status::Done

@@ -9,6 +9,8 @@ use gpui::{Context, Task};
 
 use crate::{REMOTE_POLL, TopoApp};
 
+const MAX_IDLE: Duration = Duration::from_secs(30);
+
 const MAX_RETRY: Duration = Duration::from_secs(60);
 
 impl TopoApp {
@@ -59,15 +61,20 @@ impl TopoApp {
                 }
                 // Coalesce activation bursts, including events received during a fetch.
                 while events.try_recv().is_ok() {}
-                let Ok(request) = this
-                    .read_with(cx, |app, _| (app.poll_active && app.poll_visible).then(|| app.ws.remote()).flatten())
-                else {
+                let Ok(request) = this.read_with(cx, |app, _| {
+                    (app.poll_active && app.poll_visible && !app.persistence.busy()).then(|| app.ws.remote()).flatten()
+                }) else {
                     break;
                 };
-                let Some((remote, version)) = request else { continue };
+                let Some((remote, version)) = request else {
+                    delay = REMOTE_POLL;
+                    continue;
+                };
                 let fetched = cx.background_executor().spawn(async move { remote.fetch(Some(version)) }).await;
                 delay = if fetched.is_err() {
                     if failed { (delay.max(REMOTE_POLL) * 2).min(MAX_RETRY) } else { REMOTE_POLL * 2 }
+                } else if matches!(fetched, Ok(None)) && !woke && !failed {
+                    (delay.max(REMOTE_POLL) * 2).min(MAX_IDLE)
                 } else {
                     REMOTE_POLL
                 };
@@ -131,6 +138,41 @@ mod tests {
     }
     fn calls(remote: &CountingRemote) -> usize {
         remote.calls.load(Ordering::SeqCst)
+    }
+
+    #[gpui::test]
+    fn quiet_polling_slows_down_and_skips_persistence_work(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = Arc::new(CountingRemote::default());
+        let ws = Workspace::open_remote(dir.path().to_owned(), remote.clone()).unwrap();
+        let executor = cx.executor();
+        let (app, cx) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        let initial = calls(&remote);
+        for (wait, extra) in [(5, 1), (10, 2), (20, 3), (30, 4), (30, 5)] {
+            executor.advance_clock(Duration::from_secs(wait));
+            cx.run_until_parked();
+            assert_eq!(calls(&remote), initial + extra);
+        }
+        // A persistence read/write already confirms the graph; polling must not overlap it.
+        app.update(cx, |app, _| app.persistence.set_busy_for_test(true));
+        executor.advance_clock(MAX_IDLE);
+        cx.run_until_parked();
+        assert_eq!(calls(&remote), initial + 5);
+        app.update(cx, |app, _| app.persistence.set_busy_for_test(false));
+        executor.advance_clock(REMOTE_POLL);
+        cx.run_until_parked();
+        assert_eq!(calls(&remote), initial + 6);
+        remote
+            .apply(&[serde_json::from_value(serde_json::json!({"op":"add","id":"new","title":"new"})).unwrap()])
+            .unwrap();
+        executor.advance_clock(REMOTE_POLL * 2);
+        cx.run_until_parked();
+        assert_eq!(calls(&remote), initial + 7);
+        executor.advance_clock(REMOTE_POLL);
+        cx.run_until_parked();
+        assert_eq!(calls(&remote), initial + 8);
     }
 
     #[gpui::test]
@@ -236,7 +278,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(calls(&remote), 9);
         remote.offline.store(true, Ordering::SeqCst);
-        executor.advance_clock(REMOTE_POLL);
+        executor.advance_clock(REMOTE_POLL * 2);
         cx.run_until_parked();
         assert_eq!(calls(&remote), 10);
         assert_eq!(app.read_with(cx, |app, _| app.toast_serial), serial + 1);

@@ -231,8 +231,7 @@ impl TopoApp {
             let parts = [node.priority.map(theme::priority_text), node.due.map(|d| dates::short(d, today))];
             Some(parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")).filter(|d| !d.is_empty())
         };
-        let mut doing: Vec<&Node> =
-            graph.nodes().filter(|n| n.kind == Kind::Task && n.status == Status::Doing).collect();
+        let mut doing: Vec<&Node> = self.graph_cache.doing.iter().filter_map(|id| graph.get(id)).collect();
         doing.sort_by_key(|n| Reverse(n.priority));
         if !doing.is_empty() {
             out.push(section_label("IN PROGRESS").into_any_element());
@@ -242,7 +241,7 @@ impl TopoApp {
             }
         }
 
-        let mut ready: Vec<&Node> = graph.ready_tasks(None).into_iter().filter(|n| n.status == Status::Todo).collect();
+        let mut ready: Vec<&Node> = self.graph_cache.ready.iter().filter_map(|id| graph.get(id)).collect();
         ready.sort_by_key(|n| (Reverse(n.priority), n.due.is_none(), n.due));
         out.push(section_label(format!("READY NOW · {}", ready.len())).into_any_element());
         if ready.is_empty() {
@@ -263,8 +262,8 @@ impl TopoApp {
             out.push(section_label("MILESTONES").into_any_element());
         }
         for m in milestones {
-            let (done, total) = graph.progress(&m.id);
-            let left = graph.critical_path(&m.id).len();
+            let (done, total) = self.graph_cache.progress[&m.id];
+            let left = self.graph_cache.critical_lengths[&m.id];
             let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
             let color = if m.status.is_closed() || (total > 0 && done == total) { theme::GREEN } else { theme::AMBER };
             let id = m.id.clone();
@@ -459,9 +458,9 @@ impl TopoApp {
 
         // Milestone progress and critical path.
         if milestone {
-            let (done, total) = graph.progress(&id);
+            let (done, total) = self.graph_cache.progress[&id];
             let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
-            let path = graph.critical_path(&id);
+            let path = &self.graph_cache.critical_paths[&id];
             out.push(section_label("PROGRESS").into_any_element());
             out.push(
                 div()

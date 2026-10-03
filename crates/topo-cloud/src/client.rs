@@ -110,7 +110,17 @@ impl Client {
         getrandom::fill(&mut bytes).map_err(|error| Error::Random(error.to_string()))?;
         let random = u128::from_le_bytes(bytes);
         let key = format!("{random:032x}");
-        let mut headers = vec![("idempotency-key", key.as_str())];
+        self.write_with_key(method, path, body, &key)
+    }
+
+    fn write_with_key<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+        key: &str,
+    ) -> Result<T, Error> {
+        let mut headers = vec![("idempotency-key", key)];
         headers.extend(self.label.as_deref().map(|label| ("topo-agent", label)));
         let mut attempt = 0;
         loop {
@@ -203,6 +213,16 @@ impl Client {
         self.write(Method::POST, &format!("/v1/workspaces/{workspace}/apply"), &ApplyRequest { ops: ops.to_vec() })
     }
 
+    /// Reuse a caller-owned key after an ambiguous write response.
+    pub fn apply_with_key(&self, workspace: &str, ops: &[Op], key: &str) -> Result<ApplyResult, Error> {
+        self.write_with_key(
+            Method::POST,
+            &format!("/v1/workspaces/{workspace}/apply"),
+            &ApplyRequest { ops: ops.to_vec() },
+            key,
+        )
+    }
+
     /// Replaces every node of the workspace.
     pub fn import(&self, workspace: &str, nodes: Vec<WireNode>) -> Result<ApplyResult, Error> {
         self.write(Method::PUT, &format!("/v1/workspaces/{workspace}/graph"), &ImportRequest { nodes })
@@ -253,6 +273,10 @@ impl Remote for HttpRemote {
 
     fn apply(&self, ops: &[Op]) -> Result<ApplyResult, topo_core::Error> {
         self.client.apply(&self.workspace, ops).map_err(remote)
+    }
+
+    fn apply_with_key(&self, ops: &[Op], key: &str) -> Result<ApplyResult, topo_core::Error> {
+        self.client.apply_with_key(&self.workspace, ops, key).map_err(remote)
     }
 }
 
@@ -341,6 +365,26 @@ mod tests {
         let snapshot = client.graph("w", None).unwrap().unwrap();
         assert_eq!((snapshot.version, snapshot.nodes.len()), (8, 1));
         fresh.assert();
+    }
+
+    #[test]
+    fn caller_owned_keys_survive_separate_retry_calls() {
+        let mut server = mockito::Server::new();
+        let client = Client::new(&server.url(), "t".into());
+        let replay = server
+            .mock("POST", "/v1/workspaces/w/apply")
+            .match_header("idempotency-key", "0123456789abcdef0123456789abcdef")
+            .match_body(Matcher::JsonString(r#"{"ops":[{"op":"remove","id":"a"}]}"#.into()))
+            .with_body(r#"{"version":3,"created":{}}"#)
+            .expect(2)
+            .create();
+        for _ in 0..2 {
+            let result = client
+                .apply_with_key("w", &[Op::Remove { id: "a".into() }], "0123456789abcdef0123456789abcdef")
+                .unwrap();
+            assert_eq!(result.version, 3);
+        }
+        replay.assert();
     }
 
     #[test]

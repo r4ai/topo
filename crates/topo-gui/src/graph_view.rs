@@ -51,7 +51,22 @@ fn reachable(adjacency: &BTreeMap<NodeId, Vec<NodeId>>, seeds: &BTreeSet<NodeId>
 /// Derived canvas data. Camera and hover updates reuse it; structural/status edits invalidate it.
 pub(crate) struct GraphCache {
     dirty: bool,
+    layout_dirty: bool,
+    columns: BTreeMap<usize, BTreeMap<usize, NodeId>>,
+    edge_tiles: BTreeMap<(i32, i32), Vec<usize>>,
+    long_edges: Vec<usize>,
+    edges: Vec<(NodeId, NodeId, bool)>,
+    pub(crate) ready: Vec<NodeId>,
+    pub(crate) overdue: Vec<NodeId>,
+    today: Option<Date>,
+    pub(crate) doing: Vec<NodeId>,
+    pub(crate) task_count: usize,
+    pub(crate) closed_count: usize,
+    pub(crate) critical_paths: BTreeMap<NodeId, Vec<NodeId>>,
+    pub(crate) critical_lengths: BTreeMap<NodeId, usize>,
+    path_next: BTreeMap<NodeId, Option<NodeId>>,
     cells: BTreeMap<NodeId, layout::Cell>,
+    order: Vec<NodeId>,
     selected: BTreeSet<NodeId>,
     focus: Option<BTreeSet<NodeId>>,
     critical: BTreeSet<NodeId>,
@@ -59,14 +74,29 @@ pub(crate) struct GraphCache {
     requirements: BTreeMap<NodeId, Vec<NodeId>>,
     dependents: BTreeMap<NodeId, Vec<NodeId>>,
     open_requirements: BTreeMap<NodeId, usize>,
-    progress: BTreeMap<NodeId, (usize, usize)>,
+    pub(crate) progress: BTreeMap<NodeId, (usize, usize)>,
 }
 
 impl Default for GraphCache {
     fn default() -> Self {
         Self {
             dirty: true,
+            layout_dirty: true,
+            columns: BTreeMap::new(),
+            edge_tiles: BTreeMap::new(),
+            long_edges: Vec::new(),
+            edges: Vec::new(),
+            ready: Vec::new(),
+            overdue: Vec::new(),
+            today: None,
+            doing: Vec::new(),
+            task_count: 0,
+            closed_count: 0,
+            critical_paths: BTreeMap::new(),
+            critical_lengths: BTreeMap::new(),
+            path_next: BTreeMap::new(),
             cells: BTreeMap::new(),
+            order: Vec::new(),
             selected: BTreeSet::new(),
             focus: None,
             critical: BTreeSet::new(),
@@ -80,8 +110,99 @@ impl Default for GraphCache {
 }
 
 impl GraphCache {
+    #[cfg(test)]
     pub(crate) fn invalidate(&mut self) {
         self.dirty = true;
+        self.layout_dirty = true;
+    }
+
+    /// Classify changes at the mutation boundary; metadata edits keep layout and metrics.
+    pub(crate) fn changed(&mut self, before: &Graph, after: &Graph) {
+        let structure = before.nodes().count() != after.nodes().count()
+            || after.nodes().any(|n| {
+                before.get(&n.id).is_none_or(|old| old.depends_on != n.depends_on || old.milestones != n.milestones)
+            });
+        let metrics = structure
+            || after.nodes().any(|n| before.get(&n.id).is_none_or(|old| old.status != n.status || old.kind != n.kind));
+        self.layout_dirty |= structure;
+        self.dirty |= metrics;
+        if structure
+            || after.nodes().any(|n| before.get(&n.id).is_none_or(|old| old.status != n.status || old.due != n.due))
+        {
+            self.today = None;
+        }
+    }
+
+    fn index_layout(&mut self, graph: &Graph) {
+        self.columns.clear();
+        for (id, (col, row)) in &self.cells {
+            self.columns.entry(*col).or_default().insert(*row, id.clone());
+        }
+        self.edges = graph
+            .nodes()
+            .flat_map(|n| {
+                n.depends_on
+                    .iter()
+                    .map(|d| (d.clone(), n.id.clone(), false))
+                    .chain(n.milestones.iter().map(|m| (n.id.clone(), m.clone(), true)))
+            })
+            .collect();
+        self.edge_tiles.clear();
+        self.long_edges.clear();
+        for (i, (from, to, _)) in self.edges.iter().enumerate() {
+            let (fc, fr) = self.cells[from];
+            let (tc, tr) = self.cells[to];
+            // Covers the control hull, arrowhead and stroke at every supported zoom.
+            let x0 = ((fc as f32 * crate::CELL_W + NODE_W - 48.) / TILE).floor() as i32;
+            let x1 = ((tc as f32 * crate::CELL_W + 48.) / TILE).floor() as i32;
+            let y0 = ((fr.min(tr) as f32 * crate::CELL_H - 32.) / TILE).floor() as i32;
+            let y1 = ((fr.max(tr) as f32 * crate::CELL_H + NODE_H + 32.) / TILE).floor() as i32;
+            if (x1 - x0 + 1) as i64 * (y1 - y0 + 1) as i64 > 256 {
+                self.long_edges.push(i);
+            } else {
+                for x in x0..=x1 {
+                    for y in y0..=y1 {
+                        self.edge_tiles.entry((x, y)).or_default().push(i);
+                    }
+                }
+            }
+        }
+    }
+
+    fn visible_nodes(&self, offset: Point<Pixels>, zoom: f32, viewport: Bounds<Pixels>) -> Vec<NodeId> {
+        if viewport.size.width <= px(0.) {
+            return self.cells.keys().cloned().collect();
+        }
+        let left = (-f32::from(offset.x) / zoom - NODE_W - 8.).max(0.) / crate::CELL_W;
+        let right = ((f32::from(viewport.size.width - offset.x)) / zoom).max(0.) / crate::CELL_W;
+        let top = (-f32::from(offset.y) / zoom - NODE_H).max(0.) / crate::CELL_H;
+        let bottom = (f32::from(viewport.size.height - offset.y) / zoom).max(0.) / crate::CELL_H;
+        if left.ceil() > right.floor() || top.ceil() > bottom.floor() {
+            return Vec::new();
+        }
+        self.columns
+            .range(left.ceil() as usize..=right.floor() as usize)
+            .flat_map(|(_, rows)| rows.range(top.ceil() as usize..=bottom.floor() as usize).map(|(_, id)| id.clone()))
+            .collect()
+    }
+
+    fn visible_edges(&self, offset: Point<Pixels>, zoom: f32, viewport: Bounds<Pixels>) -> BTreeSet<usize> {
+        if viewport.size.width <= px(0.) {
+            return (0..self.edges.len()).collect();
+        }
+        let x0 = (-f32::from(offset.x) / zoom / TILE).floor() as i32;
+        let y0 = (-f32::from(offset.y) / zoom / TILE).floor() as i32;
+        let x1 = (f32::from(viewport.size.width - offset.x) / zoom / TILE).floor() as i32;
+        let y1 = (f32::from(viewport.size.height - offset.y) / zoom / TILE).floor() as i32;
+        let mut result: BTreeSet<_> = self.long_edges.iter().copied().collect();
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                if let Some(edges) = self.edge_tiles.get(&(x, y)) {
+                    result.extend(edges);
+                }
+            }
+        }
+        result
     }
 
     pub(crate) fn cells(&self) -> &BTreeMap<NodeId, layout::Cell> {
@@ -92,7 +213,25 @@ impl GraphCache {
         let unchanged = !self.dirty;
         if !unchanged {
             self.dirty = false;
-            self.cells = layout::layout(graph);
+            if self.layout_dirty {
+                self.order = graph.topo_order().expect("graph invariant");
+                self.cells = layout::layout(graph);
+                self.index_layout(graph);
+                self.layout_dirty = false;
+            }
+            self.ready = graph
+                .ready_tasks(None)
+                .into_iter()
+                .filter(|n| n.status == Status::Todo)
+                .map(|n| n.id.clone())
+                .collect();
+            self.doing = graph
+                .nodes()
+                .filter(|n| n.kind == Kind::Task && n.status == Status::Doing)
+                .map(|n| n.id.clone())
+                .collect();
+            self.task_count = graph.nodes().filter(|n| n.kind == Kind::Task).count();
+            self.closed_count = graph.nodes().filter(|n| n.kind == Kind::Task && n.status.is_closed()).count();
             self.requirements = graph.nodes().map(|n| (n.id.clone(), n.depends_on.clone())).collect();
             self.dependents = graph.nodes().map(|n| (n.id.clone(), Vec::new())).collect();
             for node in graph.nodes() {
@@ -118,10 +257,39 @@ impl GraphCache {
                     )
                 })
                 .collect();
-            self.progress = graph
+            self.progress =
+                graph.nodes().filter(|n| n.kind == Kind::Milestone).map(|n| (n.id.clone(), (0, 0))).collect();
+            for node in graph.nodes() {
+                for milestone in &node.milestones {
+                    let (closed, total) = self.progress.get_mut(milestone).expect("graph invariant");
+                    *total += 1;
+                    *closed += usize::from(node.status.is_closed());
+                }
+            }
+            // Compute all critical paths in one shared topological pass.
+            let mut paths: BTreeMap<NodeId, (usize, Option<NodeId>)> = BTreeMap::new();
+            for id in &self.order {
+                let node = graph.get(id).expect("graph invariant");
+                let best = self.requirements[id]
+                    .iter()
+                    .filter(|dep| !graph.get(dep).expect("graph invariant").status.is_closed())
+                    .max_by_key(|dep| paths[*dep].0)
+                    .cloned();
+                let length = best.as_ref().map_or(0, |dep| paths[dep].0)
+                    + usize::from(node.kind == Kind::Task && !node.status.is_closed());
+                paths.insert(id.clone(), (length, best));
+            }
+            self.critical_lengths =
+                graph.nodes().filter(|n| n.kind == Kind::Milestone).map(|n| (n.id.clone(), paths[&n.id].0)).collect();
+            self.path_next = paths.into_iter().map(|(id, (_, next))| (id, next)).collect();
+        }
+        let today = dates::today();
+        if !unchanged || self.today != Some(today) {
+            self.today = Some(today);
+            self.overdue = graph
                 .nodes()
-                .filter(|n| n.kind == Kind::Milestone)
-                .map(|n| (n.id.clone(), graph.progress(&n.id)))
+                .filter(|n| !n.status.is_closed() && n.due.is_some_and(|d| d < today))
+                .map(|n| n.id.clone())
                 .collect();
         }
         if !unchanged || self.selected != *selected {
@@ -133,8 +301,18 @@ impl GraphCache {
             });
             self.critical.clear();
             self.critical_edges.clear();
+            self.critical_paths.clear();
             for id in selected.iter().filter(|id| graph.get(id).is_some_and(|n| n.kind == Kind::Milestone)) {
-                let path = graph.critical_path(id);
+                let mut path = Vec::with_capacity(self.critical_lengths[id]);
+                let mut next = Some(id);
+                while let Some(current) = next {
+                    let n = graph.get(current).expect("graph invariant");
+                    if n.kind == Kind::Task && !n.status.is_closed() {
+                        path.push(current.clone());
+                    }
+                    next = self.path_next[current].as_ref();
+                }
+                path.reverse();
                 self.critical.extend(path.iter().cloned());
                 for pair in path.windows(2) {
                     self.critical_edges.entry(pair[0].clone()).or_default().insert(pair[1].clone());
@@ -142,10 +320,13 @@ impl GraphCache {
                 if let Some(last) = path.last() {
                     self.critical_edges.entry(last.clone()).or_default().insert(id.clone());
                 }
+                self.critical_paths.insert(id.clone(), path);
             }
         }
     }
 }
+
+const TILE: f32 = 560.;
 
 /// Conservative Bezier bounds include both control points, including curves that cross the viewport.
 fn edge_visible(from: Point<Pixels>, to: Point<Pixels>, viewport: Bounds<Pixels>, zoom: f32) -> bool {
@@ -169,11 +350,16 @@ impl TopoApp {
 
     /// The node whose card contains `local` (canvas coordinates).
     fn node_at(&self, local: Point<Pixels>, cells: &BTreeMap<NodeId, layout::Cell>) -> Option<NodeId> {
-        let size = size(px(NODE_W * self.zoom), px(NODE_H * self.zoom));
-        cells
-            .iter()
-            .find(|(_, cell)| Bounds::new(self.to_screen(**cell), size).contains(&local))
-            .map(|(id, _)| id.clone())
+        let x = f32::from(local.x - self.offset.x) / self.zoom;
+        let y = f32::from(local.y - self.offset.y) / self.zoom;
+        if x < 0. || y < 0. {
+            return None;
+        }
+        let cell = ((x / crate::CELL_W) as usize, (y / crate::CELL_H) as usize);
+        let id = self.graph_cache.columns.get(&cell.0)?.get(&cell.1)?;
+        Bounds::new(self.to_screen(cells[id]), size(px(NODE_W * self.zoom), px(NODE_H * self.zoom)))
+            .contains(&local)
+            .then(|| id.clone())
     }
 
     pub(crate) fn on_drag_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -288,11 +474,13 @@ impl TopoApp {
             };
             EdgePaint { from: anchor(from, true), to: anchor(to, false), color, width, dashed: membership }
         };
-        let mut edges: Vec<EdgePaint> = graph
-            .nodes()
-            .flat_map(|n| {
-                let deps = n.depends_on.iter().map(|d| edge(d, &n.id, false));
-                deps.chain(n.milestones.iter().map(|m| edge(&n.id, m, true))).collect::<Vec<_>>()
+        let mut edges: Vec<EdgePaint> = self
+            .graph_cache
+            .visible_edges(self.offset, z, viewport)
+            .into_iter()
+            .map(|i| {
+                let (from, to, membership) = &self.graph_cache.edges[i];
+                edge(from, to, *membership)
             })
             .filter(|e| edge_visible(e.from, e.to, viewport, z))
             .collect();
@@ -306,8 +494,11 @@ impl TopoApp {
             (anchor(source, true), *mouse, color)
         });
 
-        let nodes: Vec<AnyElement> = graph
-            .nodes()
+        let nodes: Vec<AnyElement> = self
+            .graph_cache
+            .visible_nodes(self.offset, z, viewport)
+            .iter()
+            .filter_map(|id| graph.get(id))
             .filter(|n| {
                 viewport.size.width <= px(0.)
                     || Bounds::new(self.to_screen(cells[&n.id]), size(px((NODE_W + 8.) * z), px(NODE_H * z)))
@@ -665,6 +856,7 @@ impl TopoApp {
             .when(state.hovered || state.selected, |d| d.child(handle))
             .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
                 match *hovered {
+                    true if app.hovered.as_ref() == Some(&id) => return,
                     true => app.hovered = Some(id.clone()),
                     false if app.hovered.as_ref() == Some(&id) => app.hovered = None,
                     false => return,
@@ -875,6 +1067,80 @@ mod tests {
         assert!(!cache.critical_edges.contains_key(&id("b")));
         assert_eq!(cache.critical_edges[&id("c")], BTreeSet::from([id("d"), id("m1")]));
         assert_eq!(cache.open_requirements[&id("m1")], 1);
+    }
+
+    #[test]
+    fn metadata_and_status_changes_keep_layout_and_refresh_only_needed_metrics() {
+        let mut graph = graph(&[
+            ("a", Kind::Task, &[], &["m"]),
+            ("b", Kind::Task, &["a"], &["m"]),
+            ("m", Kind::Milestone, &[], &[]),
+        ]);
+        let selected = BTreeSet::from([id("m")]);
+        let mut cache = GraphCache::default();
+        cache.refresh(&graph, &selected);
+        let cells = cache.cells.clone();
+        let before = graph.clone();
+        graph.edit(&id("a"), topo_core::Edit { title: Some("renamed".into()), ..Default::default() }).unwrap();
+        cache.changed(&before, &graph);
+        assert!(!cache.layout_dirty && !cache.dirty);
+        cache.refresh(&graph, &selected);
+        assert_eq!(cache.cells, cells);
+        let before = graph.clone();
+        graph.set_status(&id("a"), Status::Done).unwrap();
+        cache.changed(&before, &graph);
+        assert!(!cache.layout_dirty && cache.dirty);
+        cache.refresh(&graph, &selected);
+        assert_eq!(cache.cells, cells);
+        assert_eq!(cache.progress[&id("m")], graph.progress(&id("m")));
+        assert_eq!(cache.critical_paths[&id("m")], graph.critical_path(&id("m")));
+        assert_eq!(cache.open_requirements[&id("b")], 0);
+        let before = graph.clone();
+        graph.unlink(&id("b"), &id("a")).unwrap();
+        cache.changed(&before, &graph);
+        assert!(cache.layout_dirty);
+        cache.refresh(&graph, &selected);
+        assert_eq!(cache.cells, layout::layout(&graph));
+    }
+
+    #[test]
+    fn spatial_indices_never_omit_visible_cards_or_crossing_edges() {
+        let mut graph = fixture(1000);
+        graph.link(&id("n0999"), &id("n0000")).unwrap();
+        let mut cache = GraphCache::default();
+        cache.refresh(&graph, &BTreeSet::new());
+        let viewport = Bounds::new(point(px(0.), px(0.)), size(px(1360.), px(860.)));
+        for zoom in [0.25, 0.9, 2.5] {
+            for x in [-10000., -500., -32., 0., 800., 40000.] {
+                for y in [-2500., -33., 0., 900.] {
+                    let offset = point(px(x), px(y));
+                    let screen = |id: &NodeId| {
+                        let (col, row) = cache.cells[id];
+                        offset + point(px(col as f32 * crate::CELL_W * zoom), px(row as f32 * crate::CELL_H * zoom))
+                    };
+                    let nodes: BTreeSet<_> = cache.visible_nodes(offset, zoom, viewport).into_iter().collect();
+                    for id in cache.cells.keys() {
+                        if Bounds::new(screen(id), size(px((NODE_W + 8.) * zoom), px(NODE_H * zoom)))
+                            .intersects(&viewport)
+                        {
+                            assert!(nodes.contains(id), "missing {id} at {offset:?}, {zoom}");
+                        }
+                    }
+                    let edges = cache.visible_edges(offset, zoom, viewport);
+                    for (i, (from, to, _)) in cache.edges.iter().enumerate() {
+                        let from = screen(from) + point(px(NODE_W * zoom), px(NODE_H * zoom / 2.));
+                        let to = screen(to) + point(px(0.), px(NODE_H * zoom / 2.));
+                        if edge_visible(from, to, viewport, zoom) {
+                            assert!(edges.contains(&i), "missing crossing edge {i}");
+                        }
+                    }
+                }
+            }
+        }
+        let nodes = cache.visible_nodes(point(px(0.), px(0.)), 1., viewport);
+        let edges = cache.visible_edges(point(px(0.), px(0.)), 1., viewport);
+        assert!(nodes.len() < 200);
+        assert!(edges.len() < 200);
     }
 
     /// Selection-only CPU benchmark; layout/adjacency construction is excluded.

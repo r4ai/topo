@@ -1,10 +1,10 @@
 //! Everything around the graph: toolbar, prompt, toasts, zoom controls and help.
 
 use gpui::{AnyElement, App, Context, Div, MouseButton, SharedString, Stateful, div, hsla, prelude::*, px, rgb};
-use topo_core::{Kind, NodeId, Priority, Status};
+use topo_core::{Kind, NodeId, Priority};
 
 use crate::theme::{self, button, icon_button, kbd};
-use crate::{NewNode, OrganizeKind, Prompt, TopoApp, dates};
+use crate::{NewNode, OrganizeKind, Prompt, TopoApp};
 
 /// Swallows clicks so they do not reach the canvas underneath.
 fn stop_click<E: InteractiveElement>(element: E) -> E {
@@ -52,19 +52,12 @@ impl TopoApp {
     }
 
     pub(crate) fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let graph = self.graph();
-        let today = dates::today();
-        let tasks: Vec<_> = graph.nodes().filter(|n| n.kind == Kind::Task).collect();
-        let ready: Vec<NodeId> =
-            graph.ready_tasks(None).iter().filter(|n| n.status == Status::Todo).map(|n| n.id.clone()).collect();
-        let doing: Vec<NodeId> = tasks.iter().filter(|n| n.status == Status::Doing).map(|n| n.id.clone()).collect();
-        let overdue: Vec<NodeId> = graph
-            .nodes()
-            .filter(|n| !n.status.is_closed() && n.due.is_some_and(|d| d < today))
-            .map(|n| n.id.clone())
-            .collect();
-        let closed = tasks.iter().filter(|n| n.status.is_closed()).count();
-        let fraction = if tasks.is_empty() { 0. } else { closed as f32 / tasks.len() as f32 };
+        let ready = self.graph_cache.ready.clone();
+        let doing = self.graph_cache.doing.clone();
+        let overdue = self.graph_cache.overdue.clone();
+        let tasks = self.graph_cache.task_count;
+        let closed = self.graph_cache.closed_count;
+        let fraction = if tasks == 0 { 0. } else { closed as f32 / tasks as f32 };
         let name = self
             .ws
             .dir()
@@ -158,7 +151,7 @@ impl TopoApp {
                                 .text_xs()
                                 .text_color(rgb(theme::MUTED))
                                 .child(div().w(px(64.)).flex().child(theme::progress_bar(fraction, theme::GREEN, 4.)))
-                                .child(format!("{closed}/{} done", tasks.len())),
+                                .child(format!("{closed}/{} done", tasks)),
                         )
                     }),
             )
@@ -198,6 +191,35 @@ impl TopoApp {
                 app.show_help = !app.show_help;
                 cx.notify();
             })))
+    }
+
+    pub(crate) fn persistence_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let failed = self.persistence.error.is_some();
+        div()
+            .debug_selector(|| "save-status".into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .h(px(30.))
+            .px_3()
+            .bg(rgb(theme::SURFACE))
+            .text_xs()
+            .text_color(rgb(theme::AMBER))
+            .child(if failed { "Changes need confirmation" } else { "Saving changes…" })
+            .child(div().flex_1())
+            .when(failed, |d| {
+                d.child(
+                    button("retry-save", "Retry")
+                        .debug_selector(|| "retry-save".into())
+                        .on_click(cx.listener(|app, _, _, cx| app.retry_save(cx))),
+                )
+                .child(
+                    button("discard-save", "Discard drafts")
+                        .debug_selector(|| "discard-save".into())
+                        .on_click(cx.listener(|app, _, _, cx| app.discard_pending(cx))),
+                )
+            })
     }
 
     pub(crate) fn zoom_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {

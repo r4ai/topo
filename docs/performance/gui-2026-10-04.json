@@ -1,0 +1,206 @@
+{
+  "date": "2026-10-04",
+  "machine": "Apple M5",
+  "architecture": "arm64",
+  "rust": "1.96.0",
+  "baseline_commit": "1af06254b5819a726cf6b2956b99099ca0a8039b",
+  "frame_measurement": "GPUI headless CPU element tree and paint command submission; GPU and compositor excluded",
+  "logical_window": [
+    1360,
+    860
+  ],
+  "samples_per_frame_case": 40,
+  "samples_per_save_case": 20,
+  "test_threads": 1,
+  "before": {
+    "nodes=100 density=1 pan": {
+      "median_ms": 1.827,
+      "p95_ms": 1.996
+    },
+    "nodes=100 density=1 zoom": {
+      "median_ms": 1.824,
+      "p95_ms": 1.925
+    },
+    "nodes=100 density=1 hover": {
+      "median_ms": 1.804,
+      "p95_ms": 1.947
+    },
+    "nodes=100 density=1 selection": {
+      "median_ms": 1.801,
+      "p95_ms": 1.932
+    },
+    "nodes=100 density=1 search": {
+      "median_ms": 1.949,
+      "p95_ms": 2.039
+    },
+    "nodes=100 density=1 input": {
+      "median_ms": 1.868,
+      "p95_ms": 2.054
+    },
+    "nodes=5000 density=1 pan": {
+      "median_ms": 9.575,
+      "p95_ms": 10.283
+    },
+    "nodes=5000 density=1 zoom": {
+      "median_ms": 9.837,
+      "p95_ms": 10.539
+    },
+    "nodes=5000 density=1 hover": {
+      "median_ms": 9.689,
+      "p95_ms": 13.51
+    },
+    "nodes=5000 density=1 selection": {
+      "median_ms": 7.179,
+      "p95_ms": 7.434
+    },
+    "nodes=5000 density=1 search": {
+      "median_ms": 7.936,
+      "p95_ms": 8.192
+    },
+    "nodes=5000 density=1 input": {
+      "median_ms": 7.275,
+      "p95_ms": 7.88
+    },
+    "nodes=1000 density=12 pan": {
+      "median_ms": 8.662,
+      "p95_ms": 9.207
+    },
+    "nodes=1000 density=12 zoom": {
+      "median_ms": 9.268,
+      "p95_ms": 10.021
+    },
+    "nodes=1000 density=12 hover": {
+      "median_ms": 8.653,
+      "p95_ms": 9.382
+    },
+    "nodes=1000 density=12 selection": {
+      "median_ms": 9.891,
+      "p95_ms": 14.853
+    },
+    "nodes=1000 density=12 search": {
+      "median_ms": 8.15,
+      "p95_ms": 8.578
+    },
+    "nodes=1000 density=12 input": {
+      "median_ms": 9.072,
+      "p95_ms": 9.395
+    },
+    "500 nodes 120ms remote edit-to-visible-state": {
+      "median_ms": 140.398,
+      "p95_ms": 146.198
+    },
+    "500 nodes 120ms remote edit-to-settled": {
+      "median_ms": 140.4,
+      "p95_ms": 146.206
+    }
+  },
+  "after": {
+    "nodes=100 density=1 pan": {
+      "median_ms": 2.043,
+      "p95_ms": 2.362
+    },
+    "nodes=100 density=1 zoom": {
+      "median_ms": 1.933,
+      "p95_ms": 2.049
+    },
+    "nodes=100 density=1 hover": {
+      "median_ms": 1.912,
+      "p95_ms": 1.979
+    },
+    "nodes=100 density=1 selection": {
+      "median_ms": 1.966,
+      "p95_ms": 2.55
+    },
+    "nodes=100 density=1 search": {
+      "median_ms": 2.007,
+      "p95_ms": 2.143
+    },
+    "nodes=100 density=1 input": {
+      "median_ms": 1.857,
+      "p95_ms": 2.059
+    },
+    "nodes=5000 density=1 pan": {
+      "median_ms": 5.115,
+      "p95_ms": 5.759
+    },
+    "nodes=5000 density=1 zoom": {
+      "median_ms": 5.417,
+      "p95_ms": 5.794
+    },
+    "nodes=5000 density=1 hover": {
+      "median_ms": 5.173,
+      "p95_ms": 5.412
+    },
+    "nodes=5000 density=1 selection": {
+      "median_ms": 5.315,
+      "p95_ms": 5.726
+    },
+    "nodes=5000 density=1 search": {
+      "median_ms": 5.762,
+      "p95_ms": 6.017
+    },
+    "nodes=5000 density=1 input": {
+      "median_ms": 5.174,
+      "p95_ms": 5.45
+    },
+    "nodes=1000 density=12 pan": {
+      "median_ms": 4.983,
+      "p95_ms": 5.261
+    },
+    "nodes=1000 density=12 zoom": {
+      "median_ms": 5.71,
+      "p95_ms": 5.946
+    },
+    "nodes=1000 density=12 hover": {
+      "median_ms": 4.936,
+      "p95_ms": 5.086
+    },
+    "nodes=1000 density=12 selection": {
+      "median_ms": 5.936,
+      "p95_ms": 6.133
+    },
+    "nodes=1000 density=12 search": {
+      "median_ms": 5.505,
+      "p95_ms": 5.635
+    },
+    "nodes=1000 density=12 input": {
+      "median_ms": 5.094,
+      "p95_ms": 5.553
+    },
+    "500 nodes 120ms remote edit-to-visible-state": {
+      "median_ms": 8.387,
+      "p95_ms": 9.302
+    },
+    "500 nodes 120ms remote edit-to-settled": {
+      "median_ms": 149.486,
+      "p95_ms": 154.571
+    }
+  },
+  "native_idle": {
+    "before": {
+      "elapsed_s": 10.008,
+      "idle_cpu_percent_one_core": 0.799,
+      "rss_start_kib": 127248,
+      "rss_end_kib": 72784
+    },
+    "after": {
+      "elapsed_s": 10.008,
+      "idle_cpu_percent_one_core": 0.3,
+      "rss_start_kib": 114832,
+      "rss_end_kib": 82112
+    },
+    "machine": "Apple M5"
+  },
+  "headless_workload_resources": {
+    "before": {
+      "user_cpu_s": 6.785661,
+      "system_cpu_s": 0.944743,
+      "max_rss_bytes": 476086272
+    },
+    "after": {
+      "render_user_cpu_s": 3.451162,
+      "system_cpu_s": 0.832328,
+      "max_rss_bytes": 490323968
+    }
+  }
+}

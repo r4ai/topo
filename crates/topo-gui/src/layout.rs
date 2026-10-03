@@ -20,10 +20,13 @@ pub fn layout(graph: &Graph) -> BTreeMap<NodeId, Cell> {
 
     let mut cells: BTreeMap<NodeId, Cell> = BTreeMap::new();
     let columns = column.values().max().map_or(0, |max| max + 1);
-    for col in 0..columns {
-        let mut members: Vec<(f32, &NodeId)> = order
-            .iter()
-            .filter(|id| column[id] == col)
+    let mut grouped = vec![Vec::new(); columns];
+    for id in &order {
+        grouped[column[id]].push(id);
+    }
+    for (col, group) in grouped.into_iter().enumerate() {
+        let mut members: Vec<(f32, &NodeId)> = group
+            .into_iter()
             .map(|id| {
                 let deps = graph.requirements(graph.get(id).expect("ids come from the graph"));
                 let mean = match deps.is_empty() {
