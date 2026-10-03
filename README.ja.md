@@ -205,6 +205,17 @@ Zedエディタのレンダリング基盤であるGPUIによるネイティブ�
   - `/` または `Cmd+K` / `Cmd+F`: タイトル・タグ・IDによる検索
   - `?`: キーバインドヘルプの表示
 
+#### ヘッドレススクリーンショット
+
+`screenshot` フィーチャでビルドすると、ディスプレイやOSの画面収録権限なしでウィンドウをオフスクリーン描画して PNG に保存できます:
+
+```bash
+cargo run -p topo-gui --features screenshot -- \
+  --screenshot qa.png --width 1360 --height 860 --select <id>
+```
+
+`--select` はID1つまたはカンマ区切りの複数、`--inspector-width` はパネル幅の強制、`--help-overlay` はショートカット一覧を表示します。視覚QAとドキュメント用です。
+
 ## AI・自動化との連携
 
 ### バッチ適用 (`topo apply`)

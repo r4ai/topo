@@ -13,12 +13,14 @@ mod gesture;
 mod graph_view;
 mod inspector;
 mod layout;
+#[cfg(feature = "screenshot")]
+mod screenshot;
 mod text_input;
 mod theme;
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -227,7 +229,7 @@ impl TopoApp {
         let input = cx.new(TextInput::new);
         let subscription = cx.subscribe_in(&input, window, Self::on_input_event);
         let focus = cx.focus_handle();
-        window.focus(&focus);
+        window.focus(&focus, cx);
         Ok(Self {
             ws,
             focus,
@@ -632,13 +634,13 @@ impl TopoApp {
         self.prompt = Some(prompt);
         self.search_index = 0;
         self.show_help = false;
-        window.focus(&self.input.focus_handle(cx));
+        window.focus(&self.input.focus_handle(cx), cx);
         cx.notify();
     }
 
     fn close_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.prompt = None;
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -1269,23 +1271,42 @@ fn next_status(status: Status) -> Status {
     }
 }
 
-fn open_workspace() -> Result<Workspace> {
-    Ok(match (std::env::var_os("TOPO_DIR"), std::env::args_os().nth(1)) {
+fn open_workspace(start: Option<&Path>) -> Result<Workspace> {
+    Ok(match (std::env::var_os("TOPO_DIR"), start) {
         (Some(dir), _) => topo_cloud::open(PathBuf::from(dir))?,
-        (None, Some(start)) => topo_cloud::discover(&PathBuf::from(start))?,
+        (None, Some(start)) => topo_cloud::discover(start)?,
         (None, None) => topo_cloud::discover(&std::env::current_dir()?)?,
     })
 }
 
+#[cfg(feature = "screenshot")]
 fn main() -> Result<()> {
-    let ws = open_workspace()?;
+    let parsed = screenshot::parse_args(std::env::args().skip(1))?;
+    let ws = open_workspace(parsed.workspace.as_deref())?;
+    match parsed.screenshot {
+        Some(options) => screenshot::render(ws, &options),
+        None => run(ws),
+    }
+}
+
+#[cfg(not(feature = "screenshot"))]
+fn main() -> Result<()> {
+    let start = std::env::args_os().nth(1).map(PathBuf::from);
+    run(open_workspace(start.as_deref())?)
+}
+
+fn run(ws: Workspace) -> Result<()> {
     let title: SharedString = format!("topo — {}", ws.dir().parent().unwrap_or(ws.dir()).display()).into();
-    Application::new().run(move |cx: &mut App| {
+    Application::with_platform(gpui_platform::current_platform(false)).run(move |cx: &mut App| {
         branding::set_app_icon();
         text_input::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None), KeyBinding::new("cmd-w", CloseWindow, None)]);
-        cx.set_menus(vec![Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)] }]);
+        cx.set_menus(vec![Menu {
+            name: "topo".into(),
+            items: vec![MenuItem::action("Quit topo", Quit)],
+            disabled: false,
+        }]);
         let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         let options = WindowOptions {
             app_id: Some("dev.r4ai.topo".into()),
@@ -1299,7 +1320,7 @@ fn main() -> Result<()> {
             cx.new(|cx| TopoApp::with_inspector_width(ws, width, window, cx).expect("failed to watch the workspace"))
         })
         .expect("failed to open window");
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
     Ok(())

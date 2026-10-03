@@ -361,9 +361,12 @@ impl TopoApp {
                 .child(div().pt_0p5().text_color(rgb(color)).text_lg().child(icon))
                 .child(
                     div()
+                        .id("title-text")
+                        .debug_selector(|| "title-text".to_owned())
                         .flex_1()
                         .min_w(px(0.))
                         .line_clamp(3)
+                        .text_ellipsis()
                         .text_lg()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(node.title.clone()),

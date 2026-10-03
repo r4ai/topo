@@ -205,6 +205,17 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - `/` or `Cmd+K` / `Cmd+F`: Search by title, tag, or ID
   - `?`: Toggle keyboard shortcuts cheatsheet
 
+#### Headless screenshots
+
+Build with the `screenshot` feature to render the window to a PNG offscreen, without a display or the OS screen-recording permission:
+
+```bash
+cargo run -p topo-gui --features screenshot -- \
+  --screenshot qa.png --width 1360 --height 860 --select <id>
+```
+
+`--select` accepts one id or a comma-separated list, `--inspector-width` forces a panel width, and `--help-overlay` opens the shortcuts sheet. This is meant for visual QA and documentation.
+
 ## AI & Automation
 
 ### Atomic Batch Mutations (`topo apply`)
