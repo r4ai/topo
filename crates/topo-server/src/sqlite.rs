@@ -15,7 +15,11 @@ impl SqliteDb {
         let connection = Connection::open_in_memory().expect("open an in-memory database");
         // D1 enforces foreign keys; SQLite does only when asked.
         connection.execute_batch("PRAGMA foreign_keys = ON").expect("enable foreign keys");
-        connection.execute_batch(include_str!("../migrations/0001_init.sql")).expect("apply the schema");
+        for migration in
+            [include_str!("../migrations/0001_init.sql"), include_str!("../migrations/0002_node_metadata.sql")]
+        {
+            connection.execute_batch(migration).expect("apply the schema");
+        }
         Self(Mutex::new(connection))
     }
 }

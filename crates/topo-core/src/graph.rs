@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use jiff::Timestamp;
 use jiff::civil::Date;
 
 use crate::Error;
-use crate::model::{Kind, Node, NodeId, Status};
+use crate::model::{self, Kind, Node, NodeId, Priority, Status};
 
 /// All nodes of a workspace.
 ///
@@ -14,7 +15,8 @@ use crate::model::{Kind, Node, NodeId, Status};
 ///
 /// Invariants: every reference names an existing node, with no self or
 /// duplicate references; only tasks have `milestones`, and those name
-/// milestones; the requirement relation is acyclic. Every mutation below
+/// milestones; the requirement relation is acyclic; assignees and pull request
+/// references are in canonical form, without duplicates. Every mutation below
 /// preserves them, so readers never re-check.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Graph {
@@ -29,6 +31,11 @@ pub struct Edit {
     pub due: Option<Option<Date>>,
     pub tags: Option<Vec<String>>,
     pub body: Option<String>,
+    pub priority: Option<Option<Priority>>,
+    /// Must be in the form of [`model::normalize_assignee`].
+    pub assignee: Option<Option<String>>,
+    /// Each must be in the form of [`model::normalize_pr`].
+    pub prs: Option<Vec<String>>,
 }
 
 impl Graph {
@@ -43,6 +50,7 @@ impl Graph {
         }
         for node in graph.nodes.values() {
             graph.check_references(node)?;
+            check_metadata(&node.id, node.assignee.as_deref(), &node.prs)?;
         }
         graph.topo_order()?;
         Ok(graph)
@@ -58,6 +66,12 @@ impl Graph {
 
     pub fn into_nodes(self) -> BTreeMap<NodeId, Node> {
         self.nodes
+    }
+
+    /// Whether the two graphs are equal apart from the timestamps of their nodes.
+    pub fn same_content(&self, other: &Graph) -> bool {
+        self.nodes.len() == other.nodes.len()
+            && self.nodes.values().zip(other.nodes.values()).all(|(a, b)| a.same_content(b))
     }
 
     /// Resolves an exact id or a unique id prefix.
@@ -297,6 +311,7 @@ impl Graph {
             return Err(Error::DuplicateId(node.id));
         }
         self.check_references(&node)?;
+        check_metadata(&node.id, node.assignee.as_deref(), &node.prs)?;
         // Membership immediately makes each milestone require the new task.
         for milestone in &node.milestones {
             for dep in &node.depends_on {
@@ -380,7 +395,17 @@ impl Graph {
                 return Err(Error::KindChangeBreaksMembership(id.clone()));
             }
         }
+        check_metadata(id, edit.assignee.as_ref().and_then(|a| a.as_deref()), edit.prs.as_deref().unwrap_or(&[]))?;
         let node = self.node_mut(id)?;
+        if let Some(priority) = edit.priority {
+            node.priority = priority;
+        }
+        if let Some(assignee) = edit.assignee {
+            node.assignee = assignee;
+        }
+        if let Some(prs) = edit.prs {
+            node.prs = prs;
+        }
         if let Some(title) = edit.title {
             node.title = title;
         }
@@ -399,6 +424,37 @@ impl Graph {
         Ok(())
     }
 
+    /// Records when nodes were created, last changed, and completed, by
+    /// comparing them with the nodes `before` the change. Every change passes
+    /// through here before it is stored, and nothing else writes the timestamps.
+    ///
+    /// A node whose content is unchanged keeps the timestamps of `before`. A
+    /// new node that already carries a creation time (a restored or copied-in
+    /// node) keeps its timestamps.
+    pub fn stamp(&mut self, before: &BTreeMap<NodeId, Node>, now: Timestamp) {
+        for node in self.nodes.values_mut() {
+            let done = node.status == Status::Done;
+            match before.get(&node.id) {
+                None if node.created_at.is_some() => {}
+                None => {
+                    node.created_at = Some(now);
+                    node.updated_at = Some(now);
+                    node.completed_at = done.then_some(now);
+                }
+                Some(old) => {
+                    let changed = !node.same_content(old);
+                    node.created_at = old.created_at;
+                    node.updated_at = if changed { Some(now) } else { old.updated_at };
+                    node.completed_at = match (old.status == Status::Done, done) {
+                        (_, false) => None,
+                        (true, true) => old.completed_at,
+                        (false, true) => Some(now),
+                    };
+                }
+            }
+        }
+    }
+
     /// Removes a node and every reference to it.
     pub fn remove(&mut self, id: &NodeId) -> Result<Node, Error> {
         let node = self.nodes.remove(id).ok_or_else(|| Error::NotFound(id.0.clone()))?;
@@ -410,9 +466,87 @@ impl Graph {
     }
 }
 
+fn check_metadata(node: &NodeId, assignee: Option<&str>, prs: &[String]) -> Result<(), Error> {
+    if let Some(assignee) = assignee
+        && model::normalize_assignee(assignee)? != assignee
+    {
+        return Err(Error::InvalidAssignee(assignee.to_owned()));
+    }
+    for (index, url) in prs.iter().enumerate() {
+        if &model::normalize_pr(url)? != url {
+            return Err(Error::InvalidPr(url.clone()));
+        }
+        if prs[..index].contains(url) {
+            return Err(Error::DuplicatePr { node: node.clone(), url: url.clone() });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stamp_records_creation_change_and_completion() {
+        let at = |s: i64| Timestamp::from_second(s).unwrap();
+        let a = id("a");
+        let mut graph = Graph::from_nodes([node("a", Kind::Task, &[], &[])]).unwrap();
+        graph.stamp(&BTreeMap::new(), at(1));
+        let n = graph.get(&a).unwrap();
+        assert_eq!((n.created_at, n.updated_at, n.completed_at), (Some(at(1)), Some(at(1)), None));
+
+        // Nothing changed, so nothing moves.
+        let before = graph.clone().into_nodes();
+        graph.stamp(&before, at(2));
+        assert_eq!(graph.get(&a).unwrap().updated_at, Some(at(1)));
+
+        graph.set_status(&a, Status::Done).unwrap();
+        graph.stamp(&before, at(3));
+        let n = graph.get(&a).unwrap();
+        assert_eq!((n.created_at, n.updated_at, n.completed_at), (Some(at(1)), Some(at(3)), Some(at(3))));
+
+        // A change to a done node keeps its completion; reopening or dropping clears it.
+        let before = graph.clone().into_nodes();
+        graph.edit(&a, Edit { title: Some("b".into()), ..Edit::default() }).unwrap();
+        graph.stamp(&before, at(4));
+        assert_eq!(graph.get(&a).unwrap().completed_at, Some(at(3)));
+        for status in [Status::Doing, Status::Dropped] {
+            let mut reopened = graph.clone();
+            reopened.set_status(&a, status).unwrap();
+            reopened.stamp(&graph.clone().into_nodes(), at(5));
+            let n = reopened.get(&a).unwrap();
+            assert_eq!((n.updated_at, n.completed_at), (Some(at(5)), None));
+        }
+
+        // A node without known times stays unknown until it changes; times are never guessed.
+        let mut old = Graph::from_nodes([node("o", Kind::Task, &[], &[])]).unwrap();
+        let before = old.clone().into_nodes();
+        old.stamp(&before, at(6));
+        assert_eq!(old.get(&id("o")).unwrap().created_at, None);
+        assert_eq!(old.get(&id("o")).unwrap().updated_at, None);
+    }
+
+    #[test]
+    fn metadata_must_be_canonical() {
+        let mut graph = Graph::from_nodes([node("a", Kind::Task, &[], &[])]).unwrap();
+        let a = id("a");
+        let pr = "https://github.com/o/r/pull/1".to_owned();
+        let prs = |prs: Vec<String>| Edit { prs: Some(prs), ..Edit::default() };
+        graph.edit(&a, prs(vec![pr.clone()])).unwrap();
+        assert!(matches!(graph.edit(&a, prs(vec![pr.clone(), pr.clone()])), Err(Error::DuplicatePr { .. })));
+        assert!(matches!(graph.edit(&a, prs(vec!["o/r#1".into()])), Err(Error::InvalidPr(_))));
+        let assign = |name: &str| Edit { assignee: Some(Some(name.into())), ..Edit::default() };
+        assert!(matches!(graph.edit(&a, assign(" x ")), Err(Error::InvalidAssignee(_))));
+        graph.edit(&a, assign("x")).unwrap();
+        graph.edit(&a, Edit { priority: Some(Some(Priority::High)), ..Edit::default() }).unwrap();
+        let n = graph.get(&a).unwrap();
+        assert_eq!((n.prs.clone(), n.assignee.as_deref(), n.priority), (vec![pr], Some("x"), Some(Priority::High)));
+        let mut bad = node("b", Kind::Task, &[], &[]);
+        bad.assignee = Some(String::new());
+        assert!(graph.insert(bad.clone()).is_err());
+        assert!(Graph::from_nodes([bad]).is_err());
+    }
 
     #[test]
     fn node_ids_do_not_share_the_process_time_seed() {

@@ -10,7 +10,7 @@ use sea_query::{
 use serde::Deserialize;
 use serde_json::json;
 use topo_core::wire::Role;
-use topo_core::{Kind, Node, NodeId, Status};
+use topo_core::{Kind, Node, NodeId, Priority, Status};
 
 pub struct Stmt {
     sql: String,
@@ -98,6 +98,12 @@ enum Nodes {
     DependsOn,
     Milestones,
     Body,
+    Priority,
+    Assignee,
+    Prs,
+    CreatedAt,
+    UpdatedAt,
+    CompletedAt,
 }
 
 #[derive(Iden)]
@@ -444,6 +450,12 @@ pub fn delete_member(workspace_id: &str, user_id: u64) -> Stmt {
 
 // ---- nodes and changes -----------------------------------------------------
 
+/// One row `{"now": n}`: the time of the database, in Unix seconds. It is the
+/// clock of the server, which has none of its own on Workers.
+pub fn clock() -> Stmt {
+    stmt(Query::select().expr_as(now(), "now"))
+}
+
 /// One row `{"version": n}`: the number of writes the workspace has received.
 pub fn version(workspace_id: &str) -> Stmt {
     stmt(
@@ -454,7 +466,7 @@ pub fn version(workspace_id: &str) -> Stmt {
     )
 }
 
-const NODE_COLUMNS: [Nodes; 9] = [
+const NODE_COLUMNS: [Nodes; 15] = [
     Nodes::Id,
     Nodes::Kind,
     Nodes::Title,
@@ -464,6 +476,12 @@ const NODE_COLUMNS: [Nodes; 9] = [
     Nodes::DependsOn,
     Nodes::Milestones,
     Nodes::Body,
+    Nodes::Priority,
+    Nodes::Assignee,
+    Nodes::Prs,
+    Nodes::CreatedAt,
+    Nodes::UpdatedAt,
+    Nodes::CompletedAt,
 ];
 
 /// The nodes of a workspace, to read with [`node`].
@@ -476,7 +494,7 @@ pub fn nodes(workspace_id: &str) -> Stmt {
     )
 }
 
-/// A row of [`nodes`]. The three lists are stored as JSON text.
+/// A row of [`nodes`]. The four lists are stored as JSON text.
 pub fn node(row: serde_json::Value) -> Result<Node, serde_json::Error> {
     #[derive(Deserialize)]
     struct Row {
@@ -489,6 +507,12 @@ pub fn node(row: serde_json::Value) -> Result<Node, serde_json::Error> {
         depends_on: String,
         milestones: String,
         body: String,
+        priority: Option<Priority>,
+        assignee: Option<String>,
+        prs: String,
+        created_at: Option<jiff::Timestamp>,
+        updated_at: Option<jiff::Timestamp>,
+        completed_at: Option<jiff::Timestamp>,
     }
     let row: Row = serde_json::from_value(row)?;
     Ok(Node {
@@ -498,6 +522,12 @@ pub fn node(row: serde_json::Value) -> Result<Node, serde_json::Error> {
         status: row.status,
         due: row.due,
         tags: serde_json::from_str(&row.tags)?,
+        priority: row.priority,
+        assignee: row.assignee,
+        prs: serde_json::from_str(&row.prs)?,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        completed_at: row.completed_at,
         depends_on: serde_json::from_str(&row.depends_on)?,
         milestones: serde_json::from_str(&row.milestones)?,
         body: row.body,
@@ -512,6 +542,8 @@ pub fn upsert_nodes(workspace_id: &str, nodes: &[&Node]) -> Stmt {
             json!({
                 "id": n.id, "kind": n.kind, "title": n.title, "status": n.status, "due": n.due,
                 "tags": n.tags, "depends_on": n.depends_on, "milestones": n.milestones, "body": n.body,
+                "priority": n.priority, "assignee": n.assignee, "prs": n.prs,
+                "created_at": n.created_at, "updated_at": n.updated_at, "completed_at": n.completed_at,
             })
         })
         .collect();
@@ -664,6 +696,11 @@ mod tests {
         let mut a = Node::new(NodeId("a".into()), Kind::Milestone, "it's \"a\"; DROP TABLE nodes".into());
         a.due = Some(jiff::civil::date(2026, 10, 31));
         a.tags = vec!["x".into(), "y".into()];
+        a.priority = Some(Priority::Urgent);
+        a.assignee = Some("it's me".into());
+        a.prs = vec!["https://github.com/o/r/pull/1".into(), "https://example.com/pr/2".into()];
+        a.created_at = Some("2026-10-01T00:00:00Z".parse().unwrap());
+        a.updated_at = Some("2026-10-02T03:04:05Z".parse().unwrap());
         let mut b = Node::new(NodeId("b".into()), Kind::Task, "b".into());
         b.depends_on = vec![a.id.clone()];
         b.milestones = vec![a.id.clone()];
@@ -675,12 +712,13 @@ mod tests {
         let upsert = upsert_nodes("w", &[&a, &b]);
         assert_eq!(
             upsert.sql(),
-            r#"INSERT INTO "nodes" ("workspace_id", "id", "kind", "title", "status", "due", "tags", "depends_on", "milestones", "body") SELECT ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ? FROM json_each(?) AS "rows" WHERE ? ON CONFLICT ("workspace_id", "id") DO UPDATE SET "kind" = "excluded"."kind", "title" = "excluded"."title", "status" = "excluded"."status", "due" = "excluded"."due", "tags" = "excluded"."tags", "depends_on" = "excluded"."depends_on", "milestones" = "excluded"."milestones", "body" = "excluded"."body""#
+            r#"INSERT INTO "nodes" ("workspace_id", "id", "kind", "title", "status", "due", "tags", "depends_on", "milestones", "body", "priority", "assignee", "prs", "created_at", "updated_at", "completed_at") SELECT ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ?, "value" ->> ? FROM json_each(?) AS "rows" WHERE ? ON CONFLICT ("workspace_id", "id") DO UPDATE SET "kind" = "excluded"."kind", "title" = "excluded"."title", "status" = "excluded"."status", "due" = "excluded"."due", "tags" = "excluded"."tags", "depends_on" = "excluded"."depends_on", "milestones" = "excluded"."milestones", "body" = "excluded"."body", "priority" = "excluded"."priority", "assignee" = "excluded"."assignee", "prs" = "excluded"."prs", "created_at" = "excluded"."created_at", "updated_at" = "excluded"."updated_at", "completed_at" = "excluded"."completed_at""#
         );
         run(&db, vec![upsert]);
         assert_eq!(load(&db), [a.clone(), b.clone()]);
 
         b.status = Status::Done;
+        b.completed_at = a.updated_at;
         b.milestones.clear();
         run(&db, vec![upsert_nodes("w", &[&b]), delete_nodes("w", &[&a.id])]);
         assert_eq!(load(&db), [b]);

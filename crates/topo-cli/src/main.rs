@@ -12,7 +12,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use jiff::civil::Date;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use topo_core::{Edit, Graph, Kind, Node, NodeId, Op, Status, Workspace};
+use topo_core::model::{normalize_assignee, normalize_pr};
+use topo_core::{Edit, Graph, Kind, Node, NodeId, Op, Priority, Status, Workspace};
 use topo_jev::{Client, Config, organize};
 
 /// topo: every task and milestone is a node in one dependency graph.
@@ -48,6 +49,15 @@ enum Command {
         due: Option<Date>,
         #[arg(long = "tag")]
         tags: Vec<String>,
+        /// low, medium, high, or urgent.
+        #[arg(long)]
+        priority: Option<Priority>,
+        /// Who works on the node: a person or an agent.
+        #[arg(long, value_name = "NAME")]
+        assignee: Option<String>,
+        /// Related pull request: a URL, or `owner/repo#123` on GitHub (repeatable).
+        #[arg(long = "pr", value_name = "PR")]
+        prs: Vec<String>,
         /// Markdown notes stored as the file body.
         #[arg(long)]
         note: Option<String>,
@@ -69,6 +79,10 @@ enum Command {
         /// the server checks it, so of several agents claiming a task one wins.
         #[arg(long = "if", value_name = "STATUS", value_parser = parse_enum::<Status>)]
         if_status: Option<Status>,
+        /// Also set the assignee, in the same atomic write. With `--if todo`
+        /// this claims a task: the loser of a race changes nothing.
+        #[arg(long, value_name = "NAME")]
+        assign: Option<String>,
     },
     /// Change node fields (ID can be `-` to read IDs from stdin).
     Edit {
@@ -84,6 +98,21 @@ enum Command {
         /// Replace all tags (repeatable).
         #[arg(long = "tag")]
         tags: Option<Vec<String>>,
+        /// low, medium, high, or urgent.
+        #[arg(long, conflicts_with = "no_priority")]
+        priority: Option<Priority>,
+        #[arg(long)]
+        no_priority: bool,
+        #[arg(long, value_name = "NAME", conflicts_with = "no_assignee")]
+        assignee: Option<String>,
+        #[arg(long)]
+        no_assignee: bool,
+        /// Add a related pull request: a URL, or `owner/repo#123` on GitHub (repeatable).
+        #[arg(long = "pr", value_name = "PR")]
+        prs: Vec<String>,
+        /// Remove a related pull request (repeatable).
+        #[arg(long = "unpr", value_name = "PR")]
+        unprs: Vec<String>,
         #[arg(long)]
         note: Option<String>,
     },
@@ -96,6 +125,8 @@ enum Command {
         input: Option<String>,
         #[command(flatten)]
         filters: ListFilters,
+        #[arg(long, value_enum)]
+        sort: Option<Sort>,
         #[arg(long, value_enum, conflicts_with = "json")]
         format: Option<render::ListFormat>,
     },
@@ -105,6 +136,8 @@ enum Command {
     Ready {
         #[arg(long, value_name = "ID")]
         under: Option<String>,
+        #[arg(long, value_enum)]
+        sort: Option<Sort>,
         #[arg(long, value_enum, conflicts_with = "json")]
         format: Option<render::ListFormat>,
     },
@@ -231,6 +264,41 @@ struct ListFilters {
     /// Case-insensitive title substring.
     #[arg(long)]
     title: Option<String>,
+    /// Only nodes with one of the supplied priorities (repeatable).
+    #[arg(long = "priority")]
+    priorities: Vec<Priority>,
+    /// Only nodes assigned to NAME.
+    #[arg(long, value_name = "NAME", conflicts_with = "unassigned")]
+    assignee: Option<String>,
+    /// Only nodes without an assignee.
+    #[arg(long)]
+    unassigned: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Sort {
+    /// Highest priority first, nodes without one last.
+    Priority,
+}
+
+/// Orders a listing. The sort is stable, so equal nodes keep the order of their ids.
+fn sort_nodes(nodes: &mut [&Node], sort: Option<Sort>) {
+    match sort {
+        Some(Sort::Priority) => nodes.sort_by_key(|n| std::cmp::Reverse(n.priority)),
+        None => {}
+    }
+}
+
+/// The canonical form of the given pull requests, each once.
+fn normalize_prs(prs: &[String]) -> Result<Vec<String>, topo_core::Error> {
+    let mut urls = Vec::new();
+    for pr in prs {
+        let url = normalize_pr(pr)?;
+        if !urls.contains(&url) {
+            urls.push(url);
+        }
+    }
+    Ok(urls)
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -328,7 +396,7 @@ fn mutate_ids(
     ws: &mut Workspace,
     input: &str,
     stdin: &str,
-    mut update: impl FnMut(&mut Graph, &NodeId) -> Result<(), topo_core::Error>,
+    mut update: impl FnMut(&mut Graph, &NodeId) -> Result<()>,
 ) -> Result<Vec<NodeId>> {
     let ids = input_ids(&ws.graph, input, stdin)?;
     for id in &ids {
@@ -358,6 +426,7 @@ fn list_nodes<'a>(graph: &'a Graph, input: Option<&str>, stdin: &str, filters: L
         anyhow::ensure!(graph.get(id).unwrap().kind == Kind::Milestone, "{id} is not a milestone");
     }
     let title = filters.title.map(|s| s.to_lowercase());
+    let assignee = filters.assignee.as_deref().map(normalize_assignee).transpose()?;
     Ok(graph
         .nodes()
         .filter(|n| input.as_ref().is_none_or(|ids| ids.contains(&n.id)))
@@ -375,6 +444,9 @@ fn list_nodes<'a>(graph: &'a Graph, input: Option<&str>, stdin: &str, filters: L
         .filter(|n| !filters.ready || graph.is_ready(n))
         .filter(|n| !filters.blocked || (!n.status.is_closed() && !graph.is_ready(n)))
         .filter(|n| title.as_ref().is_none_or(|title| n.title.to_lowercase().contains(title)))
+        .filter(|n| filters.priorities.is_empty() || n.priority.is_some_and(|p| filters.priorities.contains(&p)))
+        .filter(|n| assignee.is_none() || n.assignee == assignee)
+        .filter(|n| !filters.unassigned || n.assignee.is_none())
         .collect())
 }
 
@@ -424,13 +496,16 @@ fn run(cli: Cli) -> Result<()> {
         | Command::Cloud { .. } => {
             unreachable!("handled above")
         }
-        Command::Add { title, milestone, deps, milestones, due, tags, note } => {
+        Command::Add { title, milestone, deps, milestones, due, tags, priority, assignee, prs, note } => {
             let kind = if milestone { Kind::Milestone } else { Kind::Task };
             let mut node = Node::new(ws.graph.fresh_id(), kind, title);
             node.depends_on = resolve_all(&ws.graph, &deps)?;
             node.milestones = resolve_all(&ws.graph, &milestones)?;
             node.due = due;
             node.tags = tags;
+            node.priority = priority;
+            node.assignee = assignee.as_deref().map(normalize_assignee).transpose()?;
+            node.prs = normalize_prs(&prs)?;
             node.body = note.unwrap_or_default();
             let id = node.id.clone();
             ws.graph.insert(node)?;
@@ -439,52 +514,97 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Link { from, to } => {
             let to = ws.graph.resolve(&to)?;
-            let ids = mutate_ids(&mut ws, &from, &stdin, |g, id| g.link(id, &to))?;
+            let ids = mutate_ids(&mut ws, &from, &stdin, |g, id| Ok(g.link(id, &to)?))?;
             print_mutation(json, &from, ids.iter().map(|from| json!({ "from": from, "to": to })))?;
         }
         Command::Unlink { from, to } => {
             let to = ws.graph.resolve(&to)?;
-            let ids = mutate_ids(&mut ws, &from, &stdin, |g, id| g.unlink(id, &to))?;
+            let ids = mutate_ids(&mut ws, &from, &stdin, |g, id| Ok(g.unlink(id, &to)?))?;
             print_mutation(json, &from, ids.iter().map(|from| json!({ "from": from, "to": to })))?;
         }
         Command::Join { task, milestone } => {
             let milestone = ws.graph.resolve(&milestone)?;
-            let ids = mutate_ids(&mut ws, &task, &stdin, |g, id| g.join(id, &milestone))?;
+            let ids = mutate_ids(&mut ws, &task, &stdin, |g, id| Ok(g.join(id, &milestone)?))?;
             print_mutation(json, &task, ids.iter().map(|task| json!({ "task": task, "milestone": milestone })))?;
         }
         Command::Leave { task, milestone } => {
             let milestone = ws.graph.resolve(&milestone)?;
-            let ids = mutate_ids(&mut ws, &task, &stdin, |g, id| g.leave(id, &milestone))?;
+            let ids = mutate_ids(&mut ws, &task, &stdin, |g, id| Ok(g.leave(id, &milestone)?))?;
             print_mutation(json, &task, ids.iter().map(|task| json!({ "task": task, "milestone": milestone })))?;
         }
-        Command::Status { id, status, if_status } => {
+        Command::Status { id, status, if_status, assign } => {
             let ids = input_ids(&ws.graph, &id, &stdin)?;
             if !ids.is_empty() {
-                ws.apply(ids.iter().map(|id| Op::Status { id: id.0.clone(), status, if_status }).collect())?;
+                // One batch, so an assignee is set only if every status change holds.
+                let ops = ids.iter().flat_map(|id| {
+                    let assign = assign.clone().map(|name| Op::Edit {
+                        id: id.0.clone(),
+                        title: None,
+                        kind: None,
+                        due: None,
+                        tags: None,
+                        priority: None,
+                        assignee: Some(Some(name)),
+                        prs: None,
+                        notes: None,
+                    });
+                    [Some(Op::Status { id: id.0.clone(), status, if_status }), assign].into_iter().flatten()
+                });
+                ws.apply(ops.collect())?;
             }
             print_mutation(json, &id, ids.iter().map(|id| render::node_json(&ws.graph, ws.graph.get(id).unwrap())))?;
         }
-        Command::Edit { id, title, kind, due, no_due, tags, note } => {
+        Command::Edit {
+            id,
+            title,
+            kind,
+            due,
+            no_due,
+            tags,
+            priority,
+            no_priority,
+            assignee,
+            no_assignee,
+            prs,
+            unprs,
+            note,
+        } => {
             let due = if no_due { Some(None) } else { due.map(Some) };
-            let edit = Edit { title, kind, due, tags, body: note };
-            let ids = mutate_ids(&mut ws, &id, &stdin, |g, id| g.edit(id, edit.clone()))?;
+            let priority = if no_priority { Some(None) } else { priority.map(Some) };
+            let assignee = assignee.as_deref().map(normalize_assignee).transpose()?;
+            let assignee = if no_assignee { Some(None) } else { assignee.map(Some) };
+            let (prs, unprs) = (normalize_prs(&prs)?, normalize_prs(&unprs)?);
+            let edit = Edit { title, kind, due, tags, body: note, priority, assignee, prs: None };
+            let ids = mutate_ids(&mut ws, &id, &stdin, |g, id| {
+                // The list is replaced as a whole, so the change is computed from each node's own list.
+                let mut linked = g.get(id).expect("the id is resolved").prs.clone();
+                for pr in &unprs {
+                    anyhow::ensure!(linked.contains(pr), "{id} is not linked to the pull request {pr}");
+                    linked.retain(|url| url != pr);
+                }
+                linked.extend(prs.iter().filter(|pr| !linked.contains(pr)).cloned().collect::<Vec<_>>());
+                let prs = (!prs.is_empty() || !unprs.is_empty()).then_some(linked);
+                Ok(g.edit(id, Edit { prs, ..edit.clone() })?)
+            })?;
             print_mutation(json, &id, ids.iter().map(|id| render::node_json(&ws.graph, ws.graph.get(id).unwrap())))?;
         }
         Command::Rm { id } => {
-            let ids = mutate_ids(&mut ws, &id, &stdin, |g, id| g.remove(id).map(|_| ()))?;
+            let ids = mutate_ids(&mut ws, &id, &stdin, |g, id| Ok(g.remove(id).map(|_| ())?))?;
             print_mutation(json, &id, ids.iter().map(|id| json!({ "removed": id })))?;
         }
-        Command::Ls { input, filters, format } => {
-            let nodes = list_nodes(&ws.graph, input.as_deref(), &stdin, filters)?;
+        Command::Ls { input, filters, sort, format } => {
+            let mut nodes = list_nodes(&ws.graph, input.as_deref(), &stdin, filters)?;
+            sort_nodes(&mut nodes, sort);
             print_list(&ws.graph, &nodes, json, format.unwrap_or(render::ListFormat::Text), false)?;
         }
         Command::Show { id } => {
             let node = ws.graph.get(&ws.graph.resolve(&id)?).unwrap();
             print(json, render::detail_json(&ws.graph, node), || render::detail_text(&ws.graph, node))?;
         }
-        Command::Ready { under, format } => {
+        Command::Ready { under, sort, format } => {
             let scope = under.map(|u| ws.graph.resolve(&u)).transpose()?;
-            let nodes = ws.graph.ready_tasks(scope.as_ref());
+            let mut nodes = ws.graph.ready_tasks(scope.as_ref());
+            sort_nodes(&mut nodes, sort);
             print_list(&ws.graph, &nodes, json, format.unwrap_or(render::ListFormat::Text), false)?;
         }
         Command::Milestones { format } => {

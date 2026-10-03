@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use jiff::Timestamp;
+
 use crate::Error;
 use crate::files::{self, DirExt};
 use crate::graph::Graph;
@@ -38,9 +40,15 @@ impl Remote for MemoryRemote {
         let mut state = self.0.lock().expect("the lock is not poisoned");
         let mut graph = state.0.clone();
         let created = ops::apply(&mut graph, &mut ops.to_vec())?;
+        graph.stamp(&state.0.clone().into_nodes(), now());
         *state = (graph, state.1 + 1);
         Ok(ApplyResult { version: state.1, created })
     }
+}
+
+/// The current time, to the second: the precision timestamps are stored with.
+pub fn now() -> Timestamp {
+    Timestamp::from_second(Timestamp::now().as_second()).expect("the current time is in range")
 }
 
 /// A `.topo` directory on disk and the graph loaded from it.
@@ -141,23 +149,28 @@ impl Workspace {
     }
 
     /// Writes changed and new nodes and deletes removed ones.
+    ///
+    /// The timestamps of the changed nodes are recorded here for files, and by
+    /// the remote for a linked workspace.
     pub fn save(&mut self) -> Result<(), Error> {
-        let current = self.graph.clone().into_nodes();
-        let Some((remote, version)) = self.remote.clone() else {
-            return self.save_files(current);
+        let Some((remote, _)) = self.remote.clone() else {
+            self.graph.stamp(&self.saved, now());
+            return self.save_files(self.graph.clone().into_nodes());
         };
-        let ops = ops::diff(&self.saved, &current);
+        let ops = ops::diff(&self.saved, &self.graph.clone().into_nodes());
         if ops.is_empty() {
             return Ok(());
         }
-        let result = remote.apply(&ops)?;
-        if result.version == version + 1 {
-            self.saved = current;
-            self.remote = Some((remote, result.version));
-            return Ok(());
-        }
-        // Another writer got in between, so the server's graph is more than `current`.
+        remote.apply(&ops)?;
+        // The server's graph has the timestamps of this write and the changes of other writers.
         self.reload().map(|_| ())
+    }
+
+    /// Replaces every node file with the given nodes, keeping their timestamps.
+    pub fn replace_files(&mut self, graph: Graph) -> Result<(), Error> {
+        assert!(self.remote.is_none(), "only a workspace of files is replaced");
+        self.graph = graph;
+        self.save_files(self.graph.clone().into_nodes())
     }
 
     fn save_files(&mut self, current: BTreeMap<NodeId, Node>) -> Result<(), Error> {

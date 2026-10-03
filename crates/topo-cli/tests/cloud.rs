@@ -146,7 +146,10 @@ fn a_workspace_moves_to_the_cloud_and_back() {
     let milestone = one.ok(&["add", "v1", "--milestone", "--due", "2026-10-31"]);
     let design = one.ok(&["add", "design", "--in", &milestone, "--note", "notes"]);
     one.ok(&["add", "build", "--in", &milestone, "--dep", &design, "--tag", "x"]);
+    one.ok(&["edit", &design, "--priority", "high", "--assignee", "alice", "--pr", "o/r#1"]);
     let local = one.nodes();
+    let design_node = one.json(&["show", &design, "--json"]);
+    assert!(design_node["created_at"].is_string());
 
     let pushed = one.json(&["cloud", "push", "--url", &url, "--name", "demo", "--json"]);
     let workspace = pushed["workspace"].as_str().unwrap();
@@ -158,12 +161,21 @@ fn a_workspace_moves_to_the_cloud_and_back() {
     let two = Dir::new(&token, &url);
     two.ok(&["cloud", "link", workspace, "--url", &url]);
     assert_eq!(two.nodes(), local);
+    // The push kept the metadata and the times the files had.
+    assert_eq!(two.json(&["show", &design, "--json"]), design_node);
     assert_eq!(two.ok(&["ready"]), one.ok(&["ready"]));
     assert!(two.ok(&["show", &design]).contains("notes"));
 
     // Writes from either side reach the other, whichever kind of command makes them.
-    let extra = two.ok(&["add", "ship", "--dep", &design[..3]]);
-    one.ok(&["status", &design, "done"]);
+    let extra = two.ok(&["add", "ship", "--dep", &design[..3], "--priority", "urgent", "--pr", "o/r#2"]);
+    // The server records the times of the nodes a write changes, and of no others.
+    let done = one.json(&["status", &design, "done", "--json"]);
+    assert_eq!(done["created_at"], design_node["created_at"]);
+    assert!(done["completed_at"].is_string() && done["completed_at"] == done["updated_at"]);
+    let shipped = one.json(&["show", &extra, "--json"]);
+    assert!(shipped["created_at"].is_string() && shipped["created_at"] == shipped["updated_at"]);
+    assert_eq!(shipped["prs"][0], "https://github.com/o/r/pull/2");
+    assert_eq!(one.ok(&["ls", "--priority", "urgent", "--format", "ids"]), extra);
     one.ok(&["edit", &extra, "--title", "release", "--due", "2026-11-01"]);
     two.ok(&["edit", &extra, "--no-due"]);
     let batch = r#"[{"op": "add", "ref": "t", "title": "test"}, {"op": "link", "from": "$t", "to": "EXTRA"}]"#;
@@ -181,8 +193,10 @@ fn a_workspace_moves_to_the_cloud_and_back() {
 
     // Pulling writes the files again and cuts the link.
     assert_eq!(files(&two.path(".topo")), 1);
+    let cloud = two.json(&["ls", "--all", "--json"]);
     two.ok(&["cloud", "pull"]);
     assert_eq!(files(&two.path(".topo/nodes")), 5);
+    assert_eq!(two.json(&["ls", "--all", "--json"]), cloud, "a pull keeps every field, the times included");
     assert!(!std::fs::read_to_string(two.path(".topo/config.toml")).unwrap().contains("cloud"));
     two.ok(&["rm", &extra]);
     assert_eq!(two.nodes().len(), 4);
@@ -211,7 +225,7 @@ fn of_two_agents_claiming_a_task_one_wins() {
     assert!(a.fails(&["cloud", "ls"]).contains("restricted to a workspace"));
 
     let claim = |agent: &Dir, label: &str| {
-        let mut command = agent.command(&["status", &task, "doing", "--if", "todo"]);
+        let mut command = agent.command(&["status", &task, "doing", "--if", "todo", "--assign", label]);
         command.env("TOPO_AGENT", label).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
     };
     let (first, second) = (claim(&a, "task-1"), claim(&b, "task-2"));
@@ -225,6 +239,8 @@ fn of_two_agents_claiming_a_task_one_wins() {
     assert_eq!(claims.len(), 1);
     let (winner, label) = (claims[0]["token"].as_str().unwrap(), claims[0]["agent"].as_str().unwrap());
     assert!(matches!((winner, label), ("agent-a", "task-1") | ("agent-b", "task-2")), "{winner} {label}");
+    // The claim assigned the task to the winner, and the loser did not overwrite it.
+    assert_eq!(dir.json(&["show", &task, "--json"])["assignee"], label);
     assert_eq!(dir.json(&["token", "ls", "--json"]).as_array().unwrap().len(), 3);
 }
 

@@ -83,9 +83,11 @@ pub fn status_mark(status: Status) -> &'static str {
 
 pub fn node_line(node: &Node) -> String {
     let kind = if node.kind == Kind::Milestone { "◆ " } else { "" };
+    let priority = node.priority.map(|p| format!("  !{p}")).unwrap_or_default();
+    let assignee = node.assignee.as_ref().map(|a| format!("  @{a}")).unwrap_or_default();
     let due = node.due.map(|d| format!("  due {d}")).unwrap_or_default();
     let tags: String = node.tags.iter().map(|t| format!("  #{t}")).collect();
-    format!("{} {}  {kind}{}{due}{tags}", status_mark(node.status), node.id, node.title)
+    format!("{} {}  {kind}{}{priority}{assignee}{due}{tags}", status_mark(node.status), node.id, node.title)
 }
 
 pub fn detail_json(graph: &Graph, node: &Node) -> Value {
@@ -109,6 +111,19 @@ pub fn detail_text(graph: &Graph, node: &Node) -> String {
     let mut text = node_line(node);
     if node.kind == Kind::Milestone {
         text += &format!("\n{}", milestone_line(graph, node));
+    }
+    // Times are known only for nodes written since they were recorded.
+    for (label, time) in [("created", node.created_at), ("updated", node.updated_at), ("completed", node.completed_at)]
+    {
+        if let Some(time) = time {
+            text += &format!("\n{label} {time}");
+        }
+    }
+    if !node.prs.is_empty() {
+        text += &format!(
+            "\npull requests:\n{}",
+            node.prs.iter().map(|pr| format!("  {pr}")).collect::<Vec<_>>().join("\n")
+        );
     }
     text += &neighbors("members", graph.members(&node.id).collect());
     text += &neighbors("in milestones", lookup(&node.milestones));

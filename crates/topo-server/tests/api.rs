@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use axum::Router;
 use axum::body::Body;
@@ -436,6 +436,7 @@ fn apply_is_atomic_idempotent_and_conditional() {
         json!({
             "id": "aaaaaa", "kind": "task", "title": "it's; DROP TABLE nodes", "status": "todo",
             "milestones": [first.body["created"]["m"]], "body": "n",
+            "created_at": task["created_at"], "updated_at": task["updated_at"],
         })
     );
     let unchanged = api.call("GET", &graph, &alice, &[("if-none-match", "\"1\"")], None);
@@ -517,6 +518,158 @@ fn import_replaces_the_graph_and_keeps_ids() {
     let traversal = json!([{ "id": "../../etc/passwd", "title": "a" }]);
     assert_eq!(code(&put("k3", traversal)), (422, "invalid_graph"));
     assert_eq!(api.get(&graph, &alice).body["version"], 2);
+}
+
+/// A database whose clock the test sets, in Unix seconds.
+struct Clock {
+    inner: SqliteDb,
+    now: AtomicI64,
+}
+
+impl Db for Clock {
+    fn batch(&self, statements: Vec<Stmt>) -> BoxFuture<'_, Result<Vec<Rows>, DbError>> {
+        Box::pin(async move {
+            let clock = statements.iter().position(|s| s.sql() == sql::clock().sql());
+            let mut results = self.inner.batch(statements).await?;
+            if let Some(index) = clock {
+                results[index] = Rows(vec![json!({ "now": self.now.load(Ordering::SeqCst) })]);
+            }
+            Ok(results)
+        })
+    }
+}
+
+/// The node `id` of the workspace, as `GET .../graph` returns it.
+fn stored(api: &Api, wid: &str, token: &str, id: &str) -> Value {
+    let graph = api.get(&format!("/v1/workspaces/{wid}/graph"), token).body;
+    graph["nodes"].as_array().unwrap().iter().find(|n| n["id"] == id).unwrap().clone()
+}
+
+#[test]
+fn apply_stores_metadata_and_records_times() {
+    let db = Arc::new(Clock { inner: SqliteDb::new(), now: AtomicI64::new(1_000) });
+    let api = Api::over(db.clone());
+    let alice = api.sign_in("alice");
+    let wid = api.workspace(&alice);
+    let at = |seconds: i64| json!(jiff::Timestamp::from_second(seconds).unwrap().to_string());
+    assert_eq!(at(1_000), "1970-01-01T00:16:40Z");
+    let node = || stored(&api, &wid, &alice, "a");
+    let times = || {
+        let n = node();
+        [n["created_at"].clone(), n["updated_at"].clone(), n["completed_at"].clone()]
+    };
+
+    let add = json!([
+        { "op": "add", "id": "a", "title": "a", "priority": "high", "assignee": " alice ", "prs": ["o/r#7", "https://example.com/pr/2/"] },
+        { "op": "add", "id": "b", "title": "b" },
+    ]);
+    assert_eq!(api.apply(&wid, &alice, "k1", add.clone()).status, StatusCode::OK);
+    let created = json!({
+        "id": "a", "kind": "task", "title": "a", "status": "todo", "priority": "high", "assignee": "alice",
+        "prs": ["https://github.com/o/r/pull/7", "https://example.com/pr/2"],
+        "created_at": at(1_000), "updated_at": at(1_000),
+    });
+    assert_eq!(node(), created);
+    // The change log holds what was applied: canonical values and no times.
+    let log = api.get(&format!("/v1/workspaces/{wid}/changes"), &alice).body;
+    assert_eq!(log[0]["ops"][0]["prs"], created["prs"]);
+    assert_eq!(log[0]["ops"][0]["assignee"], "alice");
+    assert!(log[0]["ops"][0].get("created_at").is_none());
+
+    // A retry with the same key writes nothing, so no time moves.
+    db.now.store(2_000, Ordering::SeqCst);
+    assert_eq!(api.apply(&wid, &alice, "k1", add).body["version"], 1);
+    assert_eq!(node(), created);
+    // Neither does a write that leaves the node as it is: only `b` changes here.
+    let same =
+        json!([{ "op": "edit", "id": "a", "priority": "high" }, { "op": "status", "id": "b", "status": "doing" }]);
+    assert_eq!(api.apply(&wid, &alice, "k2", same).body["version"], 2);
+    assert_eq!(node(), created);
+    assert_eq!(stored(&api, &wid, &alice, "b")["updated_at"], at(2_000));
+
+    let done = json!([{ "op": "status", "id": "a", "status": "done" }]);
+    assert_eq!(api.apply(&wid, &alice, "k3", done).body["version"], 3);
+    assert_eq!(times(), [at(1_000), at(2_000), at(2_000)]);
+    db.now.store(3_000, Ordering::SeqCst);
+    let clear = json!([{ "op": "edit", "id": "a", "priority": null, "assignee": null, "prs": [] }]);
+    assert_eq!(api.apply(&wid, &alice, "k4", clear).body["version"], 4);
+    let cleared = node();
+    assert!(["priority", "assignee", "prs"].iter().all(|field| cleared.get(field).is_none()), "{cleared}");
+    assert_eq!(times(), [at(1_000), at(3_000), at(2_000)]);
+    db.now.store(4_000, Ordering::SeqCst);
+    let reopen = json!([{ "op": "status", "id": "a", "status": "todo" }]);
+    assert_eq!(api.apply(&wid, &alice, "k5", reopen).body["version"], 5);
+    assert_eq!(times(), [at(1_000), at(4_000), Value::Null]);
+
+    for (key, edit) in [
+        ("e1", json!({ "prs": ["nope"] })),
+        ("e2", json!({ "prs": ["o/r#1", "https://github.com/o/r/pull/1"] })),
+        ("e3", json!({ "assignee": " " })),
+    ] {
+        let mut op = json!({ "op": "edit", "id": "a" });
+        op.as_object_mut().unwrap().extend(edit.as_object().unwrap().clone());
+        assert_eq!(code(&api.apply(&wid, &alice, key, json!([op]))), (422, "invalid_graph"), "{key}");
+    }
+    let unknown = json!([{ "op": "edit", "id": "a", "priority": "p0" }]);
+    assert_eq!(code(&api.apply(&wid, &alice, "e4", unknown)), (400, "bad_request"));
+    assert_eq!(api.get(&format!("/v1/workspaces/{wid}/graph"), &alice).body["version"], 5);
+}
+
+#[test]
+fn a_claim_assigns_the_task_to_the_one_agent_that_wins() {
+    let api = Api::new();
+    let alice = api.sign_in("alice");
+    let wid = api.workspace(&alice);
+    api.apply(&wid, &alice, "k0", json!([{ "op": "add", "id": "a", "title": "a" }]));
+    let claim = |agent: &str| {
+        let ops = json!([
+            { "op": "status", "id": "a", "status": "doing", "if_status": "todo" },
+            { "op": "edit", "id": "a", "assignee": agent },
+        ]);
+        api.apply(&wid, &alice, agent, ops)
+    };
+    assert_eq!(claim("agent-1").status, StatusCode::OK);
+    assert_eq!(code(&claim("agent-2")), (409, "conflict"));
+    let node = stored(&api, &wid, &alice, "a");
+    assert_eq!((node["status"].as_str(), node["assignee"].as_str()), (Some("doing"), Some("agent-1")));
+    assert_eq!(api.get(&format!("/v1/workspaces/{wid}/graph"), &alice).body["version"], 2);
+}
+
+#[test]
+fn import_keeps_the_timestamps_it_is_given() {
+    let db = Arc::new(Clock { inner: SqliteDb::new(), now: AtomicI64::new(1_000) });
+    let api = Api::over(db.clone());
+    let alice = api.sign_in("alice");
+    let wid = api.workspace(&alice);
+    let graph = format!("/v1/workspaces/{wid}/graph");
+    let nodes = json!([
+        { "id": "a", "kind": "task", "title": "a", "status": "done", "priority": "low", "assignee": "bob",
+          "prs": ["https://github.com/o/r/pull/1"], "created_at": "2026-01-01T00:00:00Z",
+          "updated_at": "2026-02-01T00:00:00Z", "completed_at": "2026-02-01T00:00:00Z" },
+        // A node from before the timestamps existed: its times stay unknown.
+        { "id": "b", "kind": "task", "title": "b", "status": "todo" },
+    ]);
+    let put = |key: &'static str, nodes: Value| {
+        api.call("PUT", &graph, &alice, &[("idempotency-key", key)], Some(json!({ "nodes": nodes })))
+    };
+    assert_eq!(put("k1", nodes.clone()).status, StatusCode::OK);
+    assert_eq!(stored(&api, &wid, &alice, "a"), nodes[0]);
+    assert_eq!(stored(&api, &wid, &alice, "b"), nodes[1]);
+
+    // A later change records the time of the server and keeps the creation time.
+    api.apply(
+        &wid,
+        &alice,
+        "k2",
+        json!([{ "op": "edit", "id": "a", "title": "a2" }, { "op": "edit", "id": "b", "title": "b2" }]),
+    );
+    let (a, b) = (stored(&api, &wid, &alice, "a"), stored(&api, &wid, &alice, "b"));
+    assert_eq!((&a["created_at"], &a["completed_at"]), (&nodes[0]["created_at"], &nodes[0]["completed_at"]));
+    assert_eq!(a["updated_at"], "1970-01-01T00:16:40Z");
+    assert_eq!((b.get("created_at"), &b["updated_at"]), (None, &a["updated_at"]));
+
+    let unnormalized = json!([{ "id": "c", "title": "c", "prs": ["o/r#1"] }]);
+    assert_eq!(code(&put("k3", unnormalized)), (422, "invalid_graph"));
 }
 
 /// A database in which other writers take the next version just before each of the first `races` writes.

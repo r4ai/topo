@@ -154,11 +154,17 @@ GET    /v1/workspaces/{wid}/changes?after={v}   change log, for audit
   "version": 13,
   "nodes": [
     { "id": "k2x9ab", "kind": "task", "title": "Core engine", "status": "doing",
-      "due": "2026-10-31", "tags": ["core"], "depends_on": ["m4p0zz"],
-      "milestones": ["a1b2c3"], "body": "notes" }
+      "due": "2026-10-31", "tags": ["core"], "priority": "high", "assignee": "agent-3",
+      "prs": ["https://github.com/r4ai/topo/pull/12"],
+      "created_at": "2026-10-01T09:00:00Z", "updated_at": "2026-10-03T12:30:00Z",
+      "depends_on": ["m4p0zz"], "milestones": ["a1b2c3"], "body": "notes" }
   ]
 }
 ```
+
+A field without a value is absent: `due`, `priority` (`low`, `medium`, `high`,
+or `urgent`), `assignee`, the three times, and the empty lists. `completed_at`
+is present only while the status is `done`.
 
 The response carries `ETag: "13"`. A client that polls sends `If-None-Match`
 and receives `304 Not Modified` while the version is unchanged; that case
@@ -195,7 +201,7 @@ resolved on the server could match a node created in the meantime.
 If any operation fails, the whole batch is rejected and the version is
 unchanged.
 
-Three details of the operations matter to clients:
+These details of the operations matter to clients:
 
 - **`add` may carry an `id`.** Clients choose ids as the local edition does;
   the server generates one only when it is absent, and rejects an id that is
@@ -205,7 +211,17 @@ Three details of the operations matter to clients:
   task with `{"op": "status", "id": "...", "status": "doing", "if_status":
   "todo"}`; of several agents that do, one succeeds.
 - **`edit` distinguishes an absent `due` from `"due": null`.** The first leaves
-  the date unchanged and the second clears it.
+  the date unchanged and the second clears it. `priority` and `assignee` work
+  the same way. `prs` replaces the list of pull requests, and `[]` clears it.
+- **`assignee` and `prs` are stored in canonical form.** An assignee is
+  trimmed. A pull request is an `http(s)` URL or `owner/repo#123`, stored as
+  the URL of the pull request, so two links to one pull request are equal; a
+  list that names one twice is rejected. The change log records the canonical
+  values.
+- **A batch is how an agent claims a task with its name.**
+  `[{"op": "status", "id": "...", "status": "doing", "if_status": "todo"},
+  {"op": "edit", "id": "...", "assignee": "agent-3"}]` assigns the task only
+  if the status change holds, so the loser of a race overwrites nothing.
 
 - **`Idempotency-Key`** is required. A client generates one per command and
   reuses it when it retries after a timeout. The server returns the original
@@ -220,7 +236,27 @@ Three details of the operations matter to clients:
 `Graph::from_nodes`, and replaces the workspace's nodes, keeping their ids. It
 takes the same headers and is recorded in the change log as the operations
 that lead from the old nodes to the new ones. `topo cloud push` uses it to
-import a local workspace.
+import a local workspace. An import is the one write that does not record
+times: the nodes are stored with the `created_at`, `updated_at`, and
+`completed_at` they carry, so a workspace keeps its history when it moves to
+the server and back. Unlike `apply`, it does not rewrite `assignee` and `prs`
+either; values that are not canonical are rejected.
+
+### Timestamps
+
+The server records the three times of a node, in UTC to the second, and no
+operation carries them:
+
+- `created_at` when an `add` creates the node;
+- `updated_at` whenever a write changes any of its fields, including its
+  edges;
+- `completed_at` when its status becomes `done`. It is kept while the node
+  stays `done` and removed when the node is reopened or dropped.
+
+A node that a write leaves as it was keeps its times, so an edit to the value
+a field already has, or a retry with a recorded `Idempotency-Key`, moves
+nothing. A node stored before the times existed has none until it changes, and
+then gets `updated_at` only: a time that is not known is never made up.
 
 ### Change log
 
@@ -242,7 +278,7 @@ Errors return `{"error": {"code": string, "message": string}}`.
 | 404 | `not_found` | No such workspace, member, or token, or the caller is not a member |
 | 409 | `conflict` | An `if_status` did not hold, or the workspace would be left without an owner |
 | 412 | `precondition_failed` | `If-Match` does not match the current version |
-| 422 | `invalid_graph` | An operation violates a graph invariant; `message` is the `topo-core::Error` text |
+| 422 | `invalid_graph` | An operation violates a graph invariant or carries an invalid assignee or pull request; `message` is the `topo-core::Error` text |
 | 500 | `internal` | A defect or an unreachable dependency; the detail is logged, not returned |
 | 503 | `busy` | The write lost the race to concurrent writes three times; retry with the same key |
 
