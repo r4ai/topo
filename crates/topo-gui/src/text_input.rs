@@ -1,7 +1,7 @@
 //! Single-line text field with IME support, adapted from gpui's `input` example.
 //!
-//! Enter, Escape, Up and Down are not handled here; they are emitted as
-//! [`InputEvent`]s so the owner decides what they mean.
+//! Enter, Escape, Up, Down, Tab and Shift-Tab are not handled here; they are
+//! emitted as [`InputEvent`]s so the owner decides what they mean.
 //!
 //! The standard editing shortcuts ([`SelectAll`], [`Copy`], [`Cut`], [`Paste`],
 //! [`Undo`], [`Redo`]) are bound for the whole window. A focused field handles
@@ -48,6 +48,8 @@ actions!(
         Cancel,
         Up,
         Down,
+        Next,
+        Previous,
     ]
 );
 
@@ -95,6 +97,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
         KeyBinding::new("up", Up, Some(CONTEXT)),
         KeyBinding::new("down", Down, Some(CONTEXT)),
+        KeyBinding::new("tab", Next, Some(CONTEXT)),
+        KeyBinding::new("shift-tab", Previous, Some(CONTEXT)),
     ]);
 }
 
@@ -105,6 +109,11 @@ pub enum InputEvent {
     Cancel,
     Up,
     Down,
+    /// Tab and Shift-Tab.
+    Next,
+    Previous,
+    /// Backspace with nothing left to delete.
+    BackspaceEmpty,
 }
 
 pub struct TextInput {
@@ -163,6 +172,18 @@ impl TextInput {
         self.typing = false;
         cx.emit(InputEvent::Changed);
         cx.notify();
+    }
+
+    /// Replaces the content, with the cursor at its end.
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let placeholder = self.placeholder.clone();
+        self.reset(text, &placeholder, cx);
+        self.selected_range = self.content.len()..self.content.len();
+    }
+
+    /// Whether an input method is composing text that is not final yet.
+    pub fn composing(&self) -> bool {
+        self.marked_range.is_some()
     }
 
     /// Records the current text as an undo step, before an edit replaces it.
@@ -244,6 +265,9 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.content.is_empty() {
+            return cx.emit(InputEvent::BackspaceEmpty);
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx)
         }
@@ -698,6 +722,8 @@ impl Render for TextInput {
             .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.emit(InputEvent::Cancel)))
             .on_action(cx.listener(|_, _: &Up, _, cx| cx.emit(InputEvent::Up)))
             .on_action(cx.listener(|_, _: &Down, _, cx| cx.emit(InputEvent::Down)))
+            .on_action(cx.listener(|_, _: &Next, _, cx| cx.emit(InputEvent::Next)))
+            .on_action(cx.listener(|_, _: &Previous, _, cx| cx.emit(InputEvent::Previous)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

@@ -183,6 +183,9 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - The chosen width is remembered across restarts in the user config, never in the workspace
   - Titles wrap up to three lines; every overflowing one-line value ends in `…`
   - DETAILS rows are edited in place: click a row or press its key (`p` priority, `a` assignee, `d` due date, `t` tags). `Enter` saves, `Esc` or a click elsewhere cancels, and input that cannot be saved keeps the field open with the reason under it
+  - A list under the field offers values, narrowed as you type: the priorities, the assignees and tags the workspace already uses, and common due dates. `↓` / `↑` choose and `Enter` takes the choice, as does a click
+  - Tags are edited as chips: a space or comma finishes a tag, `Backspace` in the empty field removes the last one, `×` removes any
+  - `Tab` / `Shift+Tab` save the field and open the next / previous one (priority → assignee → due → tags → pull request)
   - Created / updated / completed times are shown read-only in the local time zone (`Unknown` for nodes older than the timestamps)
   - PULL REQUESTS lists the linked pull requests: `g` or `+` links one (a URL or `owner/repo#123`), a click opens it in the browser, `×` unlinks it
 - Node Operations:

@@ -571,6 +571,8 @@ impl TopoApp {
                     ("⌘V", "Canvas: paste nodes as new · field: text"),
                     ("⌘Z  ⇧⌘Z", "Canvas: undo / redo edits · field: typing"),
                     ("↵  Esc", "Field: save / cancel"),
+                    ("Tab  ⇧Tab", "Inspector field: save, next / previous"),
+                    ("↓ ↑", "Inspector field: choose a suggestion"),
                 ],
             ),
             (

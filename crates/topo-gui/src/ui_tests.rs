@@ -129,7 +129,7 @@ impl Ui<'_> {
     /// The field being edited in the inspector, and the text typed into it.
     fn inline(&mut self) -> Option<(Field, String)> {
         self.app.read_with(self.cx, |app, cx| {
-            app.inline.as_ref().map(|edit| (edit.field, app.inline_input.read(cx).text().to_owned()))
+            app.inline.as_ref().map(|edit| (edit.field, app.inline_text(cx).trim().to_owned()))
         })
     }
 
@@ -751,32 +751,32 @@ fn an_edited_field_keeps_the_keyboard_from_the_canvas(cx: &mut TestAppContext) {
     ui.keys("x");
     assert_eq!(ui.node("a").status, Status::Done);
 
-    ui.keys("t");
+    ui.keys("a");
     ui.type_text("one two");
     // Keys that are canvas commands are text or text editing here.
     ui.type_text("x");
     ui.keys("backspace cmd-a");
     assert_eq!(ui.selection(), ["a"], "⌘A selects the text, not the nodes");
     assert_eq!(ui.node("a").status, Status::Done);
-    assert_eq!(ui.inline(), Some((Field::Tags, "one two".into())));
+    assert_eq!(ui.inline(), Some((Field::Assignee, "one two".into())));
     ui.keys("cmd-x");
-    assert_eq!(ui.inline(), Some((Field::Tags, String::new())));
+    assert_eq!(ui.inline(), Some((Field::Assignee, String::new())));
     assert!(ui.read(|app| app.graph().get(&id("a")).is_some()), "⌘X cuts the text, not the node");
     ui.keys("cmd-v cmd-v");
-    assert_eq!(ui.inline(), Some((Field::Tags, "one twoone two".into())));
+    assert_eq!(ui.inline(), Some((Field::Assignee, "one twoone two".into())));
 
     // ⌘Z undoes typing, never the graph, even with nothing left to undo.
     ui.keys("cmd-z cmd-z cmd-z cmd-z cmd-z cmd-z cmd-z");
-    assert_eq!(ui.inline(), Some((Field::Tags, String::new())));
+    assert_eq!(ui.inline(), Some((Field::Assignee, String::new())));
     assert_eq!(ui.node("a").status, Status::Done);
     ui.keys("cmd-shift-z cmd-shift-z");
-    assert_eq!(ui.inline(), Some((Field::Tags, "one two".into())));
+    assert_eq!(ui.inline(), Some((Field::Assignee, "one two".into())));
     ui.keys("enter");
-    assert_eq!(ui.node("a").tags, ["one", "two"]);
+    assert_eq!(ui.node("a").assignee.as_deref(), Some("one two"));
 
     // Back on the canvas the same key undoes the graph.
     ui.keys("cmd-z");
-    assert!(ui.node("a").tags.is_empty());
+    assert_eq!(ui.node("a").assignee, None);
 }
 
 #[gpui::test]
@@ -965,4 +965,100 @@ fn recorded_times_show_in_the_narrowest_inspector(cx: &mut TestAppContext) {
     // Reopening forgets the completion.
     ui.keys("x");
     assert_eq!(ui.node("a").completed_at, None);
+}
+
+#[gpui::test]
+fn tab_saves_a_field_and_opens_the_next(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("p");
+    ui.type_text("u");
+    ui.keys("tab");
+    assert_eq!(ui.node("a").priority, Some(Priority::Urgent));
+    assert_eq!(ui.inline(), Some((Field::Assignee, String::new())));
+    ui.type_text("me");
+    ui.keys("tab tab");
+    assert_eq!(ui.node("a").assignee.as_deref(), Some("me"));
+    assert_eq!(ui.inline(), Some((Field::Tags, String::new())));
+    ui.type_text("gui");
+    ui.keys("tab");
+    assert_eq!(ui.node("a").tags, ["gui"]);
+    // An empty pull request field is passed over, and the order wraps around.
+    assert_eq!(ui.inline(), Some((Field::Pr, String::new())));
+    ui.keys("tab");
+    assert_eq!(ui.inline(), Some((Field::Priority, "urgent".into())));
+    ui.keys("shift-tab shift-tab shift-tab");
+    assert_eq!(ui.inline(), Some((Field::Due, String::new())));
+
+    // A field that cannot be saved keeps the focus.
+    ui.type_text("someday");
+    ui.keys("tab");
+    assert_eq!(ui.inline(), Some((Field::Due, "someday".into())));
+    assert!(ui.read(|app| app.inline.as_ref().unwrap().error.is_some()));
+    ui.keys("escape");
+    // Tab is still the follow-up key on the canvas.
+    ui.keys("tab");
+    assert!(matches!(ui.read(|app| app.prompt.clone()), Some(Prompt::Create(_))));
+}
+
+#[gpui::test]
+fn a_field_offers_values_to_choose_from(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.app.update(ui.cx, |app, cx| {
+        let edit = Edit {
+            assignee: Some(Some("claude".into())),
+            tags: Some(vec!["gui".into(), "core".into()]),
+            ..Edit::default()
+        };
+        app.mutate(cx, |graph| graph.edit(&id("c"), edit));
+    });
+    let choices = |ui: &mut Ui| -> Vec<String> {
+        ui.app.read_with(ui.cx, |app, cx| app.inline_choices(cx).into_iter().map(|c| c.value).collect())
+    };
+    ui.select("a");
+
+    // The arrow keys choose and Enter takes the choice.
+    ui.keys("p");
+    assert_eq!(choices(&mut ui), ["urgent", "high", "medium", "low"]);
+    ui.keys("down down up down enter");
+    assert_eq!(ui.node("a").priority, Some(Priority::High));
+    // Reopened, the list is whole again although the field holds a value; typing narrows it.
+    ui.keys("p");
+    assert_eq!(choices(&mut ui).len(), 4);
+    ui.type_text("l");
+    assert_eq!(choices(&mut ui), ["low"]);
+    // Up from the first entry returns to the typed text, which Enter saves.
+    ui.keys("down up enter");
+    assert_eq!(ui.node("a").priority, Some(Priority::Low));
+
+    // A click takes a choice too.
+    ui.keys("a");
+    assert_eq!(choices(&mut ui), ["claude"]);
+    ui.click_on("choice-0");
+    assert_eq!(ui.node("a").assignee.as_deref(), Some("claude"));
+    assert_eq!(ui.inline(), None);
+
+    // Tags: a space finishes a chip, a choice becomes one, Backspace and × remove one.
+    ui.keys("t");
+    assert_eq!(choices(&mut ui), ["core", "gui"]);
+    ui.type_text("new ");
+    assert_eq!(ui.read(|app| app.inline.as_ref().unwrap().chips.clone()), ["new"]);
+    ui.type_text("g");
+    assert_eq!(choices(&mut ui), ["gui"]);
+    ui.keys("down enter");
+    assert_eq!(ui.inline(), Some((Field::Tags, "new gui".into())));
+    assert_eq!(choices(&mut ui), ["core"]);
+    ui.type_text("x, y");
+    ui.keys("backspace backspace");
+    assert_eq!(ui.inline(), Some((Field::Tags, "new gui".into())));
+    ui.click_on("chip-0-remove");
+    assert_eq!(ui.inline(), Some((Field::Tags, "gui".into())));
+    ui.type_text("last");
+    ui.keys("enter");
+    assert_eq!(ui.node("a").tags, ["gui", "last"]);
+
+    ui.keys("d");
+    ui.type_text("tom");
+    ui.keys("down enter");
+    assert_eq!(ui.node("a").due, Some(crate::dates::today().tomorrow().unwrap()));
 }

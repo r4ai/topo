@@ -706,6 +706,8 @@ impl TopoApp {
             InputEvent::Submit => self.submit_prompt(window, cx),
             InputEvent::Up => self.move_in_list(self.search_index.saturating_sub(1), cx),
             InputEvent::Down => self.move_in_list(self.search_index + 1, cx),
+            // The prompt has one field.
+            InputEvent::Next | InputEvent::Previous | InputEvent::BackspaceEmpty => {}
         }
         cx.notify();
     }
