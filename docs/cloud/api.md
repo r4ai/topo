@@ -111,6 +111,13 @@ environment's token set `TOPO_AGENT`, which the client sends as the
 self-declared, so it distinguishes cooperating agents; it does not
 authenticate them.
 
+`TOPO_AGENT` labels the writer; it does not automatically fill the node's
+`assignee`. Claim with `topo status <id> doing --if todo --assign "$TOPO_AGENT"`,
+reassign with `topo edit <id> --assignee <name>`, and clear the assignment with
+`--no-assignee`. `topo ready --unassigned` finds unclaimed ready tasks and
+`topo ls --pr owner/repo#12 --assignee <name>` finds an agent's linked work.
+These filters run on the fetched snapshot and require no additional API routes.
+
 ### Authorization
 
 The `workspace_members` row for the caller decides access: `owner` and `editor`

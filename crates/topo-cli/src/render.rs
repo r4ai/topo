@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::{Value, json};
+use topo_core::model::pr_label;
 use topo_core::{Graph, Kind, Node, NodeId, Status};
 use topo_jev::organize::{Applied, Proposal};
 
@@ -87,7 +88,8 @@ pub fn node_line(node: &Node) -> String {
     let assignee = node.assignee.as_ref().map(|a| format!("  @{a}")).unwrap_or_default();
     let due = node.due.map(|d| format!("  due {d}")).unwrap_or_default();
     let tags: String = node.tags.iter().map(|t| format!("  #{t}")).collect();
-    format!("{} {}  {kind}{}{priority}{assignee}{due}{tags}", status_mark(node.status), node.id, node.title)
+    let prs: String = node.prs.iter().map(|pr| format!("  PR {}", pr_label(pr))).collect();
+    format!("{} {}  {kind}{}{priority}{assignee}{due}{tags}{prs}", status_mark(node.status), node.id, node.title)
 }
 
 pub fn detail_json(graph: &Graph, node: &Node) -> Value {

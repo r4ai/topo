@@ -163,6 +163,9 @@ fn a_workspace_moves_to_the_cloud_and_back() {
     assert_eq!(two.nodes(), local);
     // The push kept the metadata and the times the files had.
     assert_eq!(two.json(&["show", &design, "--json"]), design_node);
+    assert_eq!(two.ok(&["ls", "--pr", "o/r#1", "--assignee", "alice", "--format", "ids"]), design);
+    assert_eq!(two.ok(&["ready", "--assignee", "alice", "--under", &milestone, "--format", "ids"]), design);
+    assert!(two.ok(&["ready", "--unassigned", "--under", &milestone, "--format", "ids"]).is_empty());
     assert_eq!(two.ok(&["ready"]), one.ok(&["ready"]));
     assert!(two.ok(&["show", &design]).contains("notes"));
 
@@ -242,6 +245,22 @@ fn of_two_agents_claiming_a_task_one_wins() {
     // The claim assigned the task to the winner, and the loser did not overwrite it.
     assert_eq!(dir.json(&["show", &task, "--json"])["assignee"], label);
     assert_eq!(dir.json(&["token", "ls", "--json"]).as_array().unwrap().len(), 3);
+
+    // Attribution and assignment are independent: the same writer can reassign
+    // and release a task without silently claiming it through TOPO_AGENT.
+    let edit = |args: &[&str]| {
+        let output = dir.command(args).env("TOPO_AGENT", "coordinator").output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    edit(&["edit", &task, "--assignee", "reviewer"]);
+    assert_eq!(dir.json(&["show", &task, "--json"])["assignee"], "reviewer");
+    edit(&["edit", &task, "--no-assignee"]);
+    let released = dir.json(&["show", &task, "--json"]);
+    assert!(released.get("assignee").is_none());
+    assert_eq!(released["status"], "doing");
+    let log = dir.json(&["cloud", "log", "--after", "2", "--json"]);
+    assert_eq!(log.as_array().unwrap().len(), 2);
+    assert!(log.as_array().unwrap().iter().all(|change| change["agent"] == "coordinator"));
 }
 
 #[test]

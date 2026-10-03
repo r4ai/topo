@@ -562,7 +562,7 @@ fn metadata_is_added_edited_and_cleared() {
     assert_eq!((&edited["priority"], &edited["assignee"]), (&json!("urgent"), &json!("bob")));
     assert_eq!(edited["prs"], json!([first, third]));
     let shown = fixture.text(&["show", id], "");
-    assert!(shown.contains(&format!("{id}  Task  !urgent  @bob\n")), "{shown}");
+    assert!(shown.contains(&format!("{id}  Task  !urgent  @bob  PR o/r#1  PR o/r#3\n")), "{shown}");
     assert!(shown.contains(&format!("pull requests:\n  {first}\n  {third}\n")), "{shown}");
     // The id is random, so the node is on either line.
     assert!(
@@ -664,6 +664,88 @@ fn a_claim_sets_the_assignee_only_when_the_status_change_holds() {
 
     let done = fixture.json(&["status", "task01", "done", "--assign", "three", "--json"], "");
     assert_eq!((&done["status"], &done["assignee"]), (&json!("done"), &json!("three")));
+}
+
+#[test]
+fn pr_search_normalizes_references_and_combines_with_stdin_and_assignment() {
+    let task = |name: &str, prs: &[&str], assignee: Option<&str>| {
+        let mut n = node(name, Kind::Task, name);
+        n.prs = prs.iter().map(|pr| topo_core::model::normalize_pr(pr).unwrap()).collect();
+        n.assignee = assignee.map(str::to_owned);
+        n
+    };
+    let mut closed = task("closed", &["o/r#1"], None);
+    closed.status = Status::Done;
+    let fixture = Fixture::new(vec![
+        task("a", &["o/r#1", "o/r#2"], Some("codex")),
+        task("b", &["o/r#1"], None),
+        task("c", &["o/r#2"], Some("claude")),
+        task("d", &[], None),
+        closed,
+    ]);
+    for pr in ["o/r#1", " https://GitHub.com/o/r/pull/1/files?diff=split#top "] {
+        assert_eq!(fixture.ids(&["ls", "--pr", pr, "--format", "ids"], ""), ["a", "b"]);
+    }
+    assert_eq!(fixture.ids(&["ls", "--all", "--pr", "o/r#1", "--format", "ids"], ""), ["a", "b", "closed"]);
+    assert_eq!(fixture.ids(&["ls", "--pr", "o/r#1", "--pr", "o/r#2", "--format", "ids"], ""), ["a"]);
+    assert_eq!(fixture.ids(&["ls", "--pr", "o/r#1", "--pr", "o/r#1", "--format", "ids"], ""), ["a", "b"]);
+    assert_eq!(fixture.ids(&["ls", "-", "--pr", "o/r#1", "--format", "ids"], "b c"), ["b"]);
+    assert_eq!(fixture.ids(&["ls", "--pr", "o/r#1", "--assignee", " codex ", "--format", "ids"], ""), ["a"]);
+    assert_eq!(fixture.ids(&["ls", "--pr", "o/r#1", "--unassigned", "--format", "ids"], ""), ["b"]);
+    assert_eq!(fixture.ids(&["ls", "--pr", "o/r#9", "--format", "ids"], ""), Vec::<String>::new());
+    assert_eq!(
+        fixture.json(&["ls", "--pr", "o/r#2", "--assignee", "codex", "--format", "jsonl"], "")["prs"],
+        json!(["https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2"])
+    );
+    assert!(fixture.text(&["ls", "--pr", "o/r#1"], "").contains("@codex  PR o/r#1  PR o/r#2"));
+    assert_eq!(fixture.text(&["ls", "--pr", "o/r#1", "--unassigned", "--format", "tsv"], ""), "b\ttask\ttodo\t\tb\n");
+    let before = fixture.files();
+    failure(fixture.run(&["ls", "--pr", "nope"], ""), "invalid pull request");
+    assert_eq!(fixture.files(), before);
+}
+
+#[test]
+fn ready_filters_assignment_and_prs_without_including_blocked_or_closed_tasks() {
+    let mut assigned = node("a", Kind::Task, "Assigned");
+    assigned.assignee = Some("codex".into());
+    assigned.prs = vec!["https://github.com/o/r/pull/1".into()];
+    assigned.milestones = vec![id("m")];
+    assigned.priority = Some(Priority::High);
+    let mut unassigned = node("b", Kind::Task, "Unassigned");
+    unassigned.milestones = vec![id("m")];
+    let mut blocked = assigned.clone();
+    blocked.id = id("c");
+    blocked.depends_on = vec![id("b")];
+    let mut closed = assigned.clone();
+    closed.id = id("d");
+    closed.status = Status::Done;
+    let mut outside = assigned.clone();
+    outside.id = id("e");
+    outside.milestones.clear();
+    outside.priority = Some(Priority::Urgent);
+    let fixture = Fixture::new(vec![assigned, unassigned, blocked, closed, outside, node("m", Kind::Milestone, "v1")]);
+    assert_eq!(fixture.ids(&["ready", "--assignee", " codex ", "--format", "ids"], ""), ["a", "e"]);
+    assert_eq!(fixture.ids(&["ready", "--unassigned", "--format", "ids"], ""), ["b"]);
+    assert_eq!(fixture.ids(&["ready", "--assignee", "codex", "--under", "m", "--format", "ids"], ""), ["a"]);
+    assert_eq!(fixture.ids(&["ready", "--assignee", "codex", "--sort", "priority", "--format", "ids"], ""), ["e", "a"]);
+    assert_eq!(
+        fixture.ids(&["ready", "--pr", "https://github.com/o/r/pull/1/files", "--format", "ids"], ""),
+        ["a", "e"]
+    );
+    assert_eq!(fixture.ids(&["ready", "--pr", "o/r#1", "--unassigned", "--format", "ids"], ""), Vec::<String>::new());
+    assert_eq!(fixture.json(&["ready", "--assignee", "codex", "--under", "m", "--json"], "")[0]["assignee"], "codex");
+    assert_eq!(
+        fixture.json(&["ready", "--assignee", "codex", "--under", "m", "--format", "jsonl"], "")["assignee"],
+        "codex"
+    );
+    assert!(fixture.text(&["ready", "--assignee", "codex", "--under", "m"], "").contains("@codex  PR o/r#1"));
+    for (args, error) in [
+        (vec!["ready", "--assignee", "codex", "--unassigned"], "cannot be used with"),
+        (vec!["ready", "--assignee", " "], "invalid assignee"),
+        (vec!["ready", "--pr", "nope"], "invalid pull request"),
+    ] {
+        failure(fixture.run(&args, ""), error);
+    }
 }
 
 #[test]

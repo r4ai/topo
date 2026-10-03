@@ -136,6 +136,8 @@ enum Command {
     Ready {
         #[arg(long, value_name = "ID")]
         under: Option<String>,
+        #[command(flatten)]
+        metadata: MetadataFilters,
         #[arg(long, value_enum)]
         sort: Option<Sort>,
         #[arg(long, value_enum, conflicts_with = "json")]
@@ -270,12 +272,30 @@ struct ListFilters {
     /// Only nodes without a priority.
     #[arg(long)]
     no_priority: bool,
+    #[command(flatten)]
+    metadata: MetadataFilters,
+}
+
+/// Assignment and PR filters shared by node listings and ready tasks.
+#[derive(Args)]
+struct MetadataFilters {
     /// Only nodes assigned to NAME.
-    #[arg(long, value_name = "NAME", conflicts_with = "unassigned")]
+    #[arg(long, value_name = "NAME", conflicts_with = "unassigned", value_parser = normalize_assignee)]
     assignee: Option<String>,
     /// Only nodes without an assignee.
     #[arg(long)]
     unassigned: bool,
+    /// Require every supplied pull request (URL or owner/repo#123; repeatable).
+    #[arg(long = "pr", value_name = "PR", value_parser = normalize_pr)]
+    prs: Vec<String>,
+}
+
+impl MetadataFilters {
+    fn matches(&self, node: &Node) -> bool {
+        self.assignee.as_ref().is_none_or(|name| node.assignee.as_ref() == Some(name))
+            && (!self.unassigned || node.assignee.is_none())
+            && self.prs.iter().all(|pr| node.prs.contains(pr))
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -429,7 +449,6 @@ fn list_nodes<'a>(graph: &'a Graph, input: Option<&str>, stdin: &str, filters: L
         anyhow::ensure!(graph.get(id).unwrap().kind == Kind::Milestone, "{id} is not a milestone");
     }
     let title = filters.title.map(|s| s.to_lowercase());
-    let assignee = filters.assignee.as_deref().map(normalize_assignee).transpose()?;
     Ok(graph
         .nodes()
         .filter(|n| input.as_ref().is_none_or(|ids| ids.contains(&n.id)))
@@ -449,8 +468,7 @@ fn list_nodes<'a>(graph: &'a Graph, input: Option<&str>, stdin: &str, filters: L
         .filter(|n| title.as_ref().is_none_or(|title| n.title.to_lowercase().contains(title)))
         .filter(|n| filters.priorities.is_empty() || n.priority.is_some_and(|p| filters.priorities.contains(&p)))
         .filter(|n| !filters.no_priority || n.priority.is_none())
-        .filter(|n| assignee.is_none() || n.assignee == assignee)
-        .filter(|n| !filters.unassigned || n.assignee.is_none())
+        .filter(|n| filters.metadata.matches(n))
         .collect())
 }
 
@@ -605,9 +623,10 @@ fn run(cli: Cli) -> Result<()> {
             let node = ws.graph.get(&ws.graph.resolve(&id)?).unwrap();
             print(json, render::detail_json(&ws.graph, node), || render::detail_text(&ws.graph, node))?;
         }
-        Command::Ready { under, sort, format } => {
+        Command::Ready { under, metadata, sort, format } => {
             let scope = under.map(|u| ws.graph.resolve(&u)).transpose()?;
             let mut nodes = ws.graph.ready_tasks(scope.as_ref());
+            nodes.retain(|n| metadata.matches(n));
             sort_nodes(&mut nodes, sort);
             print_list(&ws.graph, &nodes, json, format.unwrap_or(render::ListFormat::Text), false)?;
         }

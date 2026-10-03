@@ -292,18 +292,25 @@ topo add "Fix login" --priority high --assignee codex
 topo edit <id> --priority urgent --pr owner/repo#12
 topo status <id> doing --if todo --assign codex
 topo ready --sort priority
+topo ready --unassigned --format ids
+topo ready --assignee codex --format jsonl
+topo ls --pr owner/repo#12 --assignee codex
 topo ls --no-priority --format jsonl
 topo edit <id> --no-priority
 topo status <id> done
 topo show <id> # includes its completion time
 ```
 
+`ls` and `ready` accept `--assignee <name>`, `--unassigned`, and repeatable `--pr <url|owner/repo#N>`. PR filters use the same canonical URLs as registration; multiple `--pr` flags require every reference. Filters combine with AND, including stdin IDs for `ls` and `--under` for `ready`. Text listings show the assignee and compact PR labels; JSON/JSONL include the saved URLs. TSV retains its five columns.
+
+`TOPO_AGENT` identifies the writer in the cloud change log; it does not set a task's assignee. Use `--assign "$TOPO_AGENT"` explicitly when claiming, `edit --assignee <name>` to reassign, and `edit --no-assignee` to release the assignment. Clearing the assignee leaves the status unchanged.
+
 ## Command Reference
 
 | Command | Description | Common Flags |
 | :--- | :--- | :--- |
 | `topo init` | Initialize `.topo` workspace | |
-| `topo ready` | List tasks unblocked and ready to start | `--under <id>`, `--sort priority`, `--format <text\|ids\|tsv\|jsonl>` |
+| `topo ready` | List tasks unblocked and ready to start | `--under <id>`, `--assignee`, `--unassigned`, `--pr`, `--sort priority`, `--format <text\|ids\|tsv\|jsonl>` |
 | `topo milestones` | List milestones with progress bar and critical path | `--format <text\|ids\|tsv\|jsonl>` |
 | `topo add <title>` | Add task or milestone | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--priority <low\|medium\|high\|urgent>`, `--assignee <name>`, `--pr <url\|owner/repo#N>`, `--note <text>` |
 | `topo link <from> <to>` | Make `<from>` depend on `<to>` | |
@@ -313,7 +320,7 @@ topo show <id> # includes its completion time
 | `topo status <id> <st>` | Update status (`todo`, `doing`, `done`, `dropped`) | `--if <st>` (fail unless the node has this status), `--assign <name>` (set the assignee in the same atomic write) |
 | `topo edit <id>` | Modify node fields | `--title`, `--due`, `--no-due`, `--tag`, `--priority`, `--no-priority`, `--assignee`, `--no-assignee`, `--pr`, `--unpr`, `--note` |
 | `topo rm <id>` | Delete node and adjacent edges | |
-| `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
+| `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--pr`, `--sort priority`, `--format` |
 | `topo show <id>` | Show node details (priority, assignee, pull requests, created/updated/completed times) and adjacent nodes | |
 | `topo deps <id>` | List prerequisites, including milestone members | `--transitive`, `--format`, `--json` |
 | `topo dependents <id>` | List nodes depending on a node | `--transitive` (also follows membership), `--format`, `--json` |

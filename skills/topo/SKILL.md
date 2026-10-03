@@ -67,6 +67,9 @@ topo edit <id> --priority urgent            # --no-priority clears it
 topo edit <id> --assignee bob               # --no-assignee clears it
 topo edit <id> --pr owner/repo#13 --unpr owner/repo#12   # add / remove one link; --unpr fails if it is not linked
 topo status <id> doing --assign alice       # status and assignee in one atomic write
+topo ls --pr owner/repo#13 --assignee alice # tasks linked to the PR and assigned to alice
+topo ready --unassigned                    # ready tasks nobody is assigned to
+topo ready --assignee alice --pr owner/repo#13
 ```
 
 ## Pipelines
@@ -84,6 +87,9 @@ topo status <id> doing --assign alice       # status and assignee in one atomic 
 - `--ready` selects open nodes with closed prerequisites; `--blocked` selects open nodes whose prerequisites remain open. These flags are mutually exclusive.
 - `--title <text>` matches a case-insensitive substring.
 - Repeat `--priority <p>` to select nodes with any of the priorities; `--no-priority` selects those without one and cannot be combined with `--priority`. `--assignee <name>` selects that assignee's nodes and `--unassigned` those without one; the two are mutually exclusive.
+- Repeat `--pr <url|owner/repo#N>` to require every supplied PR. References are normalized as on registration; a `/files` URL and its shorthand match the same stored PR. Text listings include compact PR labels, and JSON/JSONL retain full URLs; TSV remains five columns.
+
+`ready` also accepts `--assignee`, `--unassigned`, and repeatable `--pr`, combined with AND and with `--under`. It still selects only open tasks with closed requirements.
 
 `ls` and `ready` take `--sort priority`: highest first, nodes without a priority last, otherwise in the usual order. `topo ready --sort priority --format ids | head -1` is the most important task that can start now.
 
@@ -128,6 +134,7 @@ When `.topo/config.toml` has a `[cloud]` table, the graph lives on a server and 
 - Claim a task before working on it: `topo status <id> doing --if todo --assign "$TOPO_AGENT"`. The status and the assignee change in one atomic write, so it fails without touching the assignee if another agent claimed the task first; pick the next one from `topo ready`. A plain `topo status <id> doing` would succeed for both of you. `topo ls --assignee "$TOPO_AGENT"` lists what you hold, and `topo ls --ready --unassigned` what nobody does.
 - Don't cache the graph across steps: re-run `topo ready` after each task, since other agents close and add nodes.
 - `topo cloud log` shows who changed what. Set `TOPO_AGENT` to a label of your own so your writes are attributed to you.
+- `TOPO_AGENT` only labels changes; it never automatically assigns a task. Pass it explicitly to `--assign` when claiming. Reassign with `edit --assignee <name>` or clear with `edit --no-assignee`; clearing does not change the task's status.
 - There are no node files in a linked workspace, so don't read or edit `.topo/nodes`; use `topo show <id>` and `topo edit <id> --note ...`.
 
 ## Showing the graph

@@ -292,18 +292,25 @@ topo add "ログインを修正" --priority high --assignee codex
 topo edit <id> --priority urgent --pr owner/repo#12
 topo status <id> doing --if todo --assign codex
 topo ready --sort priority
+topo ready --unassigned --format ids
+topo ready --assignee codex --format jsonl
+topo ls --pr owner/repo#12 --assignee codex
 topo ls --no-priority --format jsonl
 topo edit <id> --no-priority
 topo status <id> done
 topo show <id> # 完了日時も確認できる
 ```
 
+`ls` と `ready` は `--assignee <name>`、`--unassigned`、繰り返し指定できる `--pr <url|owner/repo#N>` に対応する。PR の絞り込みも登録時と同じ URL 正規化を使い、複数の `--pr` はすべての参照を持つノードを選ぶ。各フィルタは AND で結合し、`ls` の stdin ID や `ready --under` とも併用できる。テキスト一覧には担当者と短い PR ラベル、JSON/JSONL には保存済み URL を表示する。TSV は既存の5列を維持する。
+
+`TOPO_AGENT` はクラウドの変更ログに記録する変更者のラベルで、タスクの担当者を自動設定しない。claim 時は `--assign "$TOPO_AGENT"` を明示し、担当変更は `edit --assignee <name>`、解除は `edit --no-assignee` で行う。担当解除だけではステータスは変わらない。
+
 ## コマンドリファレンス
 
 | コマンド | 説明 | 主要引数・フラグ |
 | :--- | :--- | :--- |
 | `topo init` | ワークスペース（`.topo`）の初期化 | |
-| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>`, `--sort priority`, `--format <text\|ids\|tsv\|jsonl>` |
+| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>`, `--assignee`, `--unassigned`, `--pr`, `--sort priority`, `--format <text\|ids\|tsv\|jsonl>` |
 | `topo milestones` | マイルストーン一覧・進捗率・クリティカルパスの表示 | `--format <text\|ids\|tsv\|jsonl>` |
 | `topo add <title>` | タスクまたはマイルストーンの作成 | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--priority <low\|medium\|high\|urgent>`, `--assignee <name>`, `--pr <url\|owner/repo#N>`, `--note <text>` |
 | `topo link <from> <to>` | `<from>` が `<to>` に依存するエッジを追加 | |
@@ -313,7 +320,7 @@ topo show <id> # 完了日時も確認できる
 | `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | `--if <st>`（現在のステータスが一致しなければ失敗）, `--assign <name>`（同じアトミックな書き込みで担当者を設定） |
 | `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--priority`, `--no-priority`, `--assignee`, `--no-assignee`, `--pr`, `--unpr`, `--note` |
 | `topo rm <id>` | ノードおよび接続エッジの削除 | |
-| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
+| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--pr`, `--sort priority`, `--format` |
 | `topo show <id>` | ノードの詳細（優先度・担当者・プルリクエスト・作成/更新/完了日時）・隣接ノード・メモの表示 | |
 | `topo deps <id>` | 前提ノードの一覧（マイルストーンのメンバーも含む） | `--transitive`, `--format`, `--json` |
 | `topo dependents <id>` | 指定ノードに依存するノードの一覧 | `--transitive`（所属関係もたどる）, `--format`, `--json` |
