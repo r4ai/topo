@@ -1,26 +1,30 @@
-# topo
-
-すべてのタスクとマイルストーンを単一の有向非巡回グラフ（DAG）として管理する、ローカルファーストのタスク管理システム。
-
-[English](README.md) | 日本語
-
-[![Rust](https://img.shields.io/badge/rust-2024_edition-orange?style=flat-square&logo=rust)](https://www.rust-lang.org/)
-[![GPUI](https://img.shields.io/badge/GUI-GPUI-black?style=flat-square)](https://zed.dev/)
-[![Storage: Markdown](https://img.shields.io/badge/storage-Markdown%20%2F%20Local--First-blue?style=flat-square)](#1ノード1ファイルのgit親和ストレージ)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+<div align="center">
+  <img src="assets/branding/topo-app-icon.png" width="96" height="96" alt="topo icon" />
+  <h1>topo</h1>
+  <p>タスクの依存関係をDAGで解きほぐす、ローカルファーストのタスクマネージャー</p>
+  <p>
+    <a href="README.md">English</a> | <strong>日本語</strong>
+  </p>
+  <p>
+    <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-2024_edition-orange?style=flat-square&logo=rust" alt="Rust" /></a>
+    <a href="https://zed.dev/"><img src="https://img.shields.io/badge/GUI-GPUI-black?style=flat-square" alt="GPUI" /></a>
+    <img src="https://img.shields.io/badge/storage-Markdown%20%2F%20Local--First-blue?style=flat-square" alt="Storage: Markdown" />
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License: MIT" /></a>
+  </p>
+</div>
 
 https://github.com/user-attachments/assets/3fc7a9c6-5b60-459d-b1a9-038c4c9115a7
 
-## 概要
+## なぜ topo なのか
 
-一般的なToDoリストは「フラットな一覧」か「階層フォルダ」でタスクを管理する。  
-しかし、現実のプロジェクトにおけるタスクは「Aが完了しないとBに着手できない」という依存関係を持つ。
+一般的なToDoリストは「フラットな一覧」や「フォルダ分け」でタスクを管理する。  
+しかし、現実のプロジェクトにおけるタスクは「Aが完了しないとBに着手できない」という前提条件（依存関係）を持つ。
 
-リストやフォルダによる管理では、タスクが増えるにつれて「今どれに着手すべきか」の判断が困難になる。  
-依存関係が不可視なため、着手不能なタスクに時間を奪われたり、重要なボトルネックを見落としたりしやすい。
+依存関係が見えないままタスクが増えると、何から手をつけるべきか判断できなくなる。  
+まだ着手できないタスクに視界を奪われ、納期のボトルネックとなる作業連鎖を見落としやすい。
 
-`topo` は、タスク間の依存関係（`depends_on`）とマイルストーンの構成関係（`in`）をDAGとしてモデル化する。  
-トポロジカルソートにより、前提タスクがすべて完了した「今すぐ着手できるタスク」のみを抽出する。
+`topo` は、タスクとマイルストーンを単一のDAG（有向非巡回グラフ）としてモデル化する。  
+トポロジカルソートにより、前提タスクがすべて完了した「今すぐ着手できるタスク」だけを自動抽出する。
 
 ```mermaid
 flowchart LR
@@ -43,326 +47,117 @@ flowchart LR
     t5 -.-> m1
 ```
 
-上記の状態において、`topo ready` を実行すると着手可能なタスク（`DB設計`、`UI設計`）のみが出力される。  
-`DB設計` を完了すると、ブロックされていた `API実装` が自動的に着手可能状態へ遷移する。
+上記の状態から `topo ready` を実行すると、着手可能なタスク（`DB設計` と `UI設計`）のみが出力される。  
+`DB設計` を完了すると、ブロックされていた `API実装` が自動的に着手可能状態へ移行する。
 
-## 特徴
+## 主な特徴
 
-### 依存関係に基づく着手可能タスクの抽出（`topo ready`）
+- **今できる作業に集中（`topo ready`）**
+  - 前提がすべて完了したタスクのみを表示
+  - ブロック中のタスクを隠し、認知的負荷を最小化
+  - サイクル（循環依存）の混入は書き込み時に自動防止
+- **クリティカルパス分析**
+  - マイルストーン達成までの最長依存経路を自動算出
+  - プロジェクト全体の遅延に直結するボトルネックを可視化
+  - 進捗バーと残りステップ数を即座に把握可能
+- **Git親和性の高いMarkdownストレージ**
+  - 1タスク1ファイル（`.topo/nodes/<id>.md`）形式で保存
+  - YAMLフロントマターとMarkdown本文で構成
+  - ファイル分割により、複数人でのブランチ運用でもマージコンフリクトを最小化
+- **3つの高速インターフェース**
+  - **CLI**: 全コマンドで `--json`、一覧系コマンドで `--format ids` をサポートし、Unixパイプライン連携に最適
+  - **TUI**: ターミナル上で素早く状況を把握・更新できるキーボード完結型ダッシュボード
+  - **Native GUI**: GPUI（Zedエディタのレンダリング基盤）を採用したGPUアクセラレーションキャンバス。滑らかなパン・ズーム、ドラッグ＆ドロップによる依存線接続、リアルタイムファイル同期を提供
+- **AIエージェント親和性**
+  - トランザクション一括更新（`topo apply`）により、複数タスクの生成・接続をアトミックに適用
+  - Claude CodeやCodexなどのAIコーディングエージェント向け指示セット（`SKILL.md`）を同梱
+- **シームレスなクラウド同期（オプション）**
+  - Cloudflare Workers + D1 によるエッジ同期に対応
+  - 複数デバイスや並行稼働するAIエージェント間で単一グラフを共有
 
-- 前提条件がすべて満たされたタスクのみをフィルタリング
-- 他タスクにブロックされている作業が視界に入らず、次に着手すべき作業に集中可能
-- サイクル（循環参照）の発生はモデル検証により未然に防止
+## インストールとアップデート
 
-### クリティカルパスとマイルストーン進捗の算出
+### バイナリダウンロード
 
-- マイルストーン達成までの最長依存経路（クリティカルパス）を自動計算
-- 全体の工期に直結するボトルネックタスクの特定
-- マイルストーンの進捗率（完了数/全タスク数）および残りステップ数を可視化
+[GitHub Releases](https://github.com/r4ai/topo/releases) から Linux、macOS、Windows 向けのビルド済みCLIバイナリ、および macOS・Windows 向けGUIインストーラーを入手できる。
 
-### 1ノード1ファイルのGit親和ストレージ
-
-- 各タスク・マイルストーンは `.topo/nodes/<id>.md` として保存
-- YAMLフロントマター（メタデータ）とMarkdown本文（メモ・詳細）で構成
-- 単一ファイル分割により、Gitのマージコンフリクトを最小化
-- ブランチ運用、Pull Requestでの差分レビュー、外部エディタでの閲覧が容易
-
-### 3種類のインターフェース
-
-- **CLI**: スクリプト連携やパイプライン処理に適したコマンド群。全コマンドで `--json` をサポート
-- **TUI**: ターミナル上で動作するキーボード主体の軽量ダッシュボード
-- **Native GUI**: GPUI（ZedエディタのUIエンジン）を採用したGPUアクセラレーション動作のグラフエディタ。ズーム、パン、ドラッグ＆ドロップによる依存線接続、リアルタイムファイル同期に対応
-
-### AIエージェントおよびローカル決定モデル連携
-
-- **エージェント向けスキル**: AIエージェントがタスクを分解・登録・実行するための指示セット（`SKILL.md`）を同梱
-- **アトミック更新（`topo apply`）**: JSON配列による複数タスク・依存関係の一括トランザクション更新
-- **モデル支援によるグラフ整理（`topo organize`）**: Jev互換の決定モデル（System One）と連携し、欠落している依存関係の推定、未分類タスクの配置、重複タスクの検出を提案
-
-## クイックスタート
-
-### インストール
-
-Linux・Windows・macOS 向けCLIのビルド済みバイナリと、macOS・Windows向けGUIインストーラーを
-[GitHub Releases](https://github.com/r4ai/topo/releases)から取得できる。
-インストール・チェックサム検証・リリース手順は[リリースガイド](docs/releasing.md)を参照。
-
-ソースからビルドする場合は、`rust-toolchain.toml`で固定したRust 2024 edition対応ツールチェーンを使用する。
+### ソースからビルド
 
 ```bash
-# クローン
 git clone https://github.com/r4ai/topo.git
 cd topo
 
 # CLIのインストール
 cargo install --path crates/topo-cli
 
-# GUIのビルドと起動（任意）
+# ネイティブGUIの起動（任意）
 cargo run -p topo-gui --release
 ```
 
-### 基本操作フロー
+### アップデート
 
 ```bash
-# 1. ワークスペースの作成（.topo ディレクトリが生成される）
+# ソースツリーから最新版を再インストール
+git pull
+cargo install --path crates/topo-cli --force
+```
+
+詳細な検証手順やパッケージ情報は [リリースガイド](docs/releasing.md) を参照。
+
+## クイックスタート
+
+```bash
+# 1. ワークスペースの初期化（.topo ディレクトリが作成される）
 topo init
 
-# 2. マイルストーンの作成（生成されたIDが出力される）
+# 2. マイルストーンの作成
 topo add "v1.0 リリース" --milestone
 # => a1b2c3
 
-# 3. タスクの作成とマイルストーンへの割り当て
+# 3. 前提タスクと後続タスクの登録
 topo add "設計書作成" --in a1b2c3
 # => d4e5f6
 
-# 4. 依存関係を指定して後続タスクを追加
-topo add "実装作業" --dep d4e5f6 --in a1b2c3
+topo add "API実装" --dep d4e5f6 --in a1b2c3
 # => 7g8h9i
 
-# 5. 今すぐ着手できるタスクの確認（設計書作成のみが表示される）
+# 4. 今すぐ着手できるタスクの確認（設計書作成のみが表示される）
 topo ready
 # => [ ] d4e5f6  設計書作成
 
-# 6. ステータスの更新
-topo status d4e5f6 doing
+# 5. ステータスを完了に更新
 topo status d4e5f6 done
 
-# 7. 再度 ready を確認（実装作業がアンブロックされて表示される）
+# 6. 再度 ready を確認（API実装が自動的にアンブロック）
 topo ready
-# => [ ] 7g8h9i  実装作業
+# => [ ] 7g8h9i  API実装
 
-# 8. マイルストーンの進捗とクリティカルパスを確認
+# 7. 進捗状況とクリティカルパスの確認
 topo milestones
 # => [ ] a1b2c3  ◆ v1.0 リリース  █████░░░░░ 1/2  1 step(s) left on critical path
 
-# 9. 依存グラフの出力（Mermaid形式またはTree形式）
+# 8. 依存グラフの出力
 topo graph --format mermaid
-topo graph --format tree
 ```
 
-## インターフェース
+## 技術スタック
 
-### CLI
+高速性と低遅延を追求したアーキテクチャを採用している。
 
-構造化出力には `--json` を使う。`ls`・`ready`・`milestones` とグラフ走査コマンドでは `--format text|ids|tsv|jsonl` も選べる。一覧の既定出力はリダイレクト時もテキスト、走査コマンドはID列となる。
-
-`status`・`edit`・`rm`・`join`・`leave`・`link`・`unlink` の第1引数に `-` を指定すると、標準入力の空白区切りID列を一括処理する。IDと変更を全件検証してから保存し、空入力では何も変更しない。`topo ls -` では入力されたIDを一覧のフラグで絞り込める。
-
-```bash
-topo ready --format ids | topo status - doing
-topo ls --tag gui --format ids | topo ls - --due-before 2026-10-31 --format ids | topo join - a1b2c3
-topo deps a1b2c3 --transitive | topo ls - --blocked --format tsv
-topo ready --format jsonl | jq -r 'select(.status == "todo") | .id'
-```
-
-### TUI (`topo tui`)
-
-ターミナル上で動作するダッシュボード。
-
-- `1`〜`4`: ビュー切り替え（Ready, Milestones, Open, All）
-- `Tab`: 次のビューへ切り替え
-- `j` / `k` または 矢印キー: カーソル移動
-- `Space`: 次のステータスへ循環変更（`todo` → `doing` → `done` → `todo`）
-- `x`: ステータスを直接 `done` に変更
-- `d`: ステータスを直接 `dropped` に変更
-- `u`: ステータスを直接 `todo` に変更
-- `q` / `Esc`: 終了
-
-### Native GUI (`topo-gui`)
-
-Zedエディタのレンダリング基盤であるGPUIによるネイティブデスクトップアプリ。外部のCLIやGitによる変更をリアルタイムに検知して画面を更新する。
-
-- リポジトリ選択:
-  - ツールバーのリポジトリ名、File → Open Repository、`Cmd+O`（Linux/Windows は `Ctrl+O`）からフォルダ選択・最近使った対象の再選択
-  - 選んだフォルダ自身の `.topo` を開く（Git リポジトリでなくても可）。既存のクラウドリンクを使用し、未初期化なら **Initialize workspace here** で明示的に初期化
-  - 起動時の優先順位: `TOPO_DIR`（ワークスペースディレクトリを直接指定）→ 起動引数（祖先の `.topo` を探索）→ 前回正常に開いた対象 → cwd（祖先を探索）。対象なし・不存在・接続失敗でも終了せず選択画面を表示
-  - 履歴は正規化したワークスペースパスを重複排除して直近10件保存。右パネル幅と同じユーザー設定 `topo-gui/config.toml` を使用（`TOPO_CONFIG_DIR` で保存ディレクトリを変更可）。タスクデータ・認証情報は履歴に保存しない
-  - キャンセルは現在の対象と入力途中の内容を保持。読込失敗でも元の対象を保持。切り替え成功時は未確定の欄・ノート・作成/検索入力を破棄し、選択・提案・undo/redo をリセットして新しいグラフを Fit。同じ対象の再選択は編集状態を保持
-- クラウド同期:
-  - アクティブな編集画面では5秒間隔。非アクティブ・最小化・非表示、リポジトリ選択画面で隠れている編集画面では新しい定期取得を停止し、復帰時に即時同期
-  - 対象ごとに同時取得は1件。開始済みの取得は安全に完了でき、連続する復帰イベントはまとめる。切り替え時は旧スケジューラを破棄し、旧応答を無効化
-  - 失敗時は10・20・40秒、最大60秒まで再試行間隔を延ばし、同じ通信障害のエラー表示を繰り返さない。復帰時は即再試行。変更のない応答では再描画せず、明示的な保存は定期取得とは独立して実行
-- キャンバス操作:
-  - ドラッグ（背景・カード・中ボタン） / トラックパッドスクロール: キャンバスのパン
-  - マウスホイール / ピンチ / `Cmd` + スクロール: ズーム（ポインター位置中心）
-  - 2本指ダブルタップ: 全体表示と実寸表示の切り替え
-  - `Cmd+=` / `Cmd+-` / `Cmd+0`: ズームイン / ズームアウト / 実寸表示
-  - `f`: キャンバス全体を表示（Fit）
-- 右パネル（インスペクタ）:
-  - 左端をドラッグ: パネル幅を変更（キャンバスが潰れないようクランプ）
-  - 選んだ幅はユーザー設定に保存され、次回起動時も保持（ワークスペースには保存しない）
-  - タイトルは最大3行で折り返し、溢れる1行表示は末尾を `…` に統一
-  - タイトルと DETAILS の各行はその場で編集: クリックするか対応キー（`Enter` タイトル、`p` 優先度、`a` 担当者、`d` 期日、`t` タグ）を押す。`Enter` で確定、`Esc` または他の場所のクリックでキャンセル。保存できない入力は欄を開いたまま理由を行の下に表示
-  - 入力欄はコードエディタの補完のように動く: 下の行を動かさない浮動リストに、優先度、ワークスペースで使われている担当者とタグ、入力に応じた期日（`3` → `+3d`・`+3w`・`+3m`・3日、`fr` → `friday`）を表示。先頭の一致がハイライトされ、欄内に薄い文字で補完され、`Enter` で確定。`↓` / `↑` またはクリックで別の候補を選ぶ。`Esc` でリストを閉じると入力した文字をそのまま保存でき、もう一度 `Esc` でキャンセル
-  - タグはチップとして編集: スペースかカンマで入力どおりに確定、空の欄で `Backspace` を押すと最後のタグを削除、`×` で個別に削除
-  - `Tab` / `Shift+Tab` で欄を保存して次 / 前の欄へ移動（タイトル → 優先度 → 担当者 → 期日 → タグ → PR）
-  - NOTES はパネル内で編集（クラウドのワークスペースでも可）: クリックするか `e` を押す。`Enter` で改行、`Cmd+Enter` で保存。エディタを離れる操作（他の場所のクリック、別のノードの選択）でも保存され、未確定の内容を破棄するのは `Esc` またはリポジトリ切り替え成功時
-  - 作成・更新・完了日時をローカルタイムゾーンで読み取り専用表示（日時の記録より前のノードは `Unknown`）
-  - PULL REQUESTS に関連 PR を一覧表示: `g` または `+` で登録（URL か `owner/repo#123`）、クリックでブラウザで開く、`×` で解除
-- ノード操作:
-  - クリック: ノードを選択（`Cmd` / `Ctrl` + クリックで複数選択、ステータス変更や削除を一括適用）
-  - `n`: 新規タスクの作成
-  - `m`: 新規マイルストーンの作成
-  - `Tab`: 選択ノードの後続タスク（follow-up）を作成
-  - `Shift+Tab`: 選択ノードの前提タスク（prerequisite）を作成
-  - `Shift` + ドラッグ または ハンドルからドラッグ: 依存関係の接続（タスクをマイルストーンに落とすとメンバーに追加、何もない場所に落とすと後続タスクを作成）
-  - `l` / `Shift+l`: 既存ノードを一覧から選び、前提 / 後続として接続
-  - `i`: タスクをマイルストーンに追加（マイルストーン選択時はメンバーのタスクを追加）
-  - `Space`: ステータスの循環切り替え
-  - `x`: `done` 状態のトグル
-  - `1`〜`4`: ステータスの直接指定（Todo, Doing, Done, Dropped）
-  - `p` / `a` / `d` / `t`: 優先度 / 担当者 / 期日 / タグを右パネルで編集
-  - `g`: PR を紐付ける
-  - `Shift+p`: 指定した優先度未満のノードを薄く表示（urgent → high 以上 → medium 以上 → 優先度あり → すべて）
-  - `Enter` / `r` / `F2` / ダブルクリック: タイトルを右パネルで編集
-  - `e`: ノートを右パネルで編集
-  - `o`: ノードの Markdown ファイル（ノート）を既定のエディタで開く（クラウドのワークスペースにはファイルがないため右パネルで編集）
-  - 矢印キー: 依存関係に沿って（左右）または同じ列の中で（上下）選択を移動
-  - `c`: 選択ノードを中央に表示（複数選択時は全体を表示）
-  - `Backspace` / `Delete`: ノードの削除
-  - `Cmd+A`: 全ノードを選択（優先度フィルタで薄くなっていないもの）
-  - `Cmd+C` / `Cmd+X` / `Cmd+V`: 選択ノードのコピー / 切り取り / 貼り付け。貼り付けは新しい ID の `todo` ノードとして複製し、複製同士のリンクを保つ。担当者・PR・日時はコピーしない。他のアプリには Markdown のリストとして渡る
-  - `Cmd+Z` / `Cmd+Shift+Z`: アンドゥ / リドゥ
-  - 入力欄（プロンプト、検索、右パネルの行）にフォーカスがある間は、`Cmd+A/C/X/V/Z/Shift+Z` はその文字列に作用し、キャンバスのキーは文字として入力される。Edit メニューも同じ規則に従い、実行できない項目は無効になる
-  - `/` または `Cmd+K` / `Cmd+F`: タイトル・タグ・IDによる検索
-  - `?`: キーバインドヘルプの表示
-
-#### ヘッドレススクリーンショット
-
-`screenshot` フィーチャでビルドすると、ディスプレイやOSの画面収録権限なしでウィンドウをオフスクリーン描画して PNG に保存できます:
-
-```bash
-cargo run -p topo-gui --features screenshot -- \
-  --screenshot qa.png --width 1360 --height 860 --select <id>
-```
-
-`--select` はID1つまたはカンマ区切りの複数（存在しないIDはエラー）、`--inspector-width` はパネル幅の指定（省略時は保存済みの設定を使わず、ウィンドウ幅から決定）、`--edit <field>` と `--type <text>` は選択ノードのタイトルまたは DETAILS の行を編集状態で開き、`--edit-notes` はノートを開き、`--search <query>` は検索プロンプトを開き、`--help-overlay` はショートカット一覧を表示します。サイズは整数のポイントで指定し、ディスプレイより大きいサイズはエラーになります。全オプションは `topo-gui --help` で確認できます。視覚QAとドキュメント用です。
-
-## AI・自動化との連携
-
-### バッチ適用 (`topo apply`)
-
-複数ノードの追加や依存関係の構築をアトミックに適用する。途中でエラーやサイクルが発生した場合は一切の変更が行われない。
-
-```bash
-topo apply --json <<'EOF'
-[
-  {"op": "add", "ref": "m", "title": "v2.0", "kind": "milestone"},
-  {"op": "add", "ref": "spec", "title": "API仕様策定", "in": ["$m"]},
-  {"op": "add", "ref": "impl", "title": "API実装", "depends_on": ["$spec"], "in": ["$m"]},
-  {"op": "status", "id": "$spec", "status": "doing"}
-]
-EOF
-```
-
-### 決定モデルによるグラフ整理 (`topo organize`)
-
-ローカルで動作するJev互換モデル（`POST /v1/systemone`）に問い合わせ、グラフ構造の最適化案を取得する。
-
-```bash
-topo organize deps --json        # 不足している依存関係の推定
-topo organize place --json       # 未分類タスクの所属マイルストーン推薦
-topo organize dupes --json       # 重複の疑いがあるタスクの検出
-topo organize prioritize --json  # 着手可能タスクの優先度スコアリング
-```
-
-`--apply` を指定すると、サイクルを形成しない妥当な提案のみを自動で適用する。
-
-## クラウドワークスペース
-
-ワークスペースを `.topo/nodes` の代わりにサーバーに置き、複数の端末や並列に動く AI エージェントで 1 つのグラフを共有できる。サーバーは Cloudflare Workers と D1 で動く。設計とデプロイ手順は [docs/cloud](docs/cloud/README.md) を参照。
-
-```bash
-# GitHub でサインイン（デバイスフロー）し、ローカルのワークスペースをサーバーへ移す
-topo login --url https://topo.example.com
-topo cloud push --url https://topo.example.com
-
-# 以降のコマンドはサーバーを読み書きする。TUI と GUI はサーバーをポーリングする
-topo ready
-
-# エージェント用に、このワークスペース限定のトークンを発行する
-topo token create --name agent-1 --workspace <workspace-id> --expires 90d
-
-# エージェントは TOPO_TOKEN を設定してタスクを確保する。複数が競合しても成功するのは 1 つ
-topo status <id> doing --if todo --assign "$TOPO_AGENT"
-```
-
-リンクは `.topo/config.toml` の `[cloud]` テーブルに保存される。秘密情報を含まないためコミットできる。`topo cloud pull` はノードを Markdown ファイルへ書き戻し、リンクを解除する。
-
-## 優先度と記録日時
-
-priority は任意の属性で、`low`・`medium`・`high`・`urgent` の4段階。依存関係や着手可能かどうかの判定は変えない。`ls --priority high --priority urgent` はいずれかの値、`ls --no-priority` は未設定のノードを選ぶ。この2つのフィルタは併用できない。`ls --sort priority` と `ready --sort priority` は優先度の高い順、未設定は最後に並べ、同順位では ID 順を保つ。`organize prioritize` のモデル推奨スコア（0〜1）は保存された priority を変更しない（`--apply` 指定時も同様）。
-
-新規ノードの保存時に `created_at` と `updated_at` を記録し、実際に内容が変わったときだけ `updated_at` を更新する。`done` への遷移で `completed_at` を記録し、再オープンや `dropped` への変更で解除する。読み取り・失敗した操作・変更のない編集では日時は変わらない。日時は UTC の秒精度で保存し、クラウドの書き込みではサーバー時刻を使う。cloud push/pull は既存日時を保持し、旧ノードの不明な日時をファイルの更新時刻から推測しない。
-
-`show` と TUI の詳細欄には3つの日時を表示する（不明は `Unknown`、未完了や dropped の完了日時は `Not completed`）。CLI の日時は UTC を示す `Z` 付き、GUI の DETAILS はローカルタイムゾーンで表示する。`show --json`・`ls --json`・`ready --json` と `--format jsonl` は既知の日時を含み、不明な日時はフィールドを省略する。簡潔なテキスト一覧と5列の TSV は既存の形式を維持する。
-
-```bash
-topo add "ログインを修正" --priority high --assignee codex
-topo edit <id> --priority urgent --pr owner/repo#12
-topo status <id> doing --if todo --assign codex
-topo ready --sort priority
-topo ready --unassigned --format ids
-topo ready --assignee codex --format jsonl
-topo ls --pr owner/repo#12 --assignee codex
-topo ls --no-priority --format jsonl
-topo edit <id> --no-priority
-topo status <id> done
-topo show <id> # 完了日時も確認できる
-```
-
-`ls` と `ready` は `--assignee <name>`、`--unassigned`、繰り返し指定できる `--pr <url|owner/repo#N>` に対応する。PR の絞り込みも登録時と同じ URL 正規化を使い、複数の `--pr` はすべての参照を持つノードを選ぶ。各フィルタは AND で結合し、`ls` の stdin ID や `ready --under` とも併用できる。テキスト一覧には担当者と短い PR ラベル、JSON/JSONL には保存済み URL を表示する。TSV は既存の5列を維持する。
-
-`TOPO_AGENT` はクラウドの変更ログに記録する変更者のラベルで、タスクの担当者を自動設定しない。claim 時は `--assign "$TOPO_AGENT"` を明示し、担当変更は `edit --assignee <name>`、解除は `edit --no-assignee` で行う。担当解除だけではステータスは変わらない。
-
-## コマンドリファレンス
-
-| コマンド | 説明 | 主要引数・フラグ |
+| 技術 | 役割 | 選定理由 |
 | :--- | :--- | :--- |
-| `topo init` | ワークスペース（`.topo`）の初期化 | |
-| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>`, `--assignee`, `--unassigned`, `--pr`, `--sort priority`, `--format <text\|ids\|tsv\|jsonl>` |
-| `topo milestones` | マイルストーン一覧・進捗率・クリティカルパスの表示 | `--format <text\|ids\|tsv\|jsonl>` |
-| `topo add <title>` | タスクまたはマイルストーンの作成 | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--priority <low\|medium\|high\|urgent>`, `--assignee <name>`, `--pr <url\|owner/repo#N>`, `--note <text>` |
-| `topo link <from> <to>` | `<from>` が `<to>` に依存するエッジを追加 | |
-| `topo unlink <from> <to>` | 依存関係の解除 | |
-| `topo join <task> <ms>` | タスクをマイルストーンの構成員に追加 | |
-| `topo leave <task> <ms>` | タスクをマイルストーンから除外 | |
-| `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | `--if <st>`（現在のステータスが一致しなければ失敗）, `--assign <name>`（同じアトミックな書き込みで担当者を設定） |
-| `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--priority`, `--no-priority`, `--assignee`, `--no-assignee`, `--pr`, `--unpr`, `--note` |
-| `topo rm <id>` | ノードおよび接続エッジの削除 | |
-| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--pr`, `--sort priority`, `--format` |
-| `topo show <id>` | ノードの詳細（優先度・担当者・プルリクエスト・作成/更新/完了日時）・隣接ノード・メモの表示 | |
-| `topo deps <id>` | 前提ノードの一覧（マイルストーンのメンバーも含む） | `--transitive`, `--format`, `--json` |
-| `topo dependents <id>` | 指定ノードに依存するノードの一覧 | `--transitive`（所属関係もたどる）, `--format`, `--json` |
-| `topo members <ms>` | マイルストーンの構成タスクの一覧 | `--format`, `--json` |
-| `topo critical-path <id>` | 残る最長の依存経路を実行順に表示 | `--format`, `--json` |
-| `topo graph` | グラフ構造の出力 | `--format [tree\|mermaid\|dot]`, `--under <id>` |
-| `topo apply` | JSONバッチによるアトミック更新 | `[file]` または標準入力 |
-| `topo organize <what>` | 決定モデルによるグラフ改善提案・適用 | `deps`, `place`, `dupes`, `kinds`, `prioritize`, `--apply`, `--under <id>` |
-| `topo tui` | TUIダッシュボードの起動 | |
-| `topo login` / `topo logout` | GitHub でクラウドサーバーにサインイン／トークンの失効と削除 | `--url <url>`, `--name <トークン名>` |
-| `topo token <create\|ls\|revoke>` | クライアントやエージェント用トークンの管理 | `--name`, `--workspace <id>`, `--expires <90d>` |
-| `topo cloud <push\|pull\|link\|ls>` | ワークスペースのサーバーへの移行・書き戻し・既存ワークスペースへのリンク・一覧 | `--url <url>`, `--name <name>` |
-| `topo cloud <members\|invite\|remove>` | リンク中のワークスペースのメンバー一覧・追加・削除 | `--role <owner\|editor\|viewer>` |
-| `topo cloud log` | リンク中のワークスペースの変更履歴 | `--after <version>` |
+| **Rust** | コアエンジン / CLI / GUI | メモリ安全性、ミリ秒単位の超高速起動、リソース消費の最小化 |
+| **GPUI** | ネイティブGUI | Zedエディタ由来のGPUアクセラレーションUIエンジン。数百ノード規模のグラフでも滑らかな描画を維持 |
+| **Ratatui** | ターミナルUI（TUI） | キーボード主体の直感的な操作感と軽快な画面描画 |
+| **Cloudflare Workers & D1** | クラウド同期 | サーバーレスエッジ環境による低遅延な同期処理とゼロメンテナンス運用 |
 
-## プロジェクト構成
+## ドキュメント
 
-```text
-.
-├── crates/
-│   ├── topo-core/  # DAG検証、トポロジカルソート、ファイルI/O
-│   ├── topo-cli/   # CLIコマンド群、レンダラー、Ratatui TUI
-│   ├── topo-gui/   # GPUIベースのネイティブデスクトップアプリ
-│   ├── topo-jev/   # Jev互換決定モデルクライアント・整理ロジック
-│   ├── topo-cloud/ # クラウドAPIのクライアント（サインイン、トークン、クラウド接続のワークスペース）
-│   └── topo-server/ # クラウドAPI（Cloudflare Workers + D1）
-├── docs/
-│   └── cloud/      # クラウド版の設計
-└── skills/
-    └── topo/ # AIエージェント向け指示セット (SKILL.md)
-```
+- [利用ガイド・コマンドリファレンス](docs/usage.ja.md): 全コマンドのオプション、パイプ連携、GUI/TUIの操作一覧、クラウド連携の詳細
+- [開発者ガイド](docs/development.ja.md): リポジトリのクレート構成、ローカル環境構築、テスト・ベンチマークの実行方法
+- [クラウド同期の設計と構築](docs/cloud/README.md): サーバーレスAPIの設計仕様とデプロイ手順
+- [リリース手順](docs/releasing.md): タグ付け、バイナリビルド、チェックサム検証
 
 ## ライセンス
 
-[MIT License](https://opensource.org/licenses/MIT)
+[MIT License](LICENSE)

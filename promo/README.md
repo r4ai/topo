@@ -1,31 +1,50 @@
-# topo promo video
+# Promo Video Production
 
-A 58-second, 1080p60 promo. The picture is drawn on a canvas as a pure function of time; the soundtrack is synthesized from the same timeline (`src/shared.js`), so every hit in the audio is an event the picture animates.
+Sources and rendering pipeline for the 58-second, 1080p60 promo video.
+
+## Rendering Pipeline
+
+Run from the `promo/` directory:
 
 ```bash
-node audio/synth.mjs out/audio.wav   # soundtrack
-node render.mjs                      # out/topo-pv.mp4 (headless Chrome + ffmpeg)
-node render.mjs --serve              # live preview at http://127.0.0.1:8765/
+# Generate soundtrack (create out/ first; it is gitignored)
+mkdir -p out
+node audio/synth.mjs out/audio.wav
+
+# Render complete MP4 video (headless Chrome + ffmpeg)
+node render.mjs
+
+# Launch live local preview at http://127.0.0.1:8765/
+node render.mjs --serve
+
+# Render still frames
 node render.mjs --stills 8.2,28.05 --dir out/stills
 ```
 
-Requires Node 22+, ffmpeg and Google Chrome (`CHROME=<path>` to override).
+Requirements: Node 22+, ffmpeg, and Google Chrome (`CHROME=<path>` to override the binary path; the default is the macOS install location).
 
-## Layout
+The video is written to `out/topo-pv.mp4`. If `out/audio.wav` is missing, the video renders without sound.
 
-- `src/shared.js`: timeline (120 BPM) and event times shared by picture and sound.
-- `src/engine.js`: easing, type, the app's cards and edges, screenshot windows, post pass.
-- `src/scenes_*.js`: the scenes. `scenes_product.js` (16–40 s) shows the real product.
-- `audio/synth.mjs`: music and UI sound effects.
-- `assets/shots/`: frames the real GUI wrote of its own window, plus real CLI and TUI output (`cli.json`, `tui.json`). `assets/data.json` bundles their metadata.
-- `assets/moves/`: the app's own camera moves, captured one app frame per video frame with the video's easing baked in. `render.mjs` extracts them into `assets/shots/seq/` (not tracked).
+## Architecture
 
-## Re-capturing the product footage
+- `src/shared.js`: Shared 120 BPM timeline synchronizing visual keyframes and audio triggers
+- `src/engine.js`: Canvas 2D drawing toolkit: easing, typography, card and edge drawing, screenshot placement, and the post pass
+- `src/scenes_*.js`: Modular scene definitions (`scenes_product.js` showcases real UI)
+- `audio/synth.mjs`: Audio synthesis and interface sound effects
+- `assets/shots/`: Captured application window frames and real CLI/TUI outputs
+- `assets/moves/*.mp4`: Captured GUI motion clips; `render.mjs` extracts their frames into `assets/shots/seq/`
+- `assets/data.json`: Data bundle loaded by the page
 
-The GUI frames come from the app itself: `capture/promo-hook.patch` adds a script-driven capture mode (`TOPO_PROMO=<script>`) that replays state changes and writes the app's own window to PNG, with node positions next to each frame. It is not part of the product; apply it to a scratch copy of `crates/topo-gui`, build, then:
+## Capturing Product Footage
+
+`capture/promo-hook.patch` is a source patch for `crates/topo-gui` that adds a scripted capture mode. The patched app opens a real window and grabs it through macOS window capture, so this step is macOS-only and not headless.
+
+> The patch predates the repository-switching changes and no longer applies to the current `crates/topo-gui`; port it before recapturing.
+
+Apply the patch to a copy of `crates/topo-gui`, build it, and put that `topo-gui` next to a `topo` binary:
 
 ```bash
-TOPO_BIN=<dir with topo and the patched topo-gui> WORK=<scratch dir> node capture/capture.mjs
+TOPO_BIN=<dir-with-topo-and-patched-topo-gui> WORK=<scratch-dir> node capture/capture.mjs
 ```
 
-Node ids are random, so a new capture can order rows differently; `CRIT_PATH` and `READY_ROWS` in `src/scenes_product.js` name what the inspector lists and must match the capture.
+The script also needs `ffmpeg`, `git`, and `uv`. It deletes and recreates both `$WORK` and `assets/shots`. After recapturing, update `CRIT_PATH` and `READY_ROWS` in `src/scenes_product.js` to match the new capture.
