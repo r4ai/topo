@@ -29,6 +29,7 @@ use gpui::{
     prelude::*, px, rgb, size,
 };
 use notify::{RecursiveMode, Watcher};
+use topo_core::wire::Snapshot;
 use topo_core::{Edit, Graph, Kind, Node, NodeId, Status, Workspace};
 use topo_jev::organize::{self, Proposal};
 use topo_jev::{Client, Config};
@@ -46,6 +47,8 @@ const NODE_H: f32 = 66.0;
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 2.5;
 const UNDO_LIMIT: usize = 200;
+/// How often a cloud workspace is asked whether it changed.
+const REMOTE_POLL: Duration = Duration::from_secs(5);
 
 actions!(topo, [Quit, CloseWindow]);
 
@@ -181,28 +184,20 @@ struct TopoApp {
     busy: bool,
     toast: Option<Toast>,
     toast_serial: u64,
-    _watcher: notify::RecommendedWatcher,
+    /// Watches the Markdown files. A cloud workspace is polled instead.
+    _watcher: Option<notify::RecommendedWatcher>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl TopoApp {
     fn new(ws: Workspace, window: &mut Window, cx: &mut Context<Self>) -> Result<Self> {
-        let (tx, rx) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if event.is_ok() {
-                let _ = tx.send(());
+        let watcher = match ws.remote() {
+            Some(_) => {
+                Self::poll_remote(cx);
+                None
             }
-        })?;
-        watcher.watch(&ws.nodes_dir(), RecursiveMode::NonRecursive)?;
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_millis(300)).await;
-                if rx.try_iter().count() > 0 && this.update(cx, |app, cx| app.reload(cx)).is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
+            None => Some(Self::watch_files(&ws, cx)?),
+        };
         let mut gestures = gesture::watch();
         cx.spawn_in(window, async move |this, cx| {
             while let Some(gesture) = gestures.next().await {
@@ -262,22 +257,97 @@ impl TopoApp {
 
     // ---- persistence ---------------------------------------------------
 
+    /// Reloads the graph whenever a Markdown file changes.
+    fn watch_files(ws: &Workspace, cx: &mut Context<Self>) -> Result<notify::RecommendedWatcher> {
+        let (tx, rx) = mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if event.is_ok() {
+                let _ = tx.send(());
+            }
+        })?;
+        watcher.watch(&ws.nodes_dir(), RecursiveMode::NonRecursive)?;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(300)).await;
+                if rx.try_iter().count() > 0 && this.update(cx, |app, cx| app.reload(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        Ok(watcher)
+    }
+
+    /// Asks the server every few seconds whether the workspace changed. The
+    /// request runs off the main thread, so a slow network does not stall the window.
+    fn poll_remote(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(REMOTE_POLL).await;
+                let Ok(Some((remote, version))) = this.update(cx, |app, _| app.ws.remote()) else {
+                    break;
+                };
+                let fetched = cx.background_executor().spawn(async move { remote.fetch(Some(version)) }).await;
+                if this.update(cx, |app, cx| app.fetched(fetched, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Takes over what a poll of the server returned.
+    fn fetched(&mut self, fetched: Result<Option<Snapshot>, topo_core::Error>, cx: &mut Context<Self>) {
+        let known = self.ws.remote().map(|(_, version)| version);
+        let result = match fetched {
+            // A save of ours may have overtaken the poll; then the snapshot is the older one.
+            Ok(Some(snapshot)) if Some(snapshot.version) > known => {
+                let before = self.ws.graph.clone();
+                self.ws.install(snapshot).map(|()| self.ws.graph != before)
+            }
+            Ok(_) => Ok(false),
+            Err(e) => Err(e),
+        };
+        self.reloaded(result, "Updated from the cloud", cx);
+    }
+
     /// Picks up edits made outside the app. Our own saves also trigger the
     /// watcher; those reload an identical graph and are ignored so the undo
     /// history survives.
     fn reload(&mut self, cx: &mut Context<Self>) {
-        match Workspace::open(self.ws.dir().to_owned()) {
-            Ok(ws) if ws.graph == self.ws.graph => {}
-            Ok(ws) => {
-                self.ws = ws;
+        let result = self.ws.reload();
+        self.reloaded(result, "Updated from disk", cx);
+    }
+
+    /// Finishes a reload that says whether it changed the graph.
+    fn reloaded(&mut self, changed: Result<bool, topo_core::Error>, notice: &'static str, cx: &mut Context<Self>) {
+        match changed {
+            Ok(false) => {}
+            Ok(true) => {
                 self.undo.clear();
                 self.redo.clear();
                 self.graph_replaced();
-                self.toast("Updated from disk", false, cx);
+                self.toast(notice, false, cx);
             }
             Err(e) => self.toast(format!("Reload failed: {e}"), true, cx),
         }
         cx.notify();
+    }
+
+    /// Saves the graph and returns whether it is still exactly what was saved.
+    /// A cloud workspace can come back with the changes of other writers
+    /// merged in. The undo history predates those, and stepping back to an
+    /// older graph would undo them too, so it is dropped.
+    fn save(&mut self) -> Result<bool, topo_core::Error> {
+        let intended = self.ws.graph.clone();
+        self.ws.save()?;
+        let exact = self.ws.graph == intended;
+        if !exact {
+            self.undo.clear();
+            self.redo.clear();
+            self.graph_replaced();
+        }
+        Ok(exact)
     }
 
     /// Drops what may refer to nodes that the graph no longer has, after it
@@ -308,11 +378,13 @@ impl TopoApp {
     /// the graph is left untouched and the error is shown.
     fn mutate(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Graph) -> Result<(), topo_core::Error>) -> bool {
         let before = self.ws.graph.clone();
-        let result = f(&mut self.ws.graph).and_then(|()| self.ws.save());
+        let result = f(&mut self.ws.graph).and_then(|()| self.save());
         cx.notify();
         match result {
-            Ok(()) => {
-                self.record_undo(before);
+            Ok(exact) => {
+                if exact {
+                    self.record_undo(before);
+                }
                 true
             }
             Err(e) => {
@@ -325,20 +397,20 @@ impl TopoApp {
 
     /// Swaps the graph with the top of `from`, pushing the current one onto `to`.
     fn restore(&mut self, undo: bool, cx: &mut Context<Self>) {
-        let (from, to) = match undo {
-            true => (&mut self.undo, &mut self.redo),
-            false => (&mut self.redo, &mut self.undo),
-        };
-        let Some(graph) = from.pop() else {
+        let Some(graph) = (if undo { &mut self.undo } else { &mut self.redo }).pop() else {
             return self.toast(if undo { "Nothing to undo" } else { "Nothing to redo" }, false, cx);
         };
         let current = std::mem::replace(&mut self.ws.graph, graph);
-        if let Err(e) = self.ws.save() {
-            // Nothing was restored, so the step stays where it was.
-            from.push(std::mem::replace(&mut self.ws.graph, current));
-            return self.toast(e.to_string(), true, cx);
+        match self.save() {
+            Ok(true) => (if undo { &mut self.redo } else { &mut self.undo }).push(current),
+            Ok(false) => {}
+            Err(e) => {
+                // Nothing was restored, so the step stays where it was.
+                let graph = std::mem::replace(&mut self.ws.graph, current);
+                (if undo { &mut self.undo } else { &mut self.redo }).push(graph);
+                return self.toast(e.to_string(), true, cx);
+            }
         }
-        to.push(current);
         self.graph_replaced();
         self.toast(if undo { "Undone" } else { "Redone" }, false, cx);
     }
@@ -398,6 +470,9 @@ impl TopoApp {
 
     /// Opens the Markdown file of `id` in the default editor; saving there shows up live.
     fn open_file(&mut self, id: &NodeId, cx: &mut Context<Self>) {
+        if self.ws.remote().is_some() {
+            return self.toast("A cloud workspace has no files to open", true, cx);
+        }
         cx.open_with_system(&self.ws.node_path(id));
         self.toast("Opened the file — edits appear here when saved", false, cx);
     }
@@ -709,9 +784,11 @@ impl TopoApp {
         let before = self.ws.graph.clone();
         let applied = organize::apply(&mut self.ws.graph, picked);
         let skipped: Vec<&String> = applied.iter().filter_map(|a| a.skipped.as_ref()).collect();
-        match self.ws.save() {
-            Ok(()) => {
-                self.record_undo(before);
+        match self.save() {
+            Ok(exact) => {
+                if exact {
+                    self.record_undo(before);
+                }
                 let done = applied.len() - skipped.len();
                 match skipped.first() {
                     None => self.toast(format!("Applied {done}"), false, cx),
@@ -1137,9 +1214,9 @@ fn next_status(status: Status) -> Status {
 
 fn open_workspace() -> Result<Workspace> {
     Ok(match (std::env::var_os("TOPO_DIR"), std::env::args_os().nth(1)) {
-        (Some(dir), _) => Workspace::open(PathBuf::from(dir))?,
-        (None, Some(start)) => Workspace::discover(&PathBuf::from(start))?,
-        (None, None) => Workspace::discover(&std::env::current_dir()?)?,
+        (Some(dir), _) => topo_cloud::open(PathBuf::from(dir))?,
+        (None, Some(start)) => topo_cloud::discover(&PathBuf::from(start))?,
+        (None, None) => topo_cloud::discover(&std::env::current_dir()?)?,
     })
 }
 

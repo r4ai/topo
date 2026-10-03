@@ -231,6 +231,27 @@ topo organize prioritize --json  # Scored ranking of ready tasks
 
 Pass `--apply` to automatically link proposals, safely skipping any that would introduce a cycle.
 
+## Cloud Workspaces
+
+A workspace can live on a server instead of in `.topo/nodes`, so that several devices and parallel AI agents share one graph. The server is a Cloudflare Worker with a D1 database; see [docs/cloud](docs/cloud/README.md) for the design and how to deploy it.
+
+```bash
+# Sign in with GitHub (device flow) and move the local workspace to the server
+topo login --url https://topo.example.com
+topo cloud push --url https://topo.example.com
+
+# Every command now reads and writes the server; the TUI and GUI poll it
+topo ready
+
+# Give an agent its own token, restricted to this workspace
+topo token create --name agent-1 --workspace <workspace-id> --expires 90d
+
+# An agent sets TOPO_TOKEN and claims a task; of several agents, one wins
+topo status <id> doing --if todo
+```
+
+The link is a `[cloud]` table in `.topo/config.toml`, which holds no secret and can be committed. `topo cloud pull` writes the nodes back to Markdown files and removes the link.
+
 ## Command Reference
 
 | Command | Description | Common Flags |
@@ -243,7 +264,7 @@ Pass `--apply` to automatically link proposals, safely skipping any that would i
 | `topo unlink <from> <to>` | Remove dependency of `<from>` on `<to>` | |
 | `topo join <task> <ms>` | Add task to milestone membership | |
 | `topo leave <task> <ms>` | Remove task from milestone | |
-| `topo status <id> <st>` | Update status (`todo`, `doing`, `done`, `dropped`) | |
+| `topo status <id> <st>` | Update status (`todo`, `doing`, `done`, `dropped`) | `--if <st>` (fail unless the node has this status) |
 | `topo edit <id>` | Modify node fields | `--title`, `--due`, `--no-due`, `--tag`, `--note` |
 | `topo rm <id>` | Delete node and adjacent edges | |
 | `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--format` |
@@ -256,6 +277,11 @@ Pass `--apply` to automatically link proposals, safely skipping any that would i
 | `topo apply` | Atomically apply JSON batch operations | `[file]` or stdin |
 | `topo organize <what>` | Propose or apply graph optimizations via model | `deps`, `place`, `dupes`, `kinds`, `prioritize`, `--apply`, `--under <id>` |
 | `topo tui` | Launch terminal UI | |
+| `topo login` / `topo logout` | Sign in to a cloud server with GitHub; revoke and forget the token | `--url <url>`, `--name <token name>` |
+| `topo token <create\|ls\|revoke>` | Manage tokens for clients and agents | `--name`, `--workspace <id>`, `--expires <90d>` |
+| `topo cloud <push\|pull\|link\|ls>` | Move the workspace to or from a server, link to an existing one, list workspaces | `--url <url>`, `--name <name>` |
+| `topo cloud <members\|invite\|remove>` | List, add, and remove members of the linked workspace | `--role <owner\|editor\|viewer>` |
+| `topo cloud log` | Show who changed the linked workspace | `--after <version>` |
 
 ## Project Structure
 
@@ -265,7 +291,11 @@ Pass `--apply` to automatically link proposals, safely skipping any that would i
 │   ├── topo-core/  # DAG engine, topological sorting, Markdown persistence
 │   ├── topo-cli/   # CLI binary, output renderers, Ratatui TUI
 │   ├── topo-gui/   # GPUI native canvas editor
-│   └── topo-jev/   # Jev System One client & organize logic
+│   ├── topo-jev/   # Jev System One client & organize logic
+│   ├── topo-cloud/ # Client of the cloud API: sign-in, tokens, cloud-backed workspace
+│   └── topo-server/ # The cloud API (Cloudflare Workers + D1)
+├── docs/
+│   └── cloud/      # Design of the cloud edition
 └── skills/
     └── topo/ # AI coding agent instructions (SKILL.md)
 ```

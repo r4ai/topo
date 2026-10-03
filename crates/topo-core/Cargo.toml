@@ -4,13 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["fs"]
+# The `.topo` directory store. The server builds without it.
+fs = ["dep:serde_yaml_ng"]
+# OpenAPI schemas for the types that cross the HTTP API.
+openapi = ["dep:utoipa"]
+
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
-serde_yaml_ng = "0.10"
-fastrand = "2"
+serde_yaml_ng = { version = "0.10", optional = true }
+# Without `js` the generator has a fixed seed on WebAssembly.
+fastrand = { version = "2", features = ["js"] }
+utoipa = { version = "6", features = ["jiff_0_2"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

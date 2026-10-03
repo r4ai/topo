@@ -102,6 +102,15 @@ topo organize prioritize --json   # ready tasks ranked by score (0..1)
 
 Review proposals and apply them with `--apply` (strongest first; ones that would form a cycle are reported as skipped), or pick individual ones with `topo link`. If the server is not running, say so and continue without it.
 
+## Sharing a workspace with other agents
+
+When `.topo/config.toml` has a `[cloud]` table, the graph lives on a server and other agents may be changing it while you work. The commands are the same; `TOPO_TOKEN` in the environment authenticates you.
+
+- Claim a task before working on it: `topo status <id> doing --if todo`. It fails if another agent claimed the task first; pick the next one from `topo ready`. A plain `topo status <id> doing` would succeed for both of you.
+- Don't cache the graph across steps: re-run `topo ready` after each task, since other agents close and add nodes.
+- `topo cloud log` shows who changed what. Set `TOPO_AGENT` to a label of your own so your writes are attributed to you.
+- There are no node files in a linked workspace, so don't read or edit `.topo/nodes`; use `topo show <id>` and `topo edit <id> --note ...`.
+
 ## Showing the graph
 
 `topo graph --format mermaid [--under <id>]` produces a Mermaid flowchart (prerequisite --> dependent, member -.-> milestone) you can show to the user; `--format tree` is a compact text view.

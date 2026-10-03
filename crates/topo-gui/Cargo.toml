@@ -9,8 +9,9 @@ name = "topo-gui"
 path = "src/main.rs"
 
 [dependencies]
-topo-core.workspace = true
+topo-core = { workspace = true, features = ["fs"] }
 topo-jev.workspace = true
+topo-cloud.workspace = true
 anyhow.workspace = true
 notify.workspace = true
 jiff.workspace = true
@@ -36,3 +37,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 # Headless windows that take simulated input, for the interaction tests.
 gpui = { version = "0.2.2", features = ["runtime_shaders", "test-support"] }
 tempfile = "3"
+serde_json.workspace = true

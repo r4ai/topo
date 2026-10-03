@@ -1,0 +1,29 @@
+# Cloudflare Worker that serves the topo cloud API. See docs/cloud/deployment.md.
+name = "topo"
+main = "build/index.js"
+compatibility_date = "2026-10-01"
+
+[build]
+command = "cargo install -q 'worker-build@^0.8' && worker-build --release"
+
+[vars]
+# Client id of the production GitHub OAuth app (device flow enabled).
+GITHUB_CLIENT_ID = "REPLACE_WITH_PRODUCTION_CLIENT_ID"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "topo"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[env.staging]
+name = "topo-staging"
+
+[env.staging.vars]
+GITHUB_CLIENT_ID = "REPLACE_WITH_STAGING_CLIENT_ID"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "topo-staging"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

@@ -231,6 +231,27 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 
 `--apply` を指定すると、サイクルを形成しない妥当な提案のみを自動で適用する。
 
+## クラウドワークスペース
+
+ワークスペースを `.topo/nodes` の代わりにサーバーに置き、複数の端末や並列に動く AI エージェントで 1 つのグラフを共有できる。サーバーは Cloudflare Workers と D1 で動く。設計とデプロイ手順は [docs/cloud](docs/cloud/README.md) を参照。
+
+```bash
+# GitHub でサインイン（デバイスフロー）し、ローカルのワークスペースをサーバーへ移す
+topo login --url https://topo.example.com
+topo cloud push --url https://topo.example.com
+
+# 以降のコマンドはサーバーを読み書きする。TUI と GUI はサーバーをポーリングする
+topo ready
+
+# エージェント用に、このワークスペース限定のトークンを発行する
+topo token create --name agent-1 --workspace <workspace-id> --expires 90d
+
+# エージェントは TOPO_TOKEN を設定してタスクを確保する。複数が競合しても成功するのは 1 つ
+topo status <id> doing --if todo
+```
+
+リンクは `.topo/config.toml` の `[cloud]` テーブルに保存される。秘密情報を含まないためコミットできる。`topo cloud pull` はノードを Markdown ファイルへ書き戻し、リンクを解除する。
+
 ## コマンドリファレンス
 
 | コマンド | 説明 | 主要引数・フラグ |
@@ -243,7 +264,7 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 | `topo unlink <from> <to>` | 依存関係の解除 | |
 | `topo join <task> <ms>` | タスクをマイルストーンの構成員に追加 | |
 | `topo leave <task> <ms>` | タスクをマイルストーンから除外 | |
-| `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | |
+| `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | `--if <st>`（現在のステータスが一致しなければ失敗） |
 | `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--note` |
 | `topo rm <id>` | ノードおよび接続エッジの削除 | |
 | `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--format` |
@@ -256,6 +277,11 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 | `topo apply` | JSONバッチによるアトミック更新 | `[file]` または標準入力 |
 | `topo organize <what>` | 決定モデルによるグラフ改善提案・適用 | `deps`, `place`, `dupes`, `kinds`, `prioritize`, `--apply`, `--under <id>` |
 | `topo tui` | TUIダッシュボードの起動 | |
+| `topo login` / `topo logout` | GitHub でクラウドサーバーにサインイン／トークンの失効と削除 | `--url <url>`, `--name <トークン名>` |
+| `topo token <create\|ls\|revoke>` | クライアントやエージェント用トークンの管理 | `--name`, `--workspace <id>`, `--expires <90d>` |
+| `topo cloud <push\|pull\|link\|ls>` | ワークスペースのサーバーへの移行・書き戻し・既存ワークスペースへのリンク・一覧 | `--url <url>`, `--name <name>` |
+| `topo cloud <members\|invite\|remove>` | リンク中のワークスペースのメンバー一覧・追加・削除 | `--role <owner\|editor\|viewer>` |
+| `topo cloud log` | リンク中のワークスペースの変更履歴 | `--after <version>` |
 
 ## プロジェクト構成
 
@@ -265,7 +291,11 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 │   ├── topo-core/  # DAG検証、トポロジカルソート、ファイルI/O
 │   ├── topo-cli/   # CLIコマンド群、レンダラー、Ratatui TUI
 │   ├── topo-gui/   # GPUIベースのネイティブデスクトップアプリ
-│   └── topo-jev/   # Jev互換決定モデルクライアント・整理ロジック
+│   ├── topo-jev/   # Jev互換決定モデルクライアント・整理ロジック
+│   ├── topo-cloud/ # クラウドAPIのクライアント（サインイン、トークン、クラウド接続のワークスペース）
+│   └── topo-server/ # クラウドAPI（Cloudflare Workers + D1）
+├── docs/
+│   └── cloud/      # クラウド版の設計
 └── skills/
     └── topo/ # AIエージェント向け指示セット (SKILL.md)
 ```

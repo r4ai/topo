@@ -63,6 +63,7 @@ jobs:
         with:
           toolchain: '1.96.0'
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -87,6 +88,9 @@ jobs:
         env:
           PACKAGES: ${{ matrix.packages }}
         run: cargo clippy --locked $PACKAGES --all-targets -- -D warnings
+      - name: Lint the Worker build of the server
+        if: runner.os == 'Linux'
+        run: cargo clippy --locked -p topo-server --target wasm32-unknown-unknown -- -D warnings
       - name: Test
         env:
           PACKAGES: ${{ matrix.packages }}

@@ -1,1 +1,5 @@
 target/
+# topo-server: worker-build output and wrangler local state
+crates/topo-server/build/
+.wrangler/
+.dev.vars

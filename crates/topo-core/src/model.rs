@@ -3,8 +3,11 @@ use std::fmt;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
+
 /// Short random identifier of a node. It is also the node's file stem.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct NodeId(pub String);
 
@@ -20,6 +23,13 @@ impl NodeId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Checks an id that arrived from another machine. Such an id becomes a
+    /// file name on export, so it must not be able to name a path.
+    pub fn validate(&self) -> Result<(), Error> {
+        let valid = (1..=32).contains(&self.0.len()) && self.0.bytes().all(|b| Self::ALPHABET.contains(&b));
+        if valid { Ok(()) } else { Err(Error::InvalidId(self.0.clone())) }
+    }
 }
 
 impl fmt::Display for NodeId {
@@ -29,6 +39,7 @@ impl fmt::Display for NodeId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     #[default]
@@ -37,6 +48,7 @@ pub enum Kind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     #[default]
@@ -44,6 +56,12 @@ pub enum Status {
     Doing,
     Done,
     Dropped,
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.serialize(f)
+    }
 }
 
 impl Status {
@@ -56,6 +74,7 @@ impl Status {
 /// A task or milestone. `depends_on` orders work; a task's `milestones` puts it
 /// in the set of work each of those milestones consists of.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Node {
     pub id: NodeId,
     #[serde(default)]

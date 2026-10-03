@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/topo-core", "crates/topo-jev", "crates/topo-cli", "crates/topo-gui"]
+members = ["crates/topo-core", "crates/topo-jev", "crates/topo-cloud", "crates/topo-server", "crates/topo-cli", "crates/topo-gui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,8 +8,9 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-topo-core = { path = "crates/topo-core" }
+topo-core = { path = "crates/topo-core", default-features = false }
 topo-jev = { path = "crates/topo-jev" }
+topo-cloud = { path = "crates/topo-cloud" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

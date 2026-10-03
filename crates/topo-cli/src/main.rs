@@ -1,4 +1,4 @@
-mod batch;
+mod cloud;
 mod render;
 mod tui;
 
@@ -12,7 +12,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use jiff::civil::Date;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use topo_core::{Edit, Graph, Kind, Node, NodeId, Status, Workspace};
+use topo_core::{Edit, Graph, Kind, Node, NodeId, Op, Status, Workspace};
 use topo_jev::{Client, Config, organize};
 
 /// topo: every task and milestone is a node in one dependency graph.
@@ -65,6 +65,10 @@ enum Command {
         id: String,
         #[arg(value_parser = parse_enum::<Status>)]
         status: Status,
+        /// Fail unless the node currently has this status. In a cloud workspace
+        /// the server checks it, so of several agents claiming a task one wins.
+        #[arg(long = "if", value_name = "STATUS", value_parser = parse_enum::<Status>)]
+        if_status: Option<Status>,
     },
     /// Change node fields (ID can be `-` to read IDs from stdin).
     Edit {
@@ -163,6 +167,33 @@ enum Command {
     },
     /// Interactive terminal UI.
     Tui,
+    /// Sign in to a topo cloud server with GitHub.
+    Login {
+        #[command(flatten)]
+        server: cloud::Server,
+        /// Name of the token this creates, as `topo token ls` shows it.
+        #[arg(long, default_value = "topo cli")]
+        name: String,
+    },
+    /// Revoke and forget the token `topo login` stored.
+    Logout {
+        #[command(flatten)]
+        server: cloud::Server,
+    },
+    /// Manage tokens, for example for agents.
+    Token {
+        #[command(flatten)]
+        server: cloud::Server,
+        #[command(subcommand)]
+        command: cloud::TokenCommand,
+    },
+    /// Move this workspace to or from a topo cloud server.
+    Cloud {
+        #[command(flatten)]
+        server: cloud::Server,
+        #[command(subcommand)]
+        command: cloud::CloudCommand,
+    },
 }
 
 #[derive(Args)]
@@ -231,10 +262,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn open(cli: &Cli) -> Result<Workspace> {
-    Ok(match &cli.topo_dir {
-        Some(dir) => Workspace::open(dir.clone())?,
-        None => Workspace::discover(&std::env::current_dir()?)?,
+/// The `.topo` directory the command works on.
+fn topo_dir(topo_dir: &Option<PathBuf>) -> Result<PathBuf> {
+    Ok(match topo_dir {
+        Some(dir) => dir.clone(),
+        None => Workspace::find_dir(&std::env::current_dir()?)?,
     })
 }
 
@@ -351,6 +383,13 @@ fn run(cli: Cli) -> Result<()> {
         print(cli.json, json!({ "dir": dir }), || format!("initialized {dir}"))?;
         return Ok(());
     }
+    let cli = match cli.command {
+        Command::Login { server, name } => return cloud::login(&cli.topo_dir, server, name, cli.json),
+        Command::Logout { server } => return cloud::logout(&cli.topo_dir, server),
+        Command::Token { server, command } => return cloud::token(&cli.topo_dir, server, command, cli.json),
+        Command::Cloud { server, command } => return cloud::cloud(&cli.topo_dir, server, command, cli.json),
+        command => Cli { command, ..cli },
+    };
     let reads_stdin = match &cli.command {
         Command::Ls { input, .. } => input.as_deref() == Some("-"),
         Command::Status { id, .. } | Command::Edit { id, .. } | Command::Rm { id } => id == "-",
@@ -361,10 +400,16 @@ fn run(cli: Cli) -> Result<()> {
     };
     // The producer may create or change nodes, so load the graph after its output is complete.
     let stdin = if reads_stdin { io::read_to_string(io::stdin()).context("reading stdin")? } else { String::new() };
-    let mut ws = open(&cli)?;
+    let mut ws = topo_cloud::open(topo_dir(&cli.topo_dir)?)?;
     let json = cli.json;
     match cli.command {
-        Command::Init => unreachable!("handled above"),
+        Command::Init
+        | Command::Login { .. }
+        | Command::Logout { .. }
+        | Command::Token { .. }
+        | Command::Cloud { .. } => {
+            unreachable!("handled above")
+        }
         Command::Add { title, milestone, deps, milestones, due, tags, note } => {
             let kind = if milestone { Kind::Milestone } else { Kind::Task };
             let mut node = Node::new(ws.graph.fresh_id(), kind, title);
@@ -398,8 +443,11 @@ fn run(cli: Cli) -> Result<()> {
             let ids = mutate_ids(&mut ws, &task, &stdin, |g, id| g.leave(id, &milestone))?;
             print_mutation(json, &task, ids.iter().map(|task| json!({ "task": task, "milestone": milestone })))?;
         }
-        Command::Status { id, status } => {
-            let ids = mutate_ids(&mut ws, &id, &stdin, |g, id| g.set_status(id, status))?;
+        Command::Status { id, status, if_status } => {
+            let ids = input_ids(&ws.graph, &id, &stdin)?;
+            if !ids.is_empty() {
+                ws.apply(ids.iter().map(|id| Op::Status { id: id.0.clone(), status, if_status }).collect())?;
+            }
             print_mutation(json, &id, ids.iter().map(|id| render::node_json(&ws.graph, ws.graph.get(id).unwrap())))?;
         }
         Command::Edit { id, title, kind, due, no_due, tags, note } => {
@@ -469,8 +517,17 @@ fn run(cli: Cli) -> Result<()> {
                 Some(path) => std::fs::read_to_string(&path).with_context(|| path.display().to_string())?,
                 None => stdin,
             };
-            let refs = batch::apply(&mut ws.graph, &text)?;
-            ws.save()?;
+            let mut ops: Vec<Op> = serde_json::from_str(&text).context("invalid operations JSON")?;
+            // Operations take exact ids. A prefix stands for the node it names now; what
+            // names no node yet may be the id of a node the batch adds.
+            for reference in ops.iter_mut().flat_map(Op::references_mut).filter(|r| !r.starts_with('$')) {
+                match ws.graph.resolve(reference) {
+                    Ok(id) => *reference = id.0,
+                    Err(topo_core::Error::NotFound(_)) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            let refs = ws.apply(ops)?;
             print(json, json!({ "refs": refs }), || {
                 refs.iter().map(|(name, id)| format!("${name} = {id}")).collect::<Vec<_>>().join("\n")
             })?;
