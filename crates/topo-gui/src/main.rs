@@ -17,6 +17,7 @@ mod graph_view;
 mod inline;
 mod inspector;
 mod layout;
+mod notes;
 #[cfg(feature = "screenshot")]
 mod screenshot;
 mod text_input;
@@ -43,10 +44,10 @@ use topo_jev::{Client, Config};
 
 use futures::StreamExt;
 
-use crate::combobox::Combobox;
+use crate::combobox::{Choice, ComboEvent, Combobox};
 use crate::gesture::Gesture;
 use crate::inline::{Field, InlineEdit};
-use crate::text_input::{InputEvent, TextInput};
+use crate::text_input::TextInput;
 
 /// Grid pitch and card size in canvas units (multiplied by the zoom on screen).
 const CELL_W: f32 = 280.0;
@@ -112,7 +113,6 @@ enum Prompt {
         candidates: Vec<NodeId>,
     },
     Create(NewNode),
-    Rename(NodeId),
 }
 
 impl Prompt {
@@ -127,7 +127,6 @@ impl Prompt {
             Prompt::Create(NewNode { required_by: Some(_), .. }) => "New prerequisite",
             Prompt::Create(NewNode { depends_on, .. }) if !depends_on.is_empty() => "New follow-up task",
             Prompt::Create(_) => "New task",
-            Prompt::Rename(_) => "Rename",
         }
     }
 
@@ -136,7 +135,6 @@ impl Prompt {
             Prompt::Search | Prompt::Pick { .. } => "Search by title, #tag or id…",
             Prompt::Create(NewNode { kind: Kind::Milestone, .. }) => "Milestone title",
             Prompt::Create(_) => "What needs to be done?",
-            Prompt::Rename(_) => "Title",
         }
     }
 }
@@ -177,14 +175,16 @@ struct TopoApp {
     hovered: Option<NodeId>,
     drag: Option<Drag>,
     prompt: Option<Prompt>,
-    input: Entity<TextInput>,
+    /// The field and list of the prompt.
+    palette: Entity<Combobox>,
+    /// The node whose notes are being edited in the inspector.
+    notes: Option<NodeId>,
+    notes_input: Entity<TextInput>,
     /// The property of the selected node being edited in its inspector row.
     inline: Option<InlineEdit>,
     combo: Entity<Combobox>,
     /// Nodes below this priority, and nodes without one, are dimmed.
     priority_filter: Option<Priority>,
-    /// Position of the highlighted entry in the list of a search or pick prompt.
-    search_index: usize,
     show_help: bool,
     /// Narrow window: the toolbar and inspector drop secondary text.
     compact: bool,
@@ -231,10 +231,12 @@ impl TopoApp {
             }
         })
         .detach();
-        let input = cx.new(TextInput::new);
+        let palette = cx.new(Combobox::palette);
+        let notes_input = cx.new(TextInput::multiline);
         let combo = cx.new(Combobox::new);
         let subscriptions = vec![
-            cx.subscribe_in(&input, window, Self::on_input_event),
+            cx.subscribe_in(&palette, window, Self::on_palette_event),
+            cx.subscribe_in(&notes_input, window, Self::on_notes_event),
             cx.subscribe_in(&combo, window, Self::on_combo_event),
         ];
         let focus = cx.focus_handle();
@@ -253,11 +255,12 @@ impl TopoApp {
             hovered: None,
             drag: None,
             prompt: None,
-            input,
+            palette,
+            notes: None,
+            notes_input,
             inline: None,
             combo,
             priority_filter: None,
-            search_index: 0,
             show_help: false,
             compact: false,
             inspector_width,
@@ -636,18 +639,21 @@ impl TopoApp {
             return self.toast("Nothing left to connect this to", false, cx);
         }
         let prompt = Prompt::Pick { node: node.id.clone(), relation, candidates };
-        self.open_prompt(prompt, "", window, cx);
+        self.open_prompt(prompt, window, cx);
     }
 
     // ---- prompt --------------------------------------------------------
 
-    fn open_prompt(&mut self, prompt: Prompt, initial: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let placeholder = prompt.placeholder();
-        self.input.update(cx, |input, cx| input.reset(initial, placeholder, cx));
+    fn open_prompt(&mut self, prompt: Prompt, window: &mut Window, cx: &mut Context<Self>) {
+        let (placeholder, lead) = (prompt.placeholder(), if matches!(prompt, Prompt::Create(_)) { "+" } else { "⌕" });
+        self.palette.update(cx, |palette, cx| {
+            palette.set_lead(lead);
+            palette.open("", placeholder, None, cx);
+        });
         self.prompt = Some(prompt);
-        self.search_index = 0;
         self.show_help = false;
-        window.focus(&self.input.focus_handle(cx), cx);
+        self.refresh_palette(cx);
+        window.focus(&self.palette.focus_handle(cx), cx);
         cx.notify();
     }
 
@@ -679,7 +685,7 @@ impl TopoApp {
         if relation.is_some() && selected.is_none() {
             return self.toast("Select a node first", false, cx);
         }
-        self.open_prompt(Prompt::Create(new), "", window, cx);
+        self.open_prompt(Prompt::Create(new), window, cx);
     }
 
     /// Opens the prompt for a task that comes after `source`, in the same
@@ -692,49 +698,69 @@ impl TopoApp {
             depends_on: vec![source.id.clone()],
             required_by: None,
         };
-        self.open_prompt(Prompt::Create(new), "", window, cx);
+        self.open_prompt(Prompt::Create(new), window, cx);
     }
 
-    fn on_input_event(
+    fn on_palette_event(
         &mut self,
-        _: &Entity<TextInput>,
-        event: &InputEvent,
+        _: &Entity<Combobox>,
+        event: &ComboEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            InputEvent::Changed => self.search_index = 0,
-            InputEvent::Cancel => self.close_prompt(window, cx),
-            InputEvent::Submit => self.submit_prompt(window, cx),
-            InputEvent::Up => self.move_in_list(self.search_index.saturating_sub(1), cx),
-            InputEvent::Down => self.move_in_list(self.search_index + 1, cx),
+            ComboEvent::Changed => self.refresh_palette(cx),
+            // The node the highlighted entry stands for comes into view.
+            ComboEvent::Highlighted => {
+                if let Some(id) = self.list_cursor(cx) {
+                    self.reveal(&id, false);
+                }
+            }
+            ComboEvent::Cancel => self.close_prompt(window, cx),
+            ComboEvent::Submit => self.submit_prompt(window, cx),
             // The prompt has one field.
-            InputEvent::Next | InputEvent::Previous | InputEvent::BackspaceEmpty => {}
+            ComboEvent::Next | ComboEvent::Previous => {}
         }
         cx.notify();
     }
 
-    /// Highlights entry `index` of the prompt's list (clamped to it) and brings its node into view.
-    fn move_in_list(&mut self, index: usize, cx: &mut Context<Self>) {
-        let listed = self.listed(cx);
-        self.search_index = index.min(listed.len().saturating_sub(1));
-        if let Some(id) = listed.get(self.search_index) {
-            self.reveal(id, false);
-        }
+    /// Gives the prompt the nodes that match what is typed.
+    fn refresh_palette(&mut self, cx: &mut Context<Self>) {
+        let choices: Vec<Choice> = self
+            .listed(cx)
+            .iter()
+            .map(|id| {
+                let node = self.graph().get(id).expect("the list comes from the graph");
+                let tag = node.tags.first().map(|t| format!("#{t}  ")).unwrap_or_default();
+                Choice {
+                    key: Some(id.to_string()),
+                    icon: Some(theme::node_icon(node)),
+                    ..Choice::new(node.title.clone(), format!("{tag}{id}"))
+                }
+            })
+            .collect();
+        let listing = matches!(self.prompt, Some(Prompt::Search | Prompt::Pick { .. }));
+        let empty = if listing && choices.is_empty() { "No matches" } else { "" };
+        self.palette.update(cx, |palette, cx| {
+            palette.set_choices(choices, cx);
+            palette.set_feedback((empty.to_owned(), theme::FAINT), None, cx);
+        });
     }
 
     pub(crate) fn submit_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prompt) = self.prompt.clone() else { return };
-        let text = self.input.read(cx).text().trim().to_owned();
+        let palette = self.palette.read(cx);
+        let text = palette.text(cx).trim().to_owned();
+        let picked = palette.picked().and_then(|choice| choice.key.clone()).map(NodeId);
         match prompt {
             Prompt::Search => {
-                if let Some(id) = self.listed(cx).get(self.search_index).cloned() {
+                if let Some(id) = picked {
                     self.select(Some(id), true);
                 }
             }
             Prompt::Pick { node, relation, .. } => {
                 // Nothing matches: keep the prompt open so the query can be corrected.
-                let Some(picked) = self.listed(cx).get(self.search_index).cloned() else { return };
+                let Some(picked) = picked else { return };
                 self.mutate(cx, |graph| Self::relate(graph, &node, relation, &picked));
             }
             Prompt::Create(_) if text.is_empty() => {}
@@ -742,10 +768,6 @@ impl TopoApp {
                 if let Some(id) = self.create(new, text, cx) {
                     self.select(Some(id), true);
                 }
-            }
-            Prompt::Rename(_) if text.is_empty() => {}
-            Prompt::Rename(id) => {
-                self.mutate(cx, |graph| graph.edit(&id, Edit { title: Some(text), ..Edit::default() }));
             }
         }
         self.close_prompt(window, cx);
@@ -759,7 +781,7 @@ impl TopoApp {
             Some(Prompt::Pick { candidates, .. }) => candidates.contains(&n.id),
             _ => false,
         };
-        let query = self.input.read(cx).text().trim().to_lowercase();
+        let query = self.palette.read(cx).text(cx).trim().to_lowercase();
         let tag = query.strip_prefix('#');
         let mut hits: Vec<(bool, usize, &Node)> = self
             .graph()
@@ -783,7 +805,7 @@ impl TopoApp {
     /// Nodes to emphasize while a list is open, or `None` when the whole graph is of interest.
     fn search_matches(&self, cx: &App) -> Option<Vec<NodeId>> {
         match &self.prompt {
-            Some(Prompt::Search) if !self.input.read(cx).text().trim().is_empty() => Some(self.listed(cx)),
+            Some(Prompt::Search) if !self.palette.read(cx).text(cx).trim().is_empty() => Some(self.listed(cx)),
             Some(Prompt::Pick { node, .. }) => Some(self.listed(cx).into_iter().chain([node.clone()]).collect()),
             _ => None,
         }
@@ -791,7 +813,8 @@ impl TopoApp {
 
     /// The node the highlighted list entry stands for.
     fn list_cursor(&self, cx: &App) -> Option<NodeId> {
-        self.listed(cx).get(self.search_index).cloned()
+        self.prompt.as_ref()?;
+        self.palette.read(cx).highlighted()?.key.clone().map(NodeId)
     }
 
     // ---- AI organizing -------------------------------------------------
@@ -1136,7 +1159,7 @@ impl TopoApp {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // A text field has the keyboard; its keys are text, not canvas commands.
-        if self.prompt.is_some() || self.inline.is_some() {
+        if self.prompt.is_some() || self.inline.is_some() || self.notes.is_some() {
             return;
         }
         let keystroke = &event.keystroke;
@@ -1146,7 +1169,7 @@ impl TopoApp {
         let char = keystroke.key_char.as_deref().unwrap_or_default();
         let selected = self.selected.clone();
         match (key, cmd) {
-            ("k" | "f", true) => self.open_prompt(Prompt::Search, "", window, cx),
+            ("k" | "f", true) => self.open_prompt(Prompt::Search, window, cx),
             ("=" | "+", true) => self.zoom_by(1.25, self.canvas_center(), true),
             ("-", true) => self.zoom_by(0.8, self.canvas_center(), true),
             ("0", true) => self.zoom_to_actual_size(self.canvas_center()),
@@ -1155,7 +1178,7 @@ impl TopoApp {
             _ if char == "+" || key == "+" || key == "=" => self.zoom_by(1.25, self.canvas_center(), true),
             ("-", _) => self.zoom_by(0.8, self.canvas_center(), true),
             ("0", _) => self.zoom_to_actual_size(self.canvas_center()),
-            ("/", _) => self.open_prompt(Prompt::Search, "", window, cx),
+            ("/", _) => self.open_prompt(Prompt::Search, window, cx),
             ("n", _) => self.prompt_create(Kind::Task, None, window, cx),
             ("m", _) => self.prompt_create(Kind::Milestone, None, window, cx),
             ("tab", _) => {
@@ -1206,8 +1229,10 @@ impl TopoApp {
                     "l" => self.prompt_pick(Relation::Requires, window, cx),
                     "i" if node.kind == Kind::Task => self.prompt_pick(Relation::InMilestone, window, cx),
                     "i" => self.prompt_pick(Relation::Member, window, cx),
-                    "o" => self.open_file(&id, cx),
-                    "enter" | "f2" | "r" => self.open_prompt(Prompt::Rename(id), &node.title, window, cx),
+                    // A cloud workspace has no file; its notes are edited here.
+                    "o" if self.ws.remote().is_none() => self.open_file(&id, cx),
+                    "o" | "e" => self.start_notes(window, cx),
+                    "enter" | "f2" | "r" => self.start_inline(Field::Title, window, cx),
                     "d" => self.start_inline(Field::Due, window, cx),
                     "t" => self.start_inline(Field::Tags, window, cx),
                     "p" => self.start_inline(Field::Priority, window, cx),
@@ -1257,9 +1282,14 @@ impl Render for TopoApp {
             None if focused => window.focus(&self.focus, cx),
             _ => {}
         }
+        // Leaving the notes saves them; only Escape discards.
+        let writing = self.notes_input.focus_handle(cx).is_focused(window);
+        if self.notes.as_ref().is_some_and(|id| !writing || self.selected_node().is_none_or(|n| n.id != *id)) {
+            self.finish_notes(true, window, cx);
+        }
         // The canvas takes the standard editing commands only while no text field is
         // open. A command that cannot run has no handler, which disables its menu item.
-        let canvas = self.prompt.is_none() && self.inline.is_none();
+        let canvas = self.prompt.is_none() && self.inline.is_none() && self.notes.is_none();
         let (has_selection, has_nodes) = (!self.selected_nodes.is_empty(), self.graph().nodes().next().is_some());
         let (can_undo, can_redo) = (!self.undo.is_empty(), !self.redo.is_empty());
         div()
@@ -1296,6 +1326,7 @@ impl Render for TopoApp {
                         app.close_prompt(window, cx);
                     }
                     app.cancel_inline(window, cx);
+                    app.finish_notes(true, window, cx);
                 }),
             )
             .on_mouse_move(cx.listener(Self::on_drag_move))

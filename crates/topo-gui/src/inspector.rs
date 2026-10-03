@@ -14,7 +14,7 @@ use topo_jev::organize::Proposal;
 
 use crate::inline::Field;
 use crate::theme::{self, button, chip, icon_button, kbd, section_label};
-use crate::{Drag, Prompt, Relation, TopoApp, dates};
+use crate::{Drag, Relation, TopoApp, dates};
 
 type Remove = fn(&mut Graph, &NodeId, &NodeId) -> Result<(), topo_core::Error>;
 /// The two ends of a relation and how to remove it.
@@ -358,27 +358,31 @@ impl TopoApp {
                 })))
                 .into_any_element(),
         );
-        let rename_id = id.clone();
-        out.push(
-            div()
+        let title = div().flex().items_start().gap_2().mt_2().p_1().mx_neg_1().rounded_md();
+        let glyph = div().pt_0p5().text_color(rgb(color)).text_lg().child(icon);
+        out.push(match self.editing(&id, Field::Title) {
+            // Edited where it stands, at its own size.
+            true => title
+                .child(glyph)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_lg()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(self.combo().clone()),
+                )
+                .into_any_element(),
+            false => title
                 .id("title")
-                .flex()
-                .items_start()
-                .gap_2()
-                .mt_2()
-                .p_1()
-                .mx_neg_1()
-                .rounded_md()
+                .debug_selector(|| "title".to_owned())
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(theme::CARD)))
-                .child(div().pt_0p5().text_color(rgb(color)).text_lg().child(icon))
+                .child(glyph)
                 .child(title_text(node.title.clone()))
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    let title = app.title_of(&rename_id);
-                    app.open_prompt(Prompt::Rename(rename_id.clone()), &title, window, cx);
-                }))
+                .on_click(cx.listener(|app, _, window, cx| app.start_inline(Field::Title, window, cx)))
                 .into_any_element(),
-        );
+        });
 
         // State line.
         let open_reqs: Vec<&Node> = graph
@@ -482,48 +486,7 @@ impl TopoApp {
             }
         }
 
-        // Notes.
-        let notes_id = id.clone();
-        out.push(
-            div()
-                .flex()
-                .items_end()
-                .justify_between()
-                .child(section_label("NOTES"))
-                .child(
-                    div()
-                        .id("open-file")
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .px_1()
-                        .mb_0p5()
-                        .rounded_sm()
-                        .text_xs()
-                        .text_color(rgb(theme::MUTED))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
-                        .child("Edit file ↗")
-                        .child(kbd("O"))
-                        .on_click(cx.listener(move |app, _, _, cx| app.open_file(&notes_id, cx))),
-                )
-                .into_any_element(),
-        );
-        out.push(match node.body.trim().is_empty() {
-            true => div().text_xs().text_color(rgb(theme::FAINT)).child("No notes").into_any_element(),
-            false => div()
-                .min_w(px(0.))
-                .p_3()
-                .rounded_lg()
-                .bg(rgb(theme::CANVAS))
-                .border_1()
-                .border_color(rgb(theme::BORDER))
-                .text_xs()
-                .text_color(rgb(theme::MUTED))
-                .line_height(px(18.))
-                .child(node.body.trim_end().to_owned())
-                .into_any_element(),
-        });
+        out.extend(self.notes_section(node, cx));
 
         // Relations: each section lists what is connected and offers to connect more.
         let section = |label: &'static str, items: Vec<(&Node, Removal)>, add: Relation, cx: &mut Context<Self>| {
@@ -653,8 +616,89 @@ impl TopoApp {
             .gap_2()
             .min_h(px(30.))
             .children(label.map(property_label))
-            .child(div().flex_1().min_w(px(0.)).child(self.combo().clone()))
+            .child(div().flex_1().min_w(px(0.)).text_xs().child(self.combo().clone()))
             .into_any_element()
+    }
+
+    /// The notes: shown as text, and edited in place. A workspace of files can
+    /// also open the file; a cloud workspace has none.
+    fn notes_section(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let editing = self.notes.as_ref() == Some(&node.id);
+        let action = |id: &'static str, label: &'static str, key: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.to_owned())
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_1()
+                .mb_0p5()
+                .rounded_sm()
+                .text_xs()
+                .text_color(rgb(theme::MUTED))
+                .cursor_pointer()
+                .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
+                .child(label)
+                .child(kbd(key))
+        };
+        let file_id = node.id.clone();
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .when(!editing, |d| {
+                d.child(action("edit-notes", "Edit", "E").on_click(cx.listener(|app, _, window, cx| {
+                    app.start_notes(window, cx);
+                })))
+            })
+            .when(self.ws.remote().is_none(), |d| {
+                d.child(
+                    action("open-file", "File ↗", "O")
+                        .on_click(cx.listener(move |app, _, _, cx| app.open_file(&file_id, cx))),
+                )
+            });
+        let header = div().flex().items_end().justify_between().child(section_label("NOTES")).child(actions);
+        let text =
+            div().min_w(px(0.)).p_3().rounded_lg().bg(rgb(theme::CANVAS)).border_1().text_xs().line_height(px(18.));
+        let body = match (editing, node.body.trim().is_empty()) {
+            (true, _) => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                // The editor keeps its own clicks: a click anywhere else saves and closes it.
+                .on_mouse_down(MouseButton::Left, |_, _, cx: &mut gpui::App| cx.stop_propagation())
+                .child(
+                    text.debug_selector(|| "notes-editor".to_owned())
+                        .border_color(rgb(theme::ACCENT))
+                        .child(self.notes_input().clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_x_3()
+                        .gap_y_1()
+                        .text_xs()
+                        .text_color(rgb(theme::FAINT))
+                        .children(
+                            [("⌘↵", "save"), ("esc", "discard")]
+                                .map(|(key, what)| div().flex().items_center().gap_1().child(kbd(key)).child(what)),
+                        )
+                        .child("a click elsewhere saves"),
+                )
+                .into_any_element(),
+            (false, empty) => text
+                .id("notes")
+                .debug_selector(|| "notes".to_owned())
+                .border_color(rgb(theme::BORDER))
+                .cursor_pointer()
+                .hover(|s| s.border_color(rgb(theme::BORDER_STRONG)))
+                .text_color(rgb(if empty { theme::FAINT } else { theme::MUTED }))
+                .child(if empty { "No notes — click to write".to_owned() } else { node.body.trim_end().to_owned() })
+                .on_click(cx.listener(|app, _, window, cx| app.start_notes(window, cx)))
+                .into_any_element(),
+        };
+        vec![header.into_any_element(), body]
     }
 
     /// The related pull requests: each opens in the browser and can be unlinked.

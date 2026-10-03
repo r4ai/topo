@@ -289,8 +289,8 @@ fn clicking_away_from_a_prompt_only_closes_it(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
     let card = ui.card("a", 0.5, 0.5);
     ui.click(card);
-    ui.keys("enter");
-    assert!(matches!(ui.read(|app| app.prompt.clone()), Some(Prompt::Rename(_))));
+    ui.keys("/");
+    assert!(matches!(ui.read(|app| app.prompt.clone()), Some(Prompt::Search)));
     let empty = ui.read(|app| app.area.get().bottom_left()) + point(px(200.), px(-120.));
     ui.click(empty);
     assert!(ui.read(|app| app.prompt.is_none()));
@@ -923,7 +923,7 @@ fn the_priority_filter_dims_and_limits_select_all(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_prompt_field_has_the_standard_text_shortcuts(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
-    let text = |ui: &mut Ui| ui.app.read_with(ui.cx, |app, cx| app.input.read(cx).text().to_owned());
+    let text = |ui: &mut Ui| ui.app.read_with(ui.cx, |app, cx| app.palette.read(cx).text(cx).to_owned());
     ui.keys("/");
     ui.type_text("日本語 text");
     ui.keys("cmd-a cmd-c right");
@@ -985,8 +985,10 @@ fn tab_saves_a_field_and_opens_the_next(cx: &mut TestAppContext) {
     // An empty pull request field is passed over, and the order wraps around.
     assert_eq!(ui.inline(), Some((Field::Pr, String::new())));
     ui.keys("tab");
+    assert_eq!(ui.inline(), Some((Field::Title, "a".into())));
+    ui.keys("tab");
     assert_eq!(ui.inline(), Some((Field::Priority, "urgent".into())));
-    ui.keys("shift-tab shift-tab shift-tab");
+    ui.keys("shift-tab shift-tab shift-tab shift-tab");
     assert_eq!(ui.inline(), Some((Field::Due, String::new())));
 
     // A field that cannot be saved keeps the focus.
@@ -1095,4 +1097,104 @@ fn a_field_offers_values_to_choose_from(cx: &mut TestAppContext) {
     ui.type_text("tom");
     ui.keys("down enter");
     assert_eq!(ui.node("a").due, Some(crate::dates::today().tomorrow().unwrap()));
+}
+
+#[gpui::test]
+fn the_title_is_edited_in_the_inspector(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("enter");
+    assert_eq!(ui.inline(), Some((Field::Title, "a".into())));
+    assert!(ui.read(|app| app.prompt.is_none()));
+    ui.type_text("Alpha");
+    ui.keys("enter");
+    assert_eq!(ui.node("a").title, "Alpha");
+    // A click on the title, and a double-click on the card, open it too.
+    ui.click_on("title");
+    assert_eq!(ui.inline(), Some((Field::Title, "Alpha".into())));
+    // A title cannot be emptied.
+    ui.keys("backspace enter");
+    assert!(ui.read(|app| app.inline.as_ref().unwrap().error.is_some()));
+    ui.keys("escape");
+    assert_eq!(ui.node("a").title, "Alpha");
+    let card = ui.card("c", 0.6, 0.3);
+    ui.click(card);
+    ui.cx.simulate_event(gpui::MouseDownEvent {
+        position: card,
+        button: MouseButton::Left,
+        modifiers: Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    ui.release(card);
+    assert_eq!(ui.inline(), Some((Field::Title, "c".into())));
+}
+
+#[gpui::test]
+fn notes_are_written_in_the_inspector(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let notes = |ui: &mut Ui| ui.app.read_with(ui.cx, |app, cx| app.notes_input.read(cx).text().to_owned());
+    ui.select("a");
+    ui.keys("e");
+    assert_eq!(ui.read(|app| app.notes.clone()), Some(id("a")));
+    // Enter breaks the line and the canvas keys are text; ⌘Enter saves.
+    ui.type_text("first x");
+    ui.keys("enter");
+    ui.type_text("second");
+    assert_eq!(notes(&mut ui), "first x\nsecond");
+    assert_eq!(ui.node("a").status, Status::Todo);
+    ui.keys("cmd-enter");
+    assert_eq!(ui.read(|app| app.notes.clone()), None);
+    assert_eq!(ui.node("a").body, "first x\nsecond\n");
+
+    // Up and Down move between the lines, keeping the column.
+    ui.click_on("notes");
+    ui.keys("up");
+    ui.type_text("!");
+    ui.keys("down");
+    ui.type_text("?");
+    assert_eq!(notes(&mut ui), "first !x\nsecond?");
+    // Escape discards.
+    ui.keys("escape");
+    assert_eq!(ui.node("a").body, "first x\nsecond\n");
+
+    // Anything else that leaves the editor saves: a click elsewhere, another selection.
+    ui.click_on("edit-notes");
+    ui.type_text(" more");
+    ui.select("c");
+    assert_eq!(ui.node("a").body, "first x\nsecond more\n");
+    assert_eq!(ui.selected().as_deref(), Some("c"));
+    // Each save is one undo step, and emptied notes are no text at all.
+    ui.keys("cmd-z");
+    assert_eq!(ui.node("a").body, "first x\nsecond\n");
+    ui.select("a");
+    ui.keys("e cmd-a backspace cmd-enter");
+    assert_eq!(ui.node("a").body, "");
+}
+
+#[gpui::test]
+fn a_cloud_workspace_edits_notes_in_place(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+    use topo_core::store::MemoryRemote;
+    use topo_core::{Op, Remote};
+
+    let add: Op = serde_json::from_value(serde_json::json!({ "op": "add", "id": "a", "title": "a" })).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let remote = Arc::new(MemoryRemote::default());
+    remote.apply(&[add]).unwrap();
+    let ws = Workspace::open_remote(dir.path().to_owned(), remote.clone()).unwrap();
+    cx.update(text_input::bind_keys);
+    let (app, cx) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
+    let mut ui = Ui { app, cx, _dir: dir };
+    ui.resize(1360., 860.);
+    ui.select("a");
+    // There is no file to open, so the file key edits here and the file button is gone.
+    assert_eq!(ui.cx.debug_bounds("open-file"), None);
+    ui.keys("o");
+    assert_eq!(ui.read(|app| app.notes.clone()), Some(id("a")));
+    ui.type_text("from the gui");
+    ui.keys("cmd-enter");
+    let stored: Vec<Node> = remote.fetch(None).unwrap().unwrap().nodes.into_iter().map(Node::from).collect();
+    assert_eq!(stored[0].body, "from the gui\n");
+    assert!(ui.read(|app| app.toast.as_ref().is_none_or(|t| !t.error)));
 }

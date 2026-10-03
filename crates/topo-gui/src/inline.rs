@@ -18,6 +18,7 @@ use crate::{TopoApp, dates, parse_tags, theme};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
 pub(crate) enum Field {
+    Title,
     Priority,
     Assignee,
     Due,
@@ -37,11 +38,12 @@ pub(crate) struct InlineEdit {
 /// Entries of the list shown at once.
 const CHOICES: usize = 6;
 /// The fields in the order Tab visits them.
-const ORDER: [Field; 5] = [Field::Priority, Field::Assignee, Field::Due, Field::Tags, Field::Pr];
+const ORDER: [Field; 6] = [Field::Title, Field::Priority, Field::Assignee, Field::Due, Field::Tags, Field::Pr];
 
 impl Field {
     fn placeholder(self) -> &'static str {
         match self {
+            Field::Title => "Title",
             Field::Priority => "low, medium, high, urgent — empty clears",
             Field::Assignee => "Name or agent — empty clears",
             Field::Due => "2026-10-31, friday, +3d — empty clears",
@@ -53,6 +55,7 @@ impl Field {
     /// The text the field opens with: the current value.
     fn initial(self, node: &Node) -> String {
         match self {
+            Field::Title => node.title.clone(),
             Field::Priority => node.priority.map(|p| p.to_string()).unwrap_or_default(),
             Field::Assignee => node.assignee.clone().unwrap_or_default(),
             Field::Due => node.due.map(|d| d.to_string()).unwrap_or_default(),
@@ -64,6 +67,8 @@ impl Field {
     fn parse(self, text: &str, node: &Node, today: Date) -> Result<Edit, String> {
         let text = text.trim();
         let edit = match self {
+            Field::Title if text.is_empty() => return Err("A title cannot be empty".into()),
+            Field::Title => Edit { title: Some(text.to_owned()), ..Edit::default() },
             Field::Priority => Edit { priority: Some(parse_priority(text)?), ..Edit::default() },
             Field::Assignee => {
                 let assignee = match text {
@@ -88,12 +93,15 @@ impl Field {
     /// What Enter would save, shown under the field while typing, and its color.
     pub(crate) fn preview(self, text: &str, node: &Node, today: Date) -> (String, u32) {
         let edit = match self.parse(text, node, today) {
+            // The title is what is typed; there is nothing to interpret.
+            _ if self == Field::Title => return (String::new(), theme::FAINT),
             Ok(edit) => edit,
             Err(_) if self == Field::Due => return ("Not a date yet".into(), theme::FAINT),
             Err(_) if text.trim().is_empty() => return (self.placeholder().into(), theme::FAINT),
             Err(e) => return (e, theme::FAINT),
         };
         let saved = match self {
+            Field::Title => edit.title,
             Field::Priority => edit.priority.flatten().map(|p| theme::priority_label(p).to_owned()),
             Field::Assignee => edit.assignee.flatten().map(|a| format!("@{a}")),
             Field::Due => {
@@ -113,7 +121,7 @@ impl Field {
     /// The values to offer for `typed`, best first. `chips` are the tags already in the field.
     fn choices(self, typed: &str, chips: &[String], graph: &Graph, today: Date) -> Vec<Choice> {
         let typed = typed.trim().trim_start_matches('#').to_lowercase();
-        let choice = |value: String, detail: String| Choice { value, detail };
+        let choice = |value: String, detail: String| Choice::new(value, detail);
         let mut choices: Vec<Choice> = match self {
             Field::Priority => Priority::ALL
                 .into_iter()
@@ -150,7 +158,7 @@ impl Field {
                 matching.sort_by_key(|(tag, _)| !tag.to_lowercase().starts_with(&typed));
                 matching.into_iter().map(|(tag, count)| choice(tag.clone(), format!("{count}×"))).collect()
             }
-            Field::Pr => Vec::new(),
+            Field::Title | Field::Pr => Vec::new(),
         };
         choices.truncate(CHOICES);
         choices
@@ -184,7 +192,11 @@ impl TopoApp {
         let Some(node) = self.selected_node() else { return };
         let (id, initial) = (node.id.clone(), field.initial(node));
         let chips = (field == Field::Tags).then(|| node.tags.clone());
-        self.combo.update(cx, |combo, cx| combo.open(&initial, field.placeholder(), chips, cx));
+        self.combo.update(cx, |combo, cx| {
+            combo.open(&initial, field.placeholder(), chips, cx);
+            // A title is as long as it is; it keeps its rows while it is edited.
+            combo.set_wrap(field == Field::Title, cx);
+        });
         self.inline = Some(InlineEdit { node: id, field, error: None });
         self.show_help = false;
         self.refresh_inline(cx);
@@ -266,6 +278,7 @@ impl TopoApp {
             }
             ComboEvent::Next => self.step_inline(true, window, cx),
             ComboEvent::Previous => self.step_inline(false, window, cx),
+            ComboEvent::Highlighted => {}
         }
         cx.notify();
     }

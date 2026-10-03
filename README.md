@@ -182,10 +182,11 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - Drag its left border: Resize the panel (clamped so the canvas keeps its share)
   - The chosen width is remembered across restarts in the user config, never in the workspace
   - Titles wrap up to three lines; every overflowing one-line value ends in `…`
-  - DETAILS rows are edited in place: click a row or press its key (`p` priority, `a` assignee, `d` due date, `t` tags). `Enter` saves, `Esc` or a click elsewhere cancels, and input that cannot be saved keeps the field open with the reason under it
+  - The title and the DETAILS rows are edited in place: click one or press its key (`Enter` title, `p` priority, `a` assignee, `d` due date, `t` tags). `Enter` saves, `Esc` or a click elsewhere cancels, and input that cannot be saved keeps the field open with the reason under it
   - The field completes like a code editor: a floating list (it moves nothing below) offers the priorities, the assignees and tags the workspace already uses, and due dates that follow what you type (`3` → `+3d`, `+3w`, `+3m`, the 3rd; `fr` → `friday`). The first match is highlighted, completed faintly in the field, and taken by `Enter`; `↓` / `↑` or a click choose another. `Esc` closes the list to save the typed text as it is, and a second `Esc` cancels
   - Tags are edited as chips: a space or comma finishes a tag as typed, `Backspace` in the empty field removes the last one, `×` removes any
-  - `Tab` / `Shift+Tab` save the field and open the next / previous one (priority → assignee → due → tags → pull request)
+  - `Tab` / `Shift+Tab` save the field and open the next / previous one (title → priority → assignee → due → tags → pull request)
+  - NOTES are written in the panel, in a cloud workspace too: click them or press `e`, `Enter` breaks the line, `Cmd+Enter` saves. Leaving the editor (a click elsewhere, another selection) also saves; only `Esc` discards
   - Created / updated / completed times are shown read-only in the local time zone (`Unknown` for nodes older than the timestamps)
   - PULL REQUESTS lists the linked pull requests: `g` or `+` links one (a URL or `owner/repo#123`), a click opens it in the browser, `×` unlinks it
 - Node Operations:
@@ -203,8 +204,9 @@ Desktop interface powered by GPUI. Reflects edits from CLI or external processes
   - `p` / `a` / `d` / `t`: Edit priority / assignee / due date / tags in the inspector
   - `g`: Link a pull request
   - `Shift+p`: Dim nodes below a priority (urgent → high and up → medium and up → any priority → all)
-  - `Enter` / `r` / `F2` / double-click: Edit title
-  - `o`: Open the node's Markdown file (notes) in the default editor
+  - `Enter` / `r` / `F2` / double-click: Edit the title in the inspector
+  - `e`: Edit the notes in the inspector
+  - `o`: Open the node's Markdown file (notes) in the default editor (a cloud workspace has no file, so it edits in the inspector)
   - Arrow keys: Move the selection along dependencies (left / right) or within a column (up / down)
   - `c`: Center canvas on selected node (fits all when multiple selected)
   - `Backspace` / `Delete`: Delete node
@@ -224,7 +226,7 @@ cargo run -p topo-gui --features screenshot -- \
   --screenshot qa.png --width 1360 --height 860 --select <id>
 ```
 
-`--select` accepts one id or a comma-separated list (an unknown id is an error), `--inspector-width` sets the panel width (otherwise derived from the window, ignoring the saved preference), `--edit <field>` with `--type <text>` opens a DETAILS row of the selected node for editing, and `--help-overlay` opens the shortcuts sheet. Sizes are whole points; a size larger than the display is an error. `topo-gui --help` lists every option. This is meant for visual QA and documentation.
+`--select` accepts one id or a comma-separated list (an unknown id is an error), `--inspector-width` sets the panel width (otherwise derived from the window, ignoring the saved preference), `--edit <field>` with `--type <text>` opens the title or a DETAILS row of the selected node for editing, `--edit-notes` opens its notes, `--search <query>` opens the search prompt, and `--help-overlay` opens the shortcuts sheet. Sizes are whole points; a size larger than the display is an error. `topo-gui --help` lists every option. This is meant for visual QA and documentation.
 
 ## AI & Automation
 

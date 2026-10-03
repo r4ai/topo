@@ -1,15 +1,10 @@
 //! Everything around the graph: toolbar, prompt, toasts, zoom controls and help.
 
-use gpui::{
-    AnyElement, App, Context, Div, ElementId, MouseButton, SharedString, Stateful, div, hsla, prelude::*, px, rgb,
-};
+use gpui::{AnyElement, App, Context, Div, MouseButton, SharedString, Stateful, div, hsla, prelude::*, px, rgb};
 use topo_core::{Kind, NodeId, Priority, Status};
 
 use crate::theme::{self, button, icon_button, kbd};
 use crate::{NewNode, OrganizeKind, Prompt, TopoApp, dates};
-
-/// Entries of a search or pick list shown at once; the rest scrolls with the highlight.
-const LIST_ROWS: usize = 8;
 
 /// Swallows clicks so they do not reach the canvas underneath.
 fn stop_click<E: InteractiveElement>(element: E) -> E {
@@ -164,7 +159,7 @@ impl TopoApp {
             .child(
                 button("search", "Search")
                     .when(!self.compact, |b| b.child(kbd("⌘K")))
-                    .on_click(cx.listener(|app, _, window, cx| app.open_prompt(Prompt::Search, "", window, cx))),
+                    .on_click(cx.listener(|app, _, window, cx| app.open_prompt(Prompt::Search, window, cx))),
             )
             .child(
                 button("new-task", "+ Task")
@@ -316,7 +311,7 @@ impl TopoApp {
             .child(div().truncate().text_color(rgb(theme::TEXT)).child(self.title_of(id)))
     }
 
-    pub(crate) fn prompt_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn prompt_overlay(&self) -> Option<AnyElement> {
         let prompt = self.prompt.as_ref()?;
         let mut context: Vec<Div> = Vec::new();
         match prompt {
@@ -325,69 +320,13 @@ impl TopoApp {
                 context.extend(required_by.iter().map(|id| self.node_chip("before", id)));
                 context.extend(milestones.iter().map(|id| self.node_chip("in", id)));
             }
-            Prompt::Rename(id) | Prompt::Pick { node: id, .. } => context.push(self.node_chip("", id)),
+            Prompt::Pick { node: id, .. } => context.push(self.node_chip("", id)),
             Prompt::Search => {}
         }
-        let icon = match prompt {
-            Prompt::Search | Prompt::Pick { .. } => "⌕",
-            Prompt::Create(_) => "+",
-            Prompt::Rename(_) => "✎",
-        };
         let footer = match prompt {
             Prompt::Search => vec![("↵", "jump"), ("↑↓", "choose"), ("esc", "close")],
             Prompt::Pick { .. } => vec![("↵", "connect"), ("↑↓", "choose"), ("esc", "cancel")],
             Prompt::Create(_) => vec![("↵", "create"), ("esc", "cancel")],
-            _ => vec![("↵", "save"), ("esc", "cancel")],
-        };
-
-        let body: Option<AnyElement> = match prompt {
-            Prompt::Search | Prompt::Pick { .. } => {
-                let listed = self.listed(cx);
-                // The window of rows that keeps the highlighted one in view.
-                let first = (self.search_index + 1).saturating_sub(LIST_ROWS);
-                let rows: Vec<AnyElement> = listed
-                    .iter()
-                    .enumerate()
-                    .skip(first)
-                    .take(LIST_ROWS)
-                    .map(|(i, id)| {
-                        let node = self.graph().get(id).expect("the list comes from the graph");
-                        let (icon, color) = theme::node_icon(node);
-                        div()
-                            .id(ElementId::Name(format!("result-{id}").into()))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .h(px(32.))
-                            .px_3()
-                            .rounded_md()
-                            .when(i == self.search_index, |d| d.bg(rgb(theme::RAISED)))
-                            .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
-                            .cursor_pointer()
-                            .child(div().w(px(14.)).text_color(rgb(color)).child(icon))
-                            .child(div().flex_1().min_w(px(0.)).truncate().text_sm().child(node.title.clone()))
-                            .children(
-                                node.tags
-                                    .first()
-                                    .map(|t| div().text_xs().text_color(rgb(theme::FAINT)).child(format!("#{t}"))),
-                            )
-                            .child(div().text_xs().text_color(rgb(theme::FAINT)).child(id.to_string()))
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.search_index = i;
-                                app.submit_prompt(window, cx);
-                            }))
-                            .into_any_element()
-                    })
-                    .collect();
-                let note = |text: String| div().px_3().py_1p5().text_xs().text_color(rgb(theme::FAINT)).child(text);
-                let more = (listed.len() > LIST_ROWS)
-                    .then(|| note(format!("{}–{} of {}", first + 1, first + rows.len(), listed.len())));
-                Some(match rows.is_empty() {
-                    true => note("No matches".to_owned()).into_any_element(),
-                    false => div().flex().flex_col().p_1().children(rows).children(more).into_any_element(),
-                })
-            }
-            _ => None,
         };
 
         let card = div()
@@ -418,18 +357,8 @@ impl TopoApp {
                     )
                     .children(context),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_2p5()
-                    .text_size(px(16.))
-                    .child(div().flex_shrink_0().text_color(rgb(theme::ACCENT)).child(icon))
-                    .child(self.input.clone()),
-            )
-            .children(body.map(|b| div().border_t_1().border_color(rgb(theme::BORDER)).child(b)))
+            // The field and, under it, the nodes that match.
+            .child(div().text_size(px(16.)).child(self.palette.clone()))
             .child(
                 div()
                     .flex()
@@ -533,14 +462,15 @@ impl TopoApp {
             (
                 "Edit selection",
                 &[
-                    ("↵", "Rename (single selection)"),
+                    ("↵", "Edit the title (single selection)"),
                     ("Space", "Next status for selected nodes"),
                     ("X", "Toggle done for selected nodes"),
                     ("1–4", "Todo / Doing / Done / Dropped"),
                     ("P  A", "Priority / assignee, in the inspector"),
                     ("D  T", "Due date / tags, in the inspector"),
                     ("G", "Link a pull request"),
-                    ("O", "Open the file (notes)"),
+                    ("E", "Edit the notes (⌘↵ saves, Esc discards)"),
+                    ("O", "Open the notes file in an editor"),
                     ("⌫", "Delete selected nodes"),
                 ],
             ),
@@ -580,7 +510,7 @@ impl TopoApp {
                 &[
                     ("Drag ●", "Connect; on empty space: new follow-up"),
                     ("⇧Drag", "Connect from anywhere on a card"),
-                    ("Double-click", "Rename"),
+                    ("Double-click", "Edit the title"),
                     ("Drag / middle drag", "Pan canvas"),
                     ("⌘/Ctrl-click", "Add / remove from selection"),
                     ("Wheel", "Zoom at pointer"),

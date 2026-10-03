@@ -10,7 +10,8 @@ use gpui::{
 use jiff::civil::Date;
 use topo_core::{Graph, Kind, Node, NodeId, Status};
 
-use crate::{Drag, NODE_H, NODE_W, Prompt, TopoApp, dates, layout, theme};
+use crate::inline::Field;
+use crate::{Drag, NODE_H, NODE_W, TopoApp, dates, layout, theme};
 
 /// How a card is emphasized in the current frame.
 struct CardState {
@@ -403,7 +404,7 @@ impl TopoApp {
             .when(self.graph().nodes().next().is_none(), |d| d.child(self.empty_state(cx)))
             .children(link_label)
             .child(self.zoom_controls(cx))
-            .children(self.prompt_overlay(cx))
+            .children(self.prompt_overlay())
             .children(self.toast_view())
             .when(self.show_help, |d| d.child(self.help_overlay(cx)))
             .on_mouse_down(
@@ -635,8 +636,7 @@ impl TopoApp {
                     app.drag = match () {
                         _ if ev.modifiers.shift => Some(Drag::Link { source: down_id.clone(), mouse: ev.position }),
                         _ if ev.click_count >= 2 => {
-                            let title = app.title_of(&down_id);
-                            app.open_prompt(Prompt::Rename(down_id.clone()), &title, window, cx);
+                            app.start_inline(Field::Title, window, cx);
                             None
                         }
                         // Cards are placed by the layout, so dragging one moves the canvas.
