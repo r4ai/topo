@@ -8,7 +8,7 @@ Each editor owns one scheduler and its activation subscription. GPUI window acti
 
 ## Validation (2026-10-03)
 
-The managed Linux environment uses Rust 1.96.0 and the pinned GPUI revision. Automated tests use GPUI headless windows, virtual time and a counting `MemoryRemote` adapter; they do not contact a production service. The full workspace passes 173 tests, including 80 GUI tests; three existing graph benchmarks remain ignored. Formatting, diff whitespace checks and GUI Clippy with warnings denied pass.
+The managed Linux environment uses Rust 1.96.0 and the pinned GPUI revision. Automated tests use GPUI headless windows, virtual time and a counting `MemoryRemote` adapter; they do not contact a production service. After integrating the latest main for v0.2.0, the full workspace passes 176 tests, including 81 GUI tests; three existing graph benchmarks remain ignored. Formatting, diff whitespace checks and workspace Clippy with warnings denied pass.
 
 - Switching two local workspaces with identical node IDs resets selection and undo, retires the previous watcher/task, and saves only to the new target.
 - Cancelled native folder selection, nonexistent paths, uninitialized folders, explicit initialization, same-target selection and invalid cloud links preserve the intended target/draft behavior.

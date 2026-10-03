@@ -73,6 +73,11 @@ previous Worker working.
 
 ## Release
 
+After GitHub release publication, the `Release` workflow calls `Deploy cloud API`
+for production using the same tag commit. The production GitHub environment must
+contain the Cloudflare secrets below. A deployment failure leaves the published
+release intact; retry the failed deployment jobs after correcting the setup.
+
 The `Deploy cloud API` workflow
 ([`deploy-cloud.yml`](../../.github/workflows/deploy-cloud.yml)) is started by
 hand and takes the environment as its input. It runs the CI checks, applies

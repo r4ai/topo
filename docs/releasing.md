@@ -43,6 +43,13 @@ To retry a failed run before a release exists:
 gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0
 ```
 
+Alternatively, create a `release/vMAJOR.MINOR.PATCH` branch at the version commit
+already on main. This starts the same checks and builds, then creates an annotated
+tag and publishes the release only after they pass. Existing tags are never moved.
+This path also works when using GitHub's branch API rather than Git push credentials.
+Release publication calls the production cloud deployment workflow with the same
+source commit; configure its Cloudflare secrets in the production environment.
+
 Manual dispatch must select the same tag as its input, ensuring the reusable CI
 workflow tests the actual release source rather than the current main branch.
 
