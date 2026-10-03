@@ -21,6 +21,20 @@ async fn fetch(
     _ctx: Context,
 ) -> worker::Result<axum::http::Response<axum::body::Body>> {
     let client_id = env.var("GITHUB_CLIENT_ID")?.to_string();
+    if request.method() == axum::http::Method::POST && request.uri().path() == "/v1/auth/github" {
+        // Cloudflare supplies this header at the edge. Missing addresses share a bucket.
+        let ip = request.headers().get("CF-Connecting-IP").and_then(|ip| ip.to_str().ok()).unwrap_or("unknown");
+        let key = format!("topo:auth:github:{client_id}:{ip}");
+        if !env.rate_limiter("AUTH_RATE_LIMITER")?.limit(key).await?.success {
+            let mut response = axum::http::Response::new(axum::body::Body::from(
+                r#"{"error":{"code":"rate_limited","message":"too many sign-in attempts; retry in a minute"}}"#,
+            ));
+            *response.status_mut() = axum::http::StatusCode::TOO_MANY_REQUESTS;
+            response.headers_mut().insert("content-type", "application/json".parse().unwrap());
+            response.headers_mut().insert("retry-after", "60".parse().unwrap());
+            return Ok(response);
+        }
+    }
     let credentials = format!("{client_id}:{}", env.secret("GITHUB_CLIENT_SECRET")?);
     let github = GitHubApi {
         client_id: client_id.clone(),

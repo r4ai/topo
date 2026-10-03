@@ -3,12 +3,23 @@
 The server is one Cloudflare Worker with one D1 database. It keeps no state
 between requests, so there is nothing to operate besides the two.
 
+The production API is hosted at <https://topo.r4ai.dev>.
+Its interactive API reference is at <https://topo.r4ai.dev/docs>.
+Sign in from a build of the current CLI with:
+
+```bash
+topo login --url https://topo.r4ai.dev
+```
+
 ## Configuration
 
 [`crates/topo-server/wrangler.toml`](../../crates/topo-server/wrangler.toml)
 declares the Worker, its D1 binding, and a `staging` environment beside
 production. `worker-build` compiles the crate to WebAssembly and writes
 `build/index.js`, which is the Worker's entry point.
+
+Production serves every path on the `topo.r4ai.dev` custom domain. Staging
+uses its own `workers.dev` hostname and does not inherit the production domain.
 
 | Name | Kind | Purpose |
 | :--- | :--- | :--- |
@@ -38,9 +49,10 @@ staging.
    npx wrangler secret put GITHUB_CLIENT_SECRET
    ```
 
-4. Add a Cloudflare rate limiting rule on `POST /v1/auth/github`. It is the one
-   route that calls GitHub without a token of this server, and the rule keeps
-   it from being used to exhaust the app's GitHub quota.
+4. Keep the `AUTH_RATE_LIMITER` binding in `wrangler.toml`. The Worker limits
+   `POST /v1/auth/github` to 10 attempts per minute per IP at each Cloudflare
+   location before calling GitHub, returning `429` with `Retry-After: 60`
+   when exceeded. Production and staging use separate limiter namespaces.
 5. Deploy with the workflow below, or by hand:
 
    ```bash
