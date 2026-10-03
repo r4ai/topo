@@ -98,9 +98,13 @@ or from `credentials.toml` in `$XDG_CONFIG_HOME/topo`, `%APPDATA%\topo`, or
 
 | Variable | Meaning |
 | :--- | :--- |
-| `TOPO_TOKEN` | Token to send, instead of the stored one |
-| `TOPO_CLOUD_URL` | Server for the commands that are not run in a linked workspace (same as `--url`) |
+| `TOPO_TOKEN` | Token to send, instead of the stored one; requires matching `TOPO_CLOUD_URL` |
+| `TOPO_CLOUD_URL` | Trusted server bound to `TOPO_TOKEN`; also the default for commands accepting `--url` |
 | `TOPO_AGENT` | Label recorded with every write, to tell apart agents that share a token |
+
+Sign-in requires `--url` or `TOPO_CLOUD_URL`. Requests use HTTPS except for
+loopback development and never follow redirects. Ordinary linked-workspace
+commands still use the stored credential for that server when `TOPO_TOKEN` is absent.
 
 Model-assisted organization (`topo-jev`) stays in the client. It reads the
 downloaded graph, calls the model with the user's own configuration, and sends

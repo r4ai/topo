@@ -17,7 +17,7 @@ pub struct CloudConfig {
 
 fn read(topo_dir: &Path) -> Result<toml::Table, Error> {
     let path = topo_dir.join("config.toml");
-    match std::fs::read_to_string(&path) {
+    match topo_core::files::read(topo_dir, "config.toml") {
         Ok(text) => text.parse().map_err(|e| Error::file(&path, e)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml::Table::new()),
         Err(e) => Err(Error::file(&path, e)),
@@ -45,12 +45,30 @@ pub fn store(topo_dir: &Path, cloud: Option<&CloudConfig>) -> Result<(), Error> 
             table.remove("cloud");
         }
     }
-    std::fs::write(&path, table.to_string()).map_err(|e| Error::file(&path, e))
+    topo_core::files::write(topo_dir, "config.toml", &table.to_string(), false).map_err(|e| Error::file(&path, e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn config_links_cannot_read_or_overwrite_an_external_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topo = tmp.path().join("topo");
+        std::fs::create_dir(&topo).unwrap();
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, "[other]\nvalue = 1\n").unwrap();
+        let config = topo.join("config.toml");
+        std::os::unix::fs::symlink(&victim, &config).unwrap();
+        assert!(load(&topo).is_err());
+        assert!(store(&topo, None).is_err());
+        std::fs::remove_file(&config).unwrap();
+        std::fs::hard_link(&victim, &config).unwrap();
+        store(&topo, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "[other]\nvalue = 1\n");
+    }
 
     #[test]
     fn the_link_is_stored_beside_other_tables() {

@@ -16,7 +16,9 @@ impl NodeId {
     const LEN: usize = 6;
 
     pub fn random() -> Self {
-        let id = (0..Self::LEN).map(|_| Self::ALPHABET[fastrand::usize(..Self::ALPHABET.len())] as char).collect();
+        let seed = getrandom::u64().expect("the host provides system randomness");
+        let mut rng = fastrand::Rng::with_seed(seed);
+        let id = (0..Self::LEN).map(|_| Self::ALPHABET[rng.usize(..Self::ALPHABET.len())] as char).collect();
         Self(id)
     }
 

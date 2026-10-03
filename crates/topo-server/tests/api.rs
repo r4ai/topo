@@ -107,6 +107,213 @@ fn code(reply: &Reply) -> (u16, &str) {
     (reply.status.as_u16(), reply.body["error"]["code"].as_str().unwrap_or(""))
 }
 
+/// Inserts a competing transaction immediately before the selected database batch.
+#[derive(Default)]
+struct Interleaving {
+    inner: SqliteDb,
+    next: std::sync::Mutex<Option<(&'static str, Vec<Stmt>)>>,
+}
+
+impl Interleaving {
+    fn before(&self, sql_prefix: &'static str, statements: Vec<Stmt>) {
+        *self.next.lock().unwrap() = Some((sql_prefix, statements));
+    }
+}
+
+impl Db for Interleaving {
+    fn batch(&self, statements: Vec<Stmt>) -> BoxFuture<'_, Result<Vec<Rows>, DbError>> {
+        Box::pin(async move {
+            let competing = {
+                let mut next = self.next.lock().unwrap();
+                if next.as_ref().is_some_and(|(prefix, _)| statements.iter().any(|s| s.sql().starts_with(prefix))) {
+                    next.take().map(|(_, statements)| statements)
+                } else {
+                    None
+                }
+            };
+            if let Some(competing) = competing {
+                self.inner.batch(competing).await?;
+            }
+            self.inner.batch(statements).await
+        })
+    }
+}
+
+#[test]
+fn revoked_owners_and_tokens_cannot_finish_pending_mutations() {
+    for operation in ["member", "remove", "rename", "delete", "apply", "import", "token"] {
+        let db = Arc::new(Interleaving::default());
+        let api = Api::over(db.clone());
+        let alice = api.sign_in("alice");
+        let bob = api.sign_in("bob");
+        let wid = api.workspace(&alice);
+        block_on(db.inner.batch(vec![sql::upsert_member(&wid, 2, topo_core::wire::Role::Owner)])).unwrap();
+        let (prefix, competing) = if operation == "token" {
+            let tokens = api.get("/v1/tokens", &alice).body;
+            let token_id = tokens[0]["id"].as_str().unwrap();
+            ("INSERT INTO \"changes\"", sql::delete_token(token_id, 1))
+        } else {
+            let prefix = match operation {
+                "member" => "INSERT INTO \"workspace_members\"",
+                "remove" => "DELETE FROM \"workspace_members\"",
+                "rename" => "UPDATE \"workspaces\"",
+                "delete" => "DELETE FROM \"workspaces\"",
+                _ => "INSERT INTO \"changes\"",
+            };
+            (prefix, sql::delete_member(&wid, 1))
+        };
+        db.before(prefix, vec![competing]);
+        let response = match operation {
+            "member" => {
+                api.send("PUT", &format!("/v1/workspaces/{wid}/members/alice"), &alice, json!({ "role": "owner" }))
+            }
+            "remove" => api.call("DELETE", &format!("/v1/workspaces/{wid}/members/bob"), &alice, &[], None),
+            "rename" => api.send("PATCH", &format!("/v1/workspaces/{wid}"), &alice, json!({ "name": "changed" })),
+            "delete" => api.call("DELETE", &format!("/v1/workspaces/{wid}"), &alice, &[], None),
+            "import" => api.call(
+                "PUT",
+                &format!("/v1/workspaces/{wid}/graph"),
+                &alice,
+                &[("idempotency-key", "k")],
+                Some(json!({ "nodes": [{ "id": "a", "title": "changed" }] })),
+            ),
+            _ => api.apply(&wid, &alice, "k", json!([{ "op": "add", "title": "changed" }])),
+        };
+        assert!(
+            matches!(response.status.as_u16(), 401 | 403 | 404),
+            "{operation}: {} {}",
+            response.status,
+            response.body
+        );
+        assert!(db.next.lock().unwrap().is_none(), "interleaving did not run: {operation}");
+        let graph = api.get(&format!("/v1/workspaces/{wid}/graph"), &bob);
+        assert_eq!(graph.status, StatusCode::OK);
+        assert_eq!(graph.body["version"], 0);
+        assert_eq!(graph.body["nodes"], json!([]));
+        assert_eq!(api.get("/v1/workspaces", &bob).body[0]["name"], "ws");
+        let members = api.get(&format!("/v1/workspaces/{wid}/members"), &bob).body;
+        assert_eq!(
+            members.as_array().unwrap().iter().filter(|m| m["role"] == "owner").count(),
+            if operation == "token" { 2 } else { 1 }
+        );
+    }
+}
+
+#[test]
+fn revoked_sessions_cannot_mint_replacement_tokens_or_create_workspaces() {
+    for operation in ["token", "workspace"] {
+        let db = Arc::new(Interleaving::default());
+        let api = Api::over(db.clone());
+        let alice = api.sign_in("alice");
+        let token_id = api.get("/v1/tokens", &alice).body[0]["id"].as_str().unwrap().to_owned();
+        let prefix = if operation == "token" { "INSERT INTO \"tokens\"" } else { "INSERT INTO \"workspaces\"" };
+        db.before(prefix, vec![sql::delete_token(&token_id, 1)]);
+        let path = if operation == "token" { "/v1/tokens" } else { "/v1/workspaces" };
+        let response = api.send("POST", path, &alice, json!({ "name": "replacement" }));
+        assert_eq!(code(&response), (401, "unauthenticated"), "{operation}: {}", response.body);
+        assert!(db.next.lock().unwrap().is_none());
+        let replacement = api.sign_in("alice");
+        assert_eq!(api.get("/v1/tokens", &replacement).body.as_array().unwrap().len(), 1);
+        assert_eq!(api.get("/v1/workspaces", &replacement).body, json!([]));
+    }
+}
+
+#[test]
+fn competing_owner_demotions_never_leave_the_workspace_without_an_owner() {
+    for method in ["PUT", "DELETE"] {
+        let db = Arc::new(Interleaving::default());
+        let api = Api::over(db.clone());
+        let alice = api.sign_in("alice");
+        let wid = api.workspace(&alice);
+        block_on(
+            db.inner.batch(vec![sql::upsert_user(2, "bob"), sql::upsert_member(&wid, 2, topo_core::wire::Role::Owner)]),
+        )
+        .unwrap();
+        let prefix =
+            if method == "PUT" { "INSERT INTO \"workspace_members\"" } else { "DELETE FROM \"workspace_members\"" };
+        db.before(prefix, vec![sql::upsert_member(&wid, 2, topo_core::wire::Role::Editor)]);
+        let response = api.call(
+            method,
+            &format!("/v1/workspaces/{wid}/members/alice"),
+            &alice,
+            &[],
+            (method == "PUT").then(|| json!({ "role": "editor" })),
+        );
+        assert_eq!(code(&response), (409, "conflict"), "{method}: {}", response.body);
+        assert!(db.next.lock().unwrap().is_none());
+        let members = api.get(&format!("/v1/workspaces/{wid}/members"), &alice).body;
+        assert_eq!(members.as_array().unwrap().iter().filter(|m| m["role"] == "owner").count(), 1);
+    }
+}
+
+#[test]
+fn graph_read_rechecks_access_with_the_returned_snapshot() {
+    let db = Arc::new(Interleaving::default());
+    let api = Api::over(db.clone());
+    let alice = api.sign_in("alice");
+    let wid = api.workspace(&alice);
+    let n =
+        topo_core::Node::new(topo_core::NodeId("a".into()), topo_core::Kind::Task, "created after revocation".into());
+    db.before("SELECT \"id\", \"kind\"", vec![sql::delete_member(&wid, 1), sql::upsert_nodes(&wid, &[&n])]);
+    let response = api.get(&format!("/v1/workspaces/{wid}/graph"), &alice);
+    assert!(db.next.lock().unwrap().is_none());
+    assert_eq!(code(&response), (404, "not_found"));
+    assert!(response.body.get("nodes").is_none());
+}
+
+#[test]
+fn import_checks_workspace_access_before_validating_the_graph() {
+    let api = Api::new();
+    let alice = api.sign_in("alice");
+    let bob = api.sign_in("bob");
+    let wid = api.workspace(&alice);
+    let import = || {
+        api.call(
+            "PUT",
+            &format!("/v1/workspaces/{wid}/graph"),
+            &bob,
+            &[("idempotency-key", "k")],
+            Some(json!({ "nodes": [{ "id": "a", "title": "a", "depends_on": ["a"] }] })),
+        )
+    };
+    assert_eq!(code(&import()), (404, "not_found"));
+    api.send("PUT", &format!("/v1/workspaces/{wid}/members/bob"), &alice, json!({ "role": "viewer" }));
+    assert_eq!(code(&import()), (403, "forbidden"));
+}
+
+#[test]
+fn member_removal_uses_stable_identity_instead_of_cached_or_reassigned_logins() {
+    let db = Arc::new(SqliteDb::new());
+    let api = Api::over(db.clone());
+    let alice = api.sign_in("alice");
+    let wid = api.workspace(&alice);
+    api.send("PUT", &format!("/v1/workspaces/{wid}/members/bob"), &alice, json!({ "role": "editor" }));
+    // GitHub now assigns this label to carol (id 3), whereas our cached row is id 2.
+    block_on(db.batch(vec![sql::upsert_user(2, "carol")])).unwrap();
+    assert_eq!(
+        code(&api.call("DELETE", &format!("/v1/workspaces/{wid}/members/carol"), &alice, &[], None)),
+        (404, "not_found")
+    );
+    assert!(
+        api.get(&format!("/v1/workspaces/{wid}/members"), &alice)
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["user_id"] == 2)
+    );
+    // A deleted account need not resolve on GitHub to revoke its membership by id.
+    block_on(db.batch(vec![sql::upsert_user(2, "deleted-account")])).unwrap();
+    assert_eq!(
+        api.call("DELETE", &format!("/v1/workspaces/{wid}/members/by-id/2"), &alice, &[], None).status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        code(&api.call("DELETE", &format!("/v1/workspaces/{wid}/members/by-id/1"), &alice, &[], None)),
+        (409, "conflict")
+    );
+}
+
 #[test]
 fn signing_in_exchanges_a_github_token_for_a_token() {
     let api = Api::new();
@@ -184,7 +391,10 @@ fn members_get_the_access_of_their_role() {
     assert_eq!(api.send("PUT", &member("bob"), &alice, json!({ "role": "editor" })).status, StatusCode::NO_CONTENT);
     assert_eq!(api.apply(&wid, &bob, "k3", json!(add)).status, StatusCode::OK);
     let members = api.get(&format!("/v1/workspaces/{wid}/members"), &bob).body;
-    assert_eq!(members, json!([{ "login": "alice", "role": "owner" }, { "login": "bob", "role": "editor" }]));
+    assert_eq!(
+        members,
+        json!([{ "user_id": 1, "login": "alice", "role": "owner" }, { "user_id": 2, "login": "bob", "role": "editor" }])
+    );
     assert_eq!(api.get("/v1/workspaces", &bob).body, json!([{ "id": wid, "name": "ws", "role": "editor" }]));
 
     assert_eq!(code(&api.send("PUT", &member("nobody"), &alice, json!({ "role": "viewer" }))), (404, "not_found"));
@@ -385,6 +595,7 @@ fn the_openapi_document_lists_every_route() {
         ("/v1/workspaces/{wid}/graph", BTreeSet::from(["get", "put"])),
         ("/v1/workspaces/{wid}/members", BTreeSet::from(["get"])),
         ("/v1/workspaces/{wid}/members/{login}", BTreeSet::from(["delete", "put"])),
+        ("/v1/workspaces/{wid}/members/by-id/{user_id}", BTreeSet::from(["delete"])),
     ]);
     assert_eq!(operations, expected);
     assert_eq!(spec["components"]["securitySchemes"]["token"]["scheme"], "bearer");

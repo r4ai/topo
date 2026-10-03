@@ -33,6 +33,7 @@ impl Client {
             .timeout_global(Some(Duration::from_secs(15)))
             // Error responses carry a body that says what went wrong.
             .http_status_as_error(false)
+            .max_redirects(0)
             .tls_config(TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build())
             .build();
         let label = std::env::var("TOPO_AGENT").ok().filter(|label| !label.is_empty());
@@ -52,6 +53,7 @@ impl Client {
         body: Option<&impl Serialize>,
         expected: &[StatusCode],
     ) -> Result<ureq::http::Response<ureq::Body>, Error> {
+        safe_url(&self.url)?;
         let url = format!("{}{path}", self.url);
         let mut request = Request::builder().method(method).uri(&url);
         if !self.token.is_empty() {
@@ -67,7 +69,7 @@ impl Client {
             }
             None => String::new(),
         };
-        let request = request.body(text).expect("the request is well formed");
+        let request = request.body(text).map_err(|_| Error::UnsafeUrl)?;
         let http = |source| Error::Http { url: url.clone(), source };
         let mut response = self.agent.run(request).map_err(http)?;
         let status = response.status();
@@ -104,7 +106,10 @@ impl Client {
 
     /// Sends a write, again with the same key while the server is busy with others.
     fn write<T: DeserializeOwned>(&self, method: Method, path: &str, body: &impl Serialize) -> Result<T, Error> {
-        let key = format!("{:032x}", fastrand::u128(..));
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|error| Error::Random(error.to_string()))?;
+        let random = u128::from_le_bytes(bytes);
+        let key = format!("{random:032x}");
         let mut headers = vec![("idempotency-key", key.as_str())];
         headers.extend(self.label.as_deref().map(|label| ("topo-agent", label)));
         let mut attempt = 0;
@@ -174,6 +179,10 @@ impl Client {
         self.done(Method::DELETE, &format!("/v1/workspaces/{workspace}/members/{login}"), None::<&()>)
     }
 
+    pub fn remove_member_by_id(&self, workspace: &str, user_id: u64) -> Result<(), Error> {
+        self.done(Method::DELETE, &format!("/v1/workspaces/{workspace}/members/by-id/{user_id}"), None::<&()>)
+    }
+
     // ---- nodes -------------------------------------------------------------
 
     /// The workspace, or `None` if it is still at version `known`.
@@ -202,6 +211,22 @@ impl Client {
     /// The recorded writes after a version, oldest first.
     pub fn changes(&self, workspace: &str, after: u64) -> Result<Vec<Change>, Error> {
         self.get(&format!("/v1/workspaces/{workspace}/changes?after={after}"))
+    }
+}
+
+fn safe_url(url: &str) -> Result<(), Error> {
+    let uri: ureq::http::Uri = url.parse().map_err(|_| Error::UnsafeUrl)?;
+    let authority = uri.authority().ok_or(Error::UnsafeUrl)?;
+    if authority.as_str().contains('@') {
+        return Err(Error::UnsafeUrl);
+    }
+    let host = authority.host().trim_start_matches('[').trim_end_matches(']');
+    let loopback =
+        host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    match uri.scheme_str() {
+        Some("https") => Ok(()),
+        Some("http") if loopback => Ok(()),
+        _ => Err(Error::UnsafeUrl),
     }
 }
 
@@ -236,6 +261,63 @@ mod tests {
     use mockito::Matcher;
 
     use super::*;
+
+    #[test]
+    fn distinct_writes_do_not_reuse_time_seeded_request_keys() {
+        let mut server = mockito::Server::new();
+        let keys = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let seen = keys.clone();
+        let requests = server
+            .mock("POST", "/v1/workspaces/w/apply")
+            .match_request(move |request| {
+                assert!(seen.lock().unwrap().insert(request.header("idempotency-key")[0].to_str().unwrap().to_owned()));
+                true
+            })
+            .with_body(r#"{"version":1,"created":{}}"#)
+            .expect(2)
+            .create();
+        let client = Client::new(&server.url(), "t".into());
+        for target in ["one", "two"] {
+            fastrand::seed(7);
+            client.apply("w", &[Op::Remove { id: target.into() }]).unwrap();
+        }
+        requests.assert();
+    }
+
+    #[test]
+    fn cleartext_is_allowed_only_for_loopback_development() {
+        for url in ["https://api.example.com", "http://localhost:8080", "http://127.0.0.1:80", "http://[::1]:8080"] {
+            assert!(safe_url(url).is_ok(), "{url}");
+        }
+        for url in [
+            "http://example.com",
+            "http://192.168.1.1",
+            "http://127.0.0.1.evil.example",
+            "http://localhost.evil.example",
+            "https://user@evil.example",
+            "file:///tmp/a",
+            "example.com",
+        ] {
+            assert!(matches!(Client::new(url, "secret".into()).user(), Err(Error::UnsafeUrl)), "{url}");
+        }
+    }
+
+    #[test]
+    fn redirects_cannot_forward_credentials_or_sign_in_bodies() {
+        let mut origin = mockito::Server::new();
+        let mut destination = mockito::Server::new();
+        let leaked = destination.mock("POST", "/sink").expect(0).create();
+        let redirect = origin
+            .mock("POST", "/v1/auth/github")
+            .with_status(307)
+            .with_header("location", &format!("{}/sink", destination.url()))
+            .create();
+        assert!(
+            Client::new(&origin.url(), "topo-secret".into()).sign_in("github-secret".into(), "test".into()).is_err()
+        );
+        redirect.assert();
+        leaked.assert();
+    }
 
     #[test]
     fn sends_the_token_verbatim_and_reads_the_version_headers() {

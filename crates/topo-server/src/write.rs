@@ -39,6 +39,7 @@ pub async fn write(
 ) -> Result<ApplyResult, ApiError> {
     let wid = write.workspace_id;
     for _ in 0..ATTEMPTS {
+        write.caller.require(state, wid, &WRITERS).await?;
         let read = vec![
             write.caller.membership(wid),
             sql::version(wid),
@@ -61,7 +62,7 @@ pub async fn write(
         let (old, new) = (before.into_nodes(), changed.graph.into_nodes());
         let upserts: Vec<&Node> = new.values().filter(|node| old.get(&node.id) != Some(node)).collect();
         let deletes: Vec<&NodeId> = old.keys().filter(|id| !new.contains_key(id)).collect();
-        let record = sql::insert_change(sql::NewChange {
+        let record = sql::insert_change_authorized(sql::NewChange {
             workspace_id: wid,
             version: current + 1,
             user_id: write.caller.user_id,

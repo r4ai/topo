@@ -74,7 +74,8 @@ pub async fn get(
         return Ok((StatusCode::NOT_MODIFIED, [(ETAG, current)]).into_response());
     }
     // The version may have moved since the check, so it is read again with the nodes.
-    let mut results = state.db.batch(vec![sql::version(&wid), sql::nodes(&wid)]).await?;
+    let mut results = state.db.batch(vec![caller.membership(&wid), sql::version(&wid), sql::nodes(&wid)]).await?;
+    caller.role(&wid, results.remove(0))?;
     let nodes = write::nodes(results.remove(1))?.into_iter().map(Into::into).collect();
     let version = write::version(results.remove(0))?;
     Ok(([(ETAG, etag(version))], axum::Json(Snapshot { version, nodes })).into_response())
@@ -107,13 +108,12 @@ pub async fn import(
     headers: HeaderMap,
     Json(request): Json<ImportRequest>,
 ) -> Result<axum::Json<ApplyResult>, ApiError> {
-    let nodes: Vec<Node> = request.nodes.into_iter().map(Into::into).collect();
-    nodes.iter().try_for_each(|node| node.id.validate())?;
-    let graph = Graph::from_nodes(nodes)?;
     let write = write_headers(&caller, &wid, &headers)?;
     let result = write::write(&state, &write, |before| {
+        let nodes: Vec<Node> = request.nodes.iter().cloned().map(Into::into).collect();
+        let graph = Graph::from_nodes(nodes)?;
         let ops = ops::diff(&before.clone().into_nodes(), &graph.clone().into_nodes());
-        Ok(Changed { graph: graph.clone(), ops, created: BTreeMap::new() })
+        Ok(Changed { graph, ops, created: BTreeMap::new() })
     });
     Ok(axum::Json(result.await?))
 }

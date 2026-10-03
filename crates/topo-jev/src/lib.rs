@@ -67,7 +67,7 @@ impl Config {
         }
         let path = topo_dir.join("config.toml");
         let err = |message: String| Error::Config { path: path.display().to_string(), message };
-        match std::fs::read_to_string(&path) {
+        match topo_core::files::read(topo_dir, "config.toml") {
             Ok(text) => Ok(toml::from_str::<File>(&text).map_err(|e| err(e.to_string()))?.jev.unwrap_or_default()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(err(e.to_string())),

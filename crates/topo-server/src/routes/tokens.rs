@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use topo_core::wire::{CreatedToken, ErrorBody, NewToken, Token};
 
 use crate::auth::{Caller, hash, random_hex};
+use crate::db::DbError;
 use crate::error::{ApiError, Json, name};
 use crate::routes::auth::{created, new_secret};
 use crate::{AppState, sql};
@@ -45,8 +46,32 @@ pub async fn create(
         caller.role(workspace_id, membership)?;
     }
     let token = new_secret();
-    let insert = sql::insert_token(&random_hex(6), &hash(&token), caller.user_id, scope, name, request.expires_in);
-    let rows = state.db.batch(vec![insert]).await?.remove(0);
+    let insert = sql::insert_token_authorized(
+        &random_hex(6),
+        &hash(&token),
+        caller.user_id,
+        scope,
+        name,
+        request.expires_in,
+        &caller.token_id,
+    );
+    let rows = match state.db.batch(vec![insert]).await {
+        Ok(mut rows) => rows.remove(0),
+        Err(DbError::Constraint) => {
+            caller.require_session(&state).await?;
+            if let Some(wid) = scope {
+                caller
+                    .require(
+                        &state,
+                        wid,
+                        &[topo_core::wire::Role::Owner, topo_core::wire::Role::Editor, topo_core::wire::Role::Viewer],
+                    )
+                    .await?;
+            }
+            return Err(DbError::Constraint.into());
+        }
+        Err(error) => return Err(error.into()),
+    };
     Ok(axum::Json(CreatedToken { info: created(rows)?, token }))
 }
 
@@ -65,6 +90,7 @@ pub async fn revoke(
     if caller.token_id != id {
         caller.unscoped()?;
     }
-    let deleted = state.db.batch(vec![sql::delete_token(&id, caller.user_id)]).await?.remove(0);
+    let deleted =
+        state.db.batch(vec![sql::delete_token_authorized(&id, caller.user_id, &caller.token_id)]).await?.remove(0);
     if deleted.0.is_empty() { Err(ApiError::NotFound) } else { Ok(StatusCode::NO_CONTENT) }
 }

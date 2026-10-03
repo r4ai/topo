@@ -11,6 +11,48 @@ struct Fixture {
     root: TempDir,
 }
 
+#[test]
+fn terminal_controls_are_visible_in_text_and_preserved_in_machine_output() {
+    let title = "日本語\u{1b}]52;c;YWJj\u{7}\u{1b}[2J\r\u{9b}2J";
+    let mut n = node("safe01", Kind::Task, title);
+    n.body = "普通のメモ\n\t次の行\u{1b}[H".into();
+    let fixture = Fixture::new(vec![n]);
+    for args in [vec!["ls", "--format", "text"], vec!["show", "safe01"], vec!["graph", "--format", "tree"]] {
+        let output = fixture.text(&args, "");
+        assert!(output.contains("日本語"));
+        assert!(!output.chars().any(|c| c.is_control() && c != '\n' && c != '\t'), "{output:?}");
+    }
+    assert_eq!(fixture.json(&["show", "safe01", "--json"], "")["title"], title);
+    let jsonl = fixture.text(&["ls", "--format", "jsonl"], "");
+    for line in jsonl.lines() {
+        assert_eq!(serde_json::from_str::<Value>(line).unwrap()["title"], title);
+    }
+    assert!(!jsonl.chars().any(|c| c.is_control() && c != '\n'));
+    assert!(fixture.text(&["show", "safe01"], "").contains("普通のメモ\n\t次の行"));
+}
+
+#[test]
+fn deep_tree_output_keeps_all_nodes_with_bounded_indentation() {
+    let count = 1000;
+    let fixture = Fixture::new(
+        (0..count)
+            .map(|i| {
+                let mut n = node(&format!("n{i:04}"), Kind::Task, "deep task");
+                if i + 1 < count {
+                    n.depends_on.push(id(&format!("n{:04}", i + 1)));
+                }
+                n
+            })
+            .collect(),
+    );
+    let output = fixture.text(&["graph", "--format", "tree"], "");
+    assert_eq!(output.lines().count(), count);
+    assert!(output.lines().all(|line| line.len() < 120));
+    assert!(output.len() < count * 120);
+    assert!(output.contains("depth 999"));
+    assert!(output.contains("n0999"));
+}
+
 impl Fixture {
     fn new(nodes: Vec<Node>) -> Self {
         let root = tempfile::tempdir().unwrap();

@@ -29,8 +29,8 @@ until curl --silent --fail --output /dev/null "$url/v1/auth/config"; do
   sleep 1
 done
 
-export TOPO_TOKEN=topo_dev XDG_CONFIG_HOME="$work/config"
-unset TOPO_DIR TOPO_CLOUD_URL TOPO_AGENT
+export TOPO_TOKEN=topo_dev TOPO_CLOUD_URL="$url" XDG_CONFIG_HOME="$work/config"
+unset TOPO_DIR TOPO_AGENT
 mkdir "$work/one" "$work/two"
 
 cd "$work/one"
@@ -63,6 +63,6 @@ topo cloud pull > /dev/null
 [ "$(ls .topo/nodes | wc -l)" -eq 11 ]
 grep -q 'status: doing' ".topo/nodes/$design.md"
 
-curl --silent --fail "$url/openapi.json" | python3 -c 'import json, sys; assert len(json.load(sys.stdin)["paths"]) == 12'
+curl --silent --fail "$url/openapi.json" | python3 -c 'import json, sys; assert len(json.load(sys.stdin)["paths"]) == 13'
 curl --silent --fail "$url/docs" | grep -q scalar
 echo "smoke test passed against $url"

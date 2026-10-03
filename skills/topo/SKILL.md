@@ -104,7 +104,7 @@ Review proposals and apply them with `--apply` (strongest first; ones that would
 
 ## Sharing a workspace with other agents
 
-When `.topo/config.toml` has a `[cloud]` table, the graph lives on a server and other agents may be changing it while you work. The commands are the same; `TOPO_TOKEN` in the environment authenticates you.
+When `.topo/config.toml` has a `[cloud]` table, the graph lives on a server and other agents may be changing it while you work. The commands are the same; `TOPO_TOKEN` in the environment authenticates you only when `TOPO_CLOUD_URL` explicitly matches the trusted server. Set both outside the repository so a workspace cannot redirect the token.
 
 - Claim a task before working on it: `topo status <id> doing --if todo`. It fails if another agent claimed the task first; pick the next one from `topo ready`. A plain `topo status <id> doing` would succeed for both of you.
 - Don't cache the graph across steps: re-run `topo ready` after each task, since other agents close and add nodes.

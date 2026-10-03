@@ -66,7 +66,13 @@ pub enum CloudCommand {
         role: Role,
     },
     /// Remove a member from the linked workspace.
-    Remove { login: String },
+    Remove {
+        #[arg(required_unless_present = "user_id", conflicts_with = "user_id")]
+        login: Option<String>,
+        /// Stable GitHub id from `topo cloud members --json`.
+        #[arg(long)]
+        user_id: Option<u64>,
+    },
     /// Show who changed the linked workspace.
     Log {
         /// Show the writes after this version.
@@ -98,10 +104,12 @@ fn link(dir: &Option<PathBuf>) -> Result<Option<(PathBuf, CloudConfig)>> {
 
 /// The server URL: the one given, or the one the workspace is linked to.
 fn url(dir: &Option<PathBuf>, server: Server) -> Result<String> {
-    match (server.url, link(dir)?) {
-        (Some(url), _) => Ok(url.trim_end_matches('/').to_owned()),
-        (None, Some((_, cloud))) => Ok(cloud.url),
-        (None, None) => bail!("which server? pass --url or set TOPO_CLOUD_URL"),
+    if let Some(url) = server.url {
+        return Ok(url.trim_end_matches('/').to_owned());
+    }
+    match link(dir)? {
+        Some((_, cloud)) => Ok(cloud.url),
+        None => bail!("which server? pass --url or set TOPO_CLOUD_URL"),
     }
 }
 
@@ -119,7 +127,11 @@ fn linked(dir: &Option<PathBuf>) -> Result<(PathBuf, Client, String)> {
 }
 
 pub fn login(dir: &Option<PathBuf>, server: Server, name: String, json: bool) -> Result<()> {
-    let url = url(dir, server)?;
+    let _ = dir;
+    let url = server.url.context(
+        "sign-in requires an explicit --url or TOPO_CLOUD_URL; verify the server before approving GitHub access",
+    )?;
+    let url = url.trim_end_matches('/').to_owned();
     let anonymous = Client::new(&url, String::new());
     let client_id = anonymous.auth_config()?.github_client_id;
     let access_token = device::sign_in(device::GITHUB, &client_id, |prompt| {
@@ -234,9 +246,12 @@ pub fn cloud(dir: &Option<PathBuf>, server: Server, command: CloudCommand, json:
             let (_, client, workspace) = linked(dir)?;
             Ok(client.put_member(&workspace, &login, role)?)
         }
-        CloudCommand::Remove { login } => {
+        CloudCommand::Remove { login, user_id } => {
             let (_, client, workspace) = linked(dir)?;
-            Ok(client.remove_member(&workspace, &login)?)
+            match user_id {
+                Some(id) => Ok(client.remove_member_by_id(&workspace, id)?),
+                None => Ok(client.remove_member(&workspace, &login.context("pass a login or --user-id")?)?),
+            }
         }
         CloudCommand::Log { after } => {
             let (_, client, workspace) = linked(dir)?;

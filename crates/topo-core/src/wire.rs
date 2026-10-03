@@ -169,6 +169,9 @@ pub struct WorkspaceName {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Member {
+    /// Stable GitHub user id. Older servers may omit it.
+    #[serde(default)]
+    pub user_id: u64,
     /// GitHub login.
     pub login: String,
     pub role: Role,

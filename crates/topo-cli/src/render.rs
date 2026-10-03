@@ -245,26 +245,26 @@ pub fn graph(graph: &Graph, format: Format, under: Option<&NodeId>) -> String {
 /// Each node followed by its requirements (dependencies, and members of a milestone), indented. Nodes reached a second
 /// time are printed once more as a reference only.
 fn tree(graph: &Graph, under: Option<&NodeId>) -> String {
-    fn walk(graph: &Graph, id: &NodeId, depth: usize, seen: &mut BTreeSet<NodeId>, out: &mut String) {
-        let node = graph.get(id).expect("ids come from the graph");
-        let indent = "  ".repeat(depth);
-        if !seen.insert(id.clone()) {
-            *out += &format!("{indent}↑ {} {}\n", node.id, node.title);
-            return;
-        }
-        *out += &format!("{indent}{}\n", node_line(node));
-        for dep in graph.requirements(node) {
-            walk(graph, dep, depth + 1, seen, out);
-        }
-    }
     let roots: Vec<NodeId> = match under {
         Some(id) => vec![id.clone()],
         None => graph.roots().iter().map(|n| n.id.clone()).collect(),
     };
     let mut out = String::new();
     let mut seen = BTreeSet::new();
-    for root in &roots {
-        walk(graph, root, 0, &mut seen, &mut out);
+    let mut pending: Vec<_> = roots.iter().rev().map(|id| (id, 0)).collect();
+    while let Some((id, depth)) = pending.pop() {
+        let node = graph.get(id).expect("ids come from the graph");
+        // Keep every node while bounding output size for deeply nested remote graphs.
+        let mut indent = "  ".repeat(depth.min(32));
+        if depth > 32 {
+            indent += &format!("…(depth {depth}) ");
+        }
+        if !seen.insert(id.clone()) {
+            out += &format!("{indent}↑ {} {}\n", node.id, node.title);
+            continue;
+        }
+        out += &format!("{indent}{}\n", node_line(node));
+        pending.extend(graph.requirements(node).into_iter().rev().map(|dep| (dep, depth + 1)));
     }
     out
 }

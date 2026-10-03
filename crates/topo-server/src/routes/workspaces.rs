@@ -2,7 +2,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use topo_core::wire::{ErrorBody, Role, WorkspaceInfo, WorkspaceName};
 
-use crate::auth::{Caller, random_hex};
+use crate::auth::{Caller, permit, random_hex};
+use crate::db::DbError;
 use crate::error::{ApiError, Json, name};
 use crate::{AppState, sql};
 
@@ -30,7 +31,14 @@ pub async fn create(
     caller.unscoped()?;
     let info = WorkspaceInfo { id: random_hex(8), name: name(&request.name)?.to_owned(), role: Role::Owner };
     let member = sql::upsert_member(&info.id, caller.user_id, info.role);
-    state.db.batch(vec![sql::insert_workspace(&info.id, &info.name), member]).await?;
+    let result = state
+        .db
+        .batch(vec![sql::insert_workspace_authorized(&info.id, &info.name, caller.user_id, &caller.token_id), member])
+        .await;
+    if matches!(result, Err(DbError::Constraint)) {
+        caller.require_session(&state).await?;
+    }
+    result?;
     Ok(axum::Json(info))
 }
 
@@ -49,7 +57,17 @@ pub async fn rename(
 ) -> Result<StatusCode, ApiError> {
     caller.unscoped()?;
     caller.require(&state, &wid, &[Role::Owner]).await?;
-    state.db.batch(vec![sql::rename_workspace(&wid, name(&request.name)?)]).await?;
+    let mut results = state
+        .db
+        .batch(vec![
+            caller.membership(&wid),
+            sql::rename_workspace(&wid, name(&request.name)?, caller.user_id, &caller.token_id),
+        ])
+        .await?;
+    permit(caller.role(&wid, results.remove(0))?, &[Role::Owner])?;
+    if results.remove(0).0.is_empty() {
+        return Err(ApiError::NotFound);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -66,6 +84,13 @@ pub async fn delete(
 ) -> Result<StatusCode, ApiError> {
     caller.unscoped()?;
     caller.require(&state, &wid, &[Role::Owner]).await?;
-    state.db.batch(vec![sql::delete_workspace(&wid)]).await?;
+    let mut results = state
+        .db
+        .batch(vec![caller.membership(&wid), sql::delete_workspace(&wid, caller.user_id, &caller.token_id)])
+        .await?;
+    permit(caller.role(&wid, results.remove(0))?, &[Role::Owner])?;
+    if results.remove(0).0.is_empty() {
+        return Err(ApiError::NotFound);
+    }
     Ok(StatusCode::NO_CONTENT)
 }

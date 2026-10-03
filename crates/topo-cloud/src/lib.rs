@@ -19,10 +19,16 @@ pub use config::CloudConfig;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("system randomness is unavailable: {0}")]
+    Random(String),
     #[error("{path}: {message}")]
     File { path: PathBuf, message: String },
-    #[error("not signed in to {0} (run `topo login`, or set TOPO_TOKEN)")]
+    #[error("not signed in to {0} (run `topo login --url <trusted-server>`, or set TOPO_TOKEN and TOPO_CLOUD_URL)")]
     NotSignedIn(String),
+    #[error("TOPO_TOKEN requires TOPO_CLOUD_URL to match the selected cloud server")]
+    CredentialDestination,
+    #[error("cloud server must be an HTTPS URL (HTTP is allowed only for loopback)")]
+    UnsafeUrl,
     #[error("request to {url} failed")]
     Http {
         url: String,

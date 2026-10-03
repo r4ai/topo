@@ -246,7 +246,7 @@ topo ready
 # Give an agent its own token, restricted to this workspace
 topo token create --name agent-1 --workspace <workspace-id> --expires 90d
 
-# An agent sets TOPO_TOKEN and claims a task; of several agents, one wins
+# An agent sets TOPO_TOKEN and TOPO_CLOUD_URL to the trusted server, then claims a task
 topo status <id> doing --if todo
 ```
 

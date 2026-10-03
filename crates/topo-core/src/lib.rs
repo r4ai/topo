@@ -1,6 +1,8 @@
 //! Core of topo: every task and milestone is a node in one
 //! dependency DAG, stored as one Markdown file per node.
 
+#[cfg(feature = "fs")]
+pub mod files;
 pub mod graph;
 pub mod model;
 pub mod ops;

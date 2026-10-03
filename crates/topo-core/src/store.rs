@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::Error;
+use crate::files::{self, DirExt};
 use crate::graph::Graph;
 use crate::model::{Node, NodeId};
 use crate::ops::{self, Op};
@@ -160,15 +161,16 @@ impl Workspace {
     }
 
     fn save_files(&mut self, current: BTreeMap<NodeId, Node>) -> Result<(), Error> {
+        current.keys().try_for_each(NodeId::validate)?;
+        let root = files::open_dir(&self.dir).map_err(|e| Error::io(&self.dir, e))?;
+        let dir = root.open_dir_nofollow(NODES_DIR).map_err(|e| Error::io(&self.nodes_dir(), e))?;
         for node in current.values().filter(|n| self.saved.get(&n.id) != Some(n)) {
             let path = self.node_path(&node.id);
-            let tmp = path.with_extension("md.tmp");
-            fs::write(&tmp, render(node)).map_err(|e| Error::io(&tmp, e))?;
-            fs::rename(&tmp, &path).map_err(|e| Error::io(&path, e))?;
+            files::replace(&dir, &format!("{}.md", node.id), &render(node), false).map_err(|e| Error::io(&path, e))?;
         }
         for id in self.saved.keys().filter(|id| !current.contains_key(*id)) {
             let path = self.node_path(id);
-            fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
+            dir.remove_file(format!("{id}.md")).map_err(|e| Error::io(&path, e))?;
         }
         self.saved = current;
         Ok(())
@@ -201,12 +203,16 @@ impl Workspace {
 }
 
 fn read_nodes(nodes_dir: &Path) -> Result<Graph, Error> {
-    let entries = fs::read_dir(nodes_dir).map_err(|e| Error::io(nodes_dir, e))?;
+    let root_path = nodes_dir.parent().expect("nodes have a workspace directory");
+    let root = files::open_dir(root_path).map_err(|e| Error::io(root_path, e))?;
+    let dir = root.open_dir_nofollow(NODES_DIR).map_err(|e| Error::io(nodes_dir, e))?;
+    let entries = dir.entries().map_err(|e| Error::io(nodes_dir, e))?;
     let mut nodes = Vec::new();
     for entry in entries {
-        let path = entry.map_err(|e| Error::io(nodes_dir, e))?.path();
+        let name = entry.map_err(|e| Error::io(nodes_dir, e))?.file_name();
+        let path = nodes_dir.join(&name);
         if path.extension().is_some_and(|ext| ext == "md") {
-            let text = fs::read_to_string(&path).map_err(|e| Error::io(&path, e))?;
+            let text = dir.read_to_string(&name).map_err(|e| Error::io(&path, e))?;
             nodes.push(parse(&text, &path)?);
         }
     }
@@ -244,6 +250,53 @@ pub fn parse(text: &str, path: &Path) -> Result<Node, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_never_truncates_linked_files_or_predictable_temporary_names() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::init(tmp.path()).unwrap();
+        let victim = tmp.path().join("victim");
+        fs::write(&victim, "untouched").unwrap();
+        symlink(&victim, ws.nodes_dir().join("a.md.tmp")).unwrap();
+        fs::hard_link(&victim, ws.nodes_dir().join("b.md.tmp")).unwrap();
+        fs::hard_link(&victim, ws.nodes_dir().join("a.md")).unwrap();
+        symlink(&victim, ws.nodes_dir().join("b.md")).unwrap();
+        for name in ["a", "b"] {
+            ws.graph.insert(Node::new(NodeId(name.into()), Kind::Task, name.into())).unwrap();
+        }
+        ws.save().unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "untouched");
+        assert_eq!(Workspace::open(ws.dir().to_owned()).unwrap().graph, ws.graph);
+        // Saved files remain directly editable, the normal Markdown workflow.
+        fs::write(ws.node_path(&NodeId("a".into())), render(ws.graph.get(&NodeId("a".into())).unwrap())).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_reads_and_saves_reject_links_outside_the_store() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::init(tmp.path()).unwrap();
+        ws.graph.insert(Node::new(NodeId("a".into()), Kind::Task, "a".into())).unwrap();
+        ws.save().unwrap();
+        let external = tmp.path().join("outside");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("a.md"), render(ws.graph.get(&NodeId("a".into())).unwrap())).unwrap();
+        fs::remove_file(ws.node_path(&NodeId("a".into()))).unwrap();
+        symlink(external.join("a.md"), ws.node_path(&NodeId("a".into()))).unwrap();
+        assert!(Workspace::open(ws.dir().to_owned()).is_err());
+        fs::rename(ws.nodes_dir(), ws.dir().join("originalnodes")).unwrap();
+        symlink(&external, ws.nodes_dir()).unwrap();
+        ws.graph.remove(&NodeId("a".into())).unwrap();
+        assert!(ws.save().is_err());
+        assert!(Workspace::open(ws.dir().to_owned()).is_err());
+        assert!(external.join("a.md").exists());
+        let alias = tmp.path().join("alias");
+        symlink(ws.dir(), &alias).unwrap();
+        assert!(Workspace::open(alias).is_err());
+    }
     use crate::model::{Kind, Status};
 
     fn add(id: &str) -> Op {

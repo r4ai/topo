@@ -46,11 +46,12 @@ fn serve() -> (String, String) {
 struct Dir {
     root: TempDir,
     token: String,
+    trusted_url: String,
 }
 
 impl Dir {
-    fn new(token: &str) -> Self {
-        Self { root: tempfile::tempdir().unwrap(), token: token.to_owned() }
+    fn new(token: &str, url: &str) -> Self {
+        Self { root: tempfile::tempdir().unwrap(), token: token.to_owned(), trusted_url: url.into() }
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -58,7 +59,7 @@ impl Dir {
         command.current_dir(self.root.path()).args(args).env("TOPO_TOKEN", &self.token);
         // Neither the developer's credentials nor their environment reach the tests.
         command.env("XDG_CONFIG_HOME", self.root.path().join("config")).env_remove("TOPO_AGENT");
-        command.env_remove("TOPO_DIR").env_remove("TOPO_CLOUD_URL");
+        command.env_remove("TOPO_DIR").env("TOPO_CLOUD_URL", &self.trusted_url);
         command
     }
 
@@ -114,9 +115,33 @@ fn files(dir: &Path) -> usize {
 }
 
 #[test]
+fn workspace_configuration_cannot_redirect_an_environment_token_or_login() {
+    let (url, token) = serve();
+    let dir = Dir::new(&token, &url);
+    dir.ok(&["init"]);
+    let attacker = "http://127.0.0.1:1";
+    topo_cloud::config::store(
+        &dir.path(".topo"),
+        Some(&topo_cloud::CloudConfig { url: attacker.into(), workspace: "w".into() }),
+    )
+    .unwrap();
+    for args in [vec!["ls"], vec!["cloud", "members"], vec!["token", "ls", "--url", attacker]] {
+        assert!(dir.fails(&args).contains("TOPO_TOKEN requires TOPO_CLOUD_URL"));
+    }
+    assert!(
+        failure(dir.command(&["ls"]).env_remove("TOPO_CLOUD_URL").output().unwrap())
+            .contains("TOPO_TOKEN requires TOPO_CLOUD_URL")
+    );
+    assert!(
+        failure(dir.command(&["login"]).env_remove("TOPO_CLOUD_URL").output().unwrap())
+            .contains("sign-in requires an explicit --url")
+    );
+}
+
+#[test]
 fn a_workspace_moves_to_the_cloud_and_back() {
     let (url, token) = serve();
-    let one = Dir::new(&token);
+    let one = Dir::new(&token, &url);
     one.ok(&["init"]);
     let milestone = one.ok(&["add", "v1", "--milestone", "--due", "2026-10-31"]);
     let design = one.ok(&["add", "design", "--in", &milestone, "--note", "notes"]);
@@ -130,7 +155,7 @@ fn a_workspace_moves_to_the_cloud_and_back() {
     assert_eq!(one.json(&["cloud", "ls", "--json"])[0]["name"], "demo");
 
     // A second checkout links to the same workspace and sees the same graph.
-    let two = Dir::new(&token);
+    let two = Dir::new(&token, &url);
     two.ok(&["cloud", "link", workspace, "--url", &url]);
     assert_eq!(two.nodes(), local);
     assert_eq!(two.ok(&["ready"]), one.ok(&["ready"]));
@@ -167,7 +192,7 @@ fn a_workspace_moves_to_the_cloud_and_back() {
 #[test]
 fn of_two_agents_claiming_a_task_one_wins() {
     let (url, token) = serve();
-    let dir = Dir::new(&token);
+    let dir = Dir::new(&token, &url);
     dir.ok(&["init"]);
     let task = dir.ok(&["add", "task"]);
     let workspace = dir.json(&["cloud", "push", "--url", &url, "--json"])["workspace"].as_str().unwrap().to_owned();
@@ -176,7 +201,7 @@ fn of_two_agents_claiming_a_task_one_wins() {
     let agent = |name: &str| {
         let secret = dir.ok(&["token", "create", "--name", name, "--workspace", &workspace, "--expires", "1h"]);
         assert!(secret.starts_with("topo_"));
-        let agent = Dir::new(&secret);
+        let agent = Dir::new(&secret, &url);
         std::fs::create_dir(agent.path(".topo")).unwrap();
         std::fs::copy(dir.path(".topo/config.toml"), agent.path(".topo/config.toml")).unwrap();
         agent
@@ -206,7 +231,7 @@ fn of_two_agents_claiming_a_task_one_wins() {
 #[test]
 fn a_linked_workspace_needs_a_token() {
     let (url, token) = serve();
-    let dir = Dir::new(&token);
+    let dir = Dir::new(&token, &url);
     dir.ok(&["init"]);
     dir.ok(&["cloud", "push", "--url", &url]);
 

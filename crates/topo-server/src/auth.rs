@@ -47,7 +47,7 @@ impl Caller {
     /// rows go to [`Caller::role`]. It is separate so a handler can put it in
     /// a batch with what it reads next.
     pub fn membership(&self, workspace_id: &str) -> sql::Stmt {
-        sql::workspaces(self.user_id, Some(workspace_id))
+        sql::membership(workspace_id, self.user_id, &self.token_id)
     }
 
     /// The caller's role in the workspace. A workspace the caller cannot see
@@ -61,6 +61,11 @@ impl Caller {
     pub async fn require(&self, state: &AppState, workspace_id: &str, allowed: &[Role]) -> Result<(), ApiError> {
         let membership = state.db.batch(vec![self.membership(workspace_id)]).await?.remove(0);
         permit(self.role(workspace_id, membership)?, allowed)
+    }
+
+    pub async fn require_session(&self, state: &AppState) -> Result<(), ApiError> {
+        let rows = state.db.batch(vec![sql::session(self.user_id, &self.token_id)]).await?.remove(0);
+        if rows.0.is_empty() { Err(ApiError::Unauthenticated) } else { Ok(()) }
     }
 }
 

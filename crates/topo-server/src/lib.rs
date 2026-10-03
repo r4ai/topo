@@ -76,6 +76,7 @@ pub fn router(state: AppState) -> Router {
         .routes(routes!(routes::workspaces::rename, routes::workspaces::delete))
         .routes(routes!(routes::members::list))
         .routes(routes!(routes::members::put, routes::members::remove))
+        .routes(routes!(routes::members::remove_by_id))
         .routes(routes!(routes::graph::get, routes::graph::import))
         .routes(routes!(routes::graph::apply))
         .routes(routes!(routes::graph::changes))

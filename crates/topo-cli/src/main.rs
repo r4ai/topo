@@ -256,7 +256,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            eprintln!("error: {}", terminal_text(&format!("{e:#}")));
             ExitCode::FAILURE
         }
     }
@@ -275,7 +275,7 @@ fn resolve_all(graph: &Graph, ids: &[String]) -> Result<Vec<NodeId>> {
 }
 
 fn print(json: bool, value: Value, text: impl FnOnce() -> String) -> Result<()> {
-    let output = if json { format!("{value:#}") } else { text() };
+    let output = terminal_text(&if json { format!("{value:#}") } else { text() });
     if !output.is_empty() {
         let mut stdout = io::stdout().lock();
         match writeln!(stdout, "{output}").and_then(|_| stdout.flush()) {
@@ -285,6 +285,20 @@ fn print(json: bool, value: Value, text: impl FnOnce() -> String) -> Result<()> 
         }
     }
     Ok(())
+}
+
+/// Preserve text layout while making terminal commands and cursor controls visible.
+fn terminal_text(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\n' && c != '\t' {
+            // JSONL uses this boundary too; use JSON-valid escapes for C1 controls.
+            output.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            output.push(c);
+        }
+    }
+    output
 }
 
 fn print_list(graph: &Graph, nodes: &[&Node], json: bool, format: render::ListFormat, milestones: bool) -> Result<()> {

@@ -71,7 +71,9 @@ registers the secret with the platform that runs the agent:
 1. `topo token create --name <environment> --workspace <wid>` prints the
    secret (add `--expires 90d` where the agent can read it).
 2. The secret goes into the platform's secret store, exposed to the agent as
-   the `TOPO_TOKEN` environment variable.
+   the `TOPO_TOKEN` environment variable. Set `TOPO_CLOUD_URL` alongside it to
+   the trusted server URL, outside the checked-out repository. The client refuses
+   to send the token if the workspace selects a different URL.
 3. The repository the agent checks out already contains `.topo/config.toml`
    with the `[cloud]` table, which holds no secret. `topo` finds the workspace
    from the file and the credential from the environment.
@@ -91,6 +93,13 @@ acceptable and removes rotation. Two rules keep the client compatible:
   never inspects, validates, or hashes it.
 - The client honors the proxy environment variables and the system certificate
   store, because such a proxy terminates TLS.
+
+Sign-in requires an explicit `--url` or `TOPO_CLOUD_URL`; a workspace link
+cannot select where the GitHub access token is exchanged. Cloud requests require
+HTTPS, except for loopback development servers, and do not follow redirects.
+`GET /v1/workspaces/{wid}/members` includes each member's stable `user_id`.
+Use `topo cloud remove --user-id <id>` to revoke a renamed or deleted account;
+removal by login resolves the account's current GitHub identity.
 
 Where the agent can read the secret (a plain environment variable), the token
 gets an expiry instead.
