@@ -37,11 +37,15 @@ elif [[ "$BUILD_GUI" == true ]]; then
   app="$stage/topo.app/Contents"
   mkdir -p "$app/MacOS" "$app/Resources"
   cp "$binary_dir/topo-gui" "$app/MacOS/topo-gui"
-  icon_info="$smoke_dir/icon-info.plist"
-  xcrun actool assets/branding/topo.icon --compile "$app/Resources" \
-    --platform macosx --minimum-deployment-target 13.0 --app-icon topo \
-    --output-partial-info-plist "$icon_info" --output-format human-readable-text \
-    --warnings --errors
+  if [[ -n "${MACOS_ICON_DIR:-}" ]]; then
+    cp "$MACOS_ICON_DIR/Assets.car" "$MACOS_ICON_DIR/topo.icns" "$app/Resources/"
+  else
+    icon_info="$smoke_dir/icon-info.plist"
+    xcrun actool assets/branding/topo.icon --compile "$app/Resources" \
+      --platform macosx --minimum-deployment-target 13.0 --app-icon topo \
+      --output-partial-info-plist "$icon_info" --output-format human-readable-text \
+      --warnings --errors
+  fi
   test -s "$app/Resources/Assets.car"
   test -s "$app/Resources/topo.icns"
   cat > "$app/Info.plist" <<PLIST

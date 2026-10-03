@@ -50,8 +50,33 @@ jobs:
     permissions:
       contents: read
 
-  build:
+  macos-icon:
     needs: validate
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          persist-credentials: false
+      - name: Compile the layered macOS icon with Apple tools
+        run: |
+          mkdir macos-icon
+          xcrun actool assets/branding/topo.icon --compile macos-icon \
+            --platform macosx --minimum-deployment-target 13.0 --app-icon topo \
+            --output-partial-info-plist "$RUNNER_TEMP/icon-info.plist" \
+            --output-format human-readable-text --warnings --errors
+          test -s macos-icon/Assets.car
+          test -s macos-icon/topo.icns
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-icon
+          path: macos-icon/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: [validate, macos-icon]
     strategy:
       fail-fast: false
       matrix:
@@ -82,13 +107,11 @@ jobs:
         with:
           toolchain: '1.96.0'
           targets: ${{ matrix.target }}
-      - name: Select Xcode for Liquid Glass icons
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: runner.os == 'macOS'
-        run: |
-          developer_dir=/Applications/Xcode_26.3.app/Contents/Developer
-          test -d "$developer_dir"
-          echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
-          echo 'MACOSX_DEPLOYMENT_TARGET=13.0' >> "$GITHUB_ENV"
+        with:
+          name: macos-icon
+          path: macos-icon
       - name: Build release binaries from the lockfile
         env:
           TARGET: ${{ matrix.target }}
@@ -96,6 +119,8 @@ jobs:
         run: |
           if [[ "$TARGET" == x86_64-pc-windows-msvc ]]; then
             export RUSTFLAGS='-C target-feature=+crt-static'
+          elif [[ "$TARGET" == *-apple-darwin ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=13.0
           fi
           cargo build --locked --release --target "$TARGET" -p topo-cli
           if [[ "$BUILD_GUI" == true ]]; then
@@ -106,6 +131,7 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           TARGET: ${{ matrix.target }}
           BUILD_GUI: ${{ matrix.gui }}
+          MACOS_ICON_DIR: macos-icon
         run: bash .github/scripts/package-release.sh
       - name: Verify Windows installation, upgrade and uninstall
         if: runner.os == 'Windows'

@@ -25,6 +25,8 @@ The Release workflow verifies the stable `vMAJOR.MINOR.PATCH` tag against the
 workspace version and main ancestry. It runs CI on that exact tag commit and
 builds CLI archives for Linux x86_64 (glibc), Windows x86_64 (MSVC), and macOS
 Apple Silicon and Intel. Both macOS targets include GUI `.pkg` installers; Windows includes a GUI `-setup.exe` installer.
+The layered macOS icon is compiled on macOS 26, then the same asset catalog
+is included in both Apple Silicon and Intel bundles.
 The Windows installer is compiled with Inno Setup supplied by the hosted runner,
 then silently installed, upgraded and uninstalled to verify the installed binary
 and Start menu shortcut while preserving user settings.
