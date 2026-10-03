@@ -616,7 +616,7 @@ impl TopoApp {
                     if app.prompt.is_some() {
                         app.close_prompt(window, cx);
                     }
-                    window.focus(&app.focus);
+                    window.focus(&app.focus, cx);
                     if ev.modifiers.platform || ev.modifiers.control {
                         app.toggle_selection(down_id.clone());
                         cx.notify();

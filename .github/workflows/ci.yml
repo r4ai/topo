@@ -88,6 +88,9 @@ jobs:
         env:
           PACKAGES: ${{ matrix.packages }}
         run: cargo clippy --locked $PACKAGES --all-targets -- -D warnings
+      - name: Lint the headless screenshot build of the GUI
+        if: runner.os == 'macOS'
+        run: cargo clippy --locked -p topo-gui --all-targets --features screenshot -- -D warnings
       - name: Lint the Worker build of the server
         if: runner.os == 'Linux'
         run: cargo clippy --locked -p topo-server --target wasm32-unknown-unknown -- -D warnings

@@ -80,6 +80,7 @@ pub fn shadow() -> Vec<BoxShadow> {
         offset: point(px(0.), px(8.)),
         blur_radius: px(24.),
         spread_radius: px(0.),
+        inset: false,
     }]
 }
 

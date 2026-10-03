@@ -499,6 +499,30 @@ fn modifier_click_toggles_selection_and_middle_drag_preserves_it(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn a_long_inspector_title_is_clamped_to_three_lines(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let card = ui.card("a", 0.5, 0.5);
+    ui.click(card);
+    let sentence = "とても長い日本語タイトルのマイルストーンで折り返しと省略を確認する。";
+    let height = |ui: &mut Ui, text: String| {
+        ui.app.update(ui.cx, |app, cx| {
+            let id = id("a");
+            app.mutate(cx, |graph| graph.edit(&id, Edit { title: Some(text), ..Edit::default() }));
+        });
+        ui.redraw();
+        ui.cx.debug_bounds("title-text").expect("the title is rendered").size.height
+    };
+    let three_lines = height(&mut ui, sentence.repeat(3));
+    // Twelve times the text must not add a fourth line.
+    let twelve_lines = height(&mut ui, sentence.repeat(12));
+    assert!(
+        twelve_lines <= three_lines,
+        "a longer title must not exceed the clamp: {three_lines:?} then {twelve_lines:?}"
+    );
+    assert!(three_lines <= px(96.), "the clamp shows at most three text_lg lines, got {three_lines:?}");
+}
+
+#[gpui::test]
 fn dragging_the_inspector_border_resizes_and_clamps(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
     let handle = ui.cx.debug_bounds("inspector-resize").expect("resize handle is rendered");

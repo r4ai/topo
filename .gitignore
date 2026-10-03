@@ -3,3 +3,5 @@ target/
 crates/topo-server/build/
 .wrangler/
 .dev.vars
+# macOS Finder metadata
+.DS_Store
