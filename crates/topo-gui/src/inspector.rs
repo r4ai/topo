@@ -896,6 +896,12 @@ fn title_text(title: impl Into<SharedString>) -> Stateful<Div> {
         .debug_selector(|| "title-text".to_owned())
         .flex_1()
         .min_w(px(0.))
+        // Reserve the combobox's inset and border before editing, so the text
+        // wraps at the same width and the rows below it do not move.
+        .px_1p5()
+        .py_0p5()
+        .border_1()
+        .border_color(theme::alpha(theme::ACCENT, 0.))
         .line_clamp(3)
         .text_ellipsis()
         .text_lg()

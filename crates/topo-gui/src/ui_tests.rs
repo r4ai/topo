@@ -1100,6 +1100,30 @@ fn a_field_offers_values_to_choose_from(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn editing_the_title_keeps_its_bounds_and_the_details_still(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    for width in [1360., 800.] {
+        ui.resize(width, 860.);
+        for title in ["Alpha", "日本語タイトルの折り返しを確認するための少し長い名前"] {
+            ui.app.update(ui.cx, |app, cx| {
+                app.mutate(cx, |graph| graph.edit(&id("a"), Edit { title: Some(title.into()), ..Edit::default() }));
+            });
+            ui.redraw();
+            let title_bounds = ui.cx.debug_bounds("title-text").unwrap();
+            let status_bounds = ui.cx.debug_bounds("status-1").unwrap();
+            let details_bounds = ui.cx.debug_bounds("prop-priority").unwrap();
+            ui.keys("enter");
+            assert_eq!(ui.cx.debug_bounds("combobox"), Some(title_bounds));
+            assert_eq!(ui.cx.debug_bounds("status-1"), Some(status_bounds));
+            assert_eq!(ui.cx.debug_bounds("prop-priority"), Some(details_bounds));
+            ui.keys("escape");
+            assert_eq!(ui.cx.debug_bounds("title-text"), Some(title_bounds));
+        }
+    }
+}
+
+#[gpui::test]
 fn the_title_is_edited_in_the_inspector(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
     ui.select("a");
