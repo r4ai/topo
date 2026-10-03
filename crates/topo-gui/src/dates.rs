@@ -1,7 +1,8 @@
 //! Due-date input and display relative to today.
 
-use jiff::ToSpan;
 use jiff::civil::Date;
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, ToSpan};
 
 use crate::theme;
 
@@ -33,6 +34,11 @@ pub fn parse_due(input: &str, today: Date) -> Result<Option<Date>, String> {
         s => s.parse().ok(),
     };
     date.map(Some).ok_or_else(|| format!("`{input}` is not a date (try 2026-10-31, 10-31, +3d, +2w or tomorrow)"))
+}
+
+/// A moment as `2026-10-03 14:05` in the time zone `tz`.
+pub fn moment(at: Timestamp, tz: TimeZone) -> String {
+    at.to_zoned(tz).strftime("%Y-%m-%d %H:%M").to_string()
 }
 
 /// Short date such as `10/31`, with the year only when it is not this year.

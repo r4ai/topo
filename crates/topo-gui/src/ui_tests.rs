@@ -2,9 +2,10 @@
 
 use gpui::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, point, px, size};
 use tempfile::TempDir;
-use topo_core::{Edit, Graph, Kind, Node, NodeId, Status, Workspace};
+use topo_core::{Edit, Graph, Kind, Node, NodeId, Priority, Status, Workspace};
 
 use crate::gesture::Gesture;
+use crate::inline::Field;
 use crate::{NODE_H, NODE_W, Prompt, TopoApp, layout, text_input};
 
 fn id(s: &str) -> NodeId {
@@ -123,6 +124,22 @@ impl Ui<'_> {
 
     fn node(&mut self, name: &str) -> Node {
         self.read(|app| app.graph().get(&id(name)).expect("node exists").clone())
+    }
+
+    /// The field being edited in the inspector, and the text typed into it.
+    fn inline(&mut self) -> Option<(Field, String)> {
+        self.app.read_with(self.cx, |app, cx| {
+            app.inline.as_ref().map(|edit| (edit.field, app.inline_input.read(cx).text().to_owned()))
+        })
+    }
+
+    fn select(&mut self, node: &str) {
+        let card = self.card(node, 0.5, 0.5);
+        self.click(card);
+    }
+
+    fn selection(&mut self) -> Vec<String> {
+        self.read(|app| app.selected_nodes.iter().map(|id| id.to_string()).collect())
     }
 
     fn titled(&mut self, title: &str) -> Node {
@@ -664,4 +681,288 @@ fn toolbar_frames_large_selections_in_both_dimensions(cx: &mut TestAppContext) {
             cx.notify();
         });
     }
+}
+
+#[gpui::test]
+fn details_are_edited_in_place(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+
+    // A key opens the row as a field holding the current value; Enter saves.
+    ui.keys("d");
+    assert_eq!(ui.inline(), Some((Field::Due, String::new())));
+    assert!(ui.read(|app| app.prompt.is_none()), "the value is edited in its row, not in the prompt");
+    assert!(ui.cx.debug_bounds("inline-edit").is_some());
+    ui.type_text("2026-12-24");
+    ui.keys("enter");
+    assert_eq!(ui.inline(), None);
+    assert_eq!(ui.node("a").due, Some(jiff::civil::date(2026, 12, 24)));
+
+    // Input that cannot be saved keeps the field open and says why; typing clears the message.
+    ui.keys("d");
+    assert_eq!(ui.inline(), Some((Field::Due, "2026-12-24".into())));
+    ui.type_text("someday");
+    ui.keys("enter");
+    assert!(ui.read(|app| app.inline.as_ref().unwrap().error.as_ref().unwrap().contains("not a date")));
+    assert_eq!(ui.node("a").due, Some(jiff::civil::date(2026, 12, 24)));
+    ui.type_text("!");
+    assert!(ui.read(|app| app.inline.as_ref().unwrap().error.is_none()));
+    // Escape cancels, and the keyboard is back on the canvas.
+    ui.keys("escape");
+    assert_eq!(ui.inline(), None);
+    assert_eq!(ui.node("a").due, Some(jiff::civil::date(2026, 12, 24)));
+    // An empty field clears the date.
+    ui.keys("d backspace enter");
+    assert_eq!(ui.node("a").due, None);
+
+    // A click on the row does the same as its key.
+    ui.click_on("prop-tags");
+    assert_eq!(ui.inline(), Some((Field::Tags, String::new())));
+    ui.type_text("#core ui core");
+    ui.keys("enter");
+    assert_eq!(ui.node("a").tags, ["core", "ui"]);
+    ui.keys("t");
+    assert_eq!(ui.inline(), Some((Field::Tags, "core ui".into())));
+    ui.keys("escape");
+
+    ui.keys("p");
+    ui.type_text("hi");
+    ui.keys("enter");
+    assert_eq!(ui.node("a").priority, Some(Priority::High));
+    ui.keys("a");
+    ui.type_text(" claude ");
+    ui.keys("enter");
+    assert_eq!(ui.node("a").assignee.as_deref(), Some("claude"));
+    ui.click_on("prop-assignee");
+    ui.keys("backspace enter");
+    assert_eq!(ui.node("a").assignee, None);
+    ui.keys("p backspace enter");
+    assert_eq!(ui.node("a").priority, None);
+
+    // Every saved field is one undo step.
+    ui.keys("cmd-z");
+    assert_eq!(ui.node("a").priority, Some(Priority::High));
+}
+
+#[gpui::test]
+fn an_edited_field_keeps_the_keyboard_from_the_canvas(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("x");
+    assert_eq!(ui.node("a").status, Status::Done);
+
+    ui.keys("t");
+    ui.type_text("one two");
+    // Keys that are canvas commands are text or text editing here.
+    ui.type_text("x");
+    ui.keys("backspace cmd-a");
+    assert_eq!(ui.selection(), ["a"], "⌘A selects the text, not the nodes");
+    assert_eq!(ui.node("a").status, Status::Done);
+    assert_eq!(ui.inline(), Some((Field::Tags, "one two".into())));
+    ui.keys("cmd-x");
+    assert_eq!(ui.inline(), Some((Field::Tags, String::new())));
+    assert!(ui.read(|app| app.graph().get(&id("a")).is_some()), "⌘X cuts the text, not the node");
+    ui.keys("cmd-v cmd-v");
+    assert_eq!(ui.inline(), Some((Field::Tags, "one twoone two".into())));
+
+    // ⌘Z undoes typing, never the graph, even with nothing left to undo.
+    ui.keys("cmd-z cmd-z cmd-z cmd-z cmd-z cmd-z cmd-z");
+    assert_eq!(ui.inline(), Some((Field::Tags, String::new())));
+    assert_eq!(ui.node("a").status, Status::Done);
+    ui.keys("cmd-shift-z cmd-shift-z");
+    assert_eq!(ui.inline(), Some((Field::Tags, "one two".into())));
+    ui.keys("enter");
+    assert_eq!(ui.node("a").tags, ["one", "two"]);
+
+    // Back on the canvas the same key undoes the graph.
+    ui.keys("cmd-z");
+    assert!(ui.node("a").tags.is_empty());
+}
+
+#[gpui::test]
+fn a_field_that_loses_the_focus_is_cancelled(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("t");
+    ui.type_text("draft");
+    // A click inside the field keeps it open.
+    ui.click_on("inline-edit");
+    assert_eq!(ui.inline(), Some((Field::Tags, "draft".into())));
+    // A click on another card selects it and drops the field unsaved.
+    ui.select("c");
+    assert_eq!(ui.inline(), None);
+    assert_eq!(ui.selected().as_deref(), Some("c"));
+    assert!(ui.node("a").tags.is_empty());
+    // The keyboard works on the canvas again.
+    ui.keys("x");
+    assert_eq!(ui.node("c").status, Status::Done);
+
+    // So does a click on the same card, on empty canvas, and on another row.
+    ui.keys("t");
+    ui.select("c");
+    assert_eq!(ui.inline(), None);
+    ui.keys("t");
+    let empty = ui.read(|app| app.area.get().bottom_left()) + point(px(200.), px(-120.));
+    ui.click(empty);
+    assert_eq!(ui.inline(), None);
+    ui.select("c");
+    ui.keys("t");
+    ui.click_on("prop-due");
+    assert_eq!(ui.inline(), Some((Field::Due, String::new())));
+}
+
+#[gpui::test]
+fn pull_requests_are_linked_opened_and_unlinked(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("g");
+    ui.type_text("r4ai/topo#12");
+    ui.keys("enter");
+    ui.click_on("add-pr");
+    ui.type_text("https://github.com/r4ai/topo/pull/7/files");
+    ui.keys("enter");
+    let prs = ["https://github.com/r4ai/topo/pull/12", "https://github.com/r4ai/topo/pull/7"];
+    assert_eq!(ui.node("a").prs, prs);
+    // Linking is not progress.
+    assert_eq!(ui.node("a").status, Status::Todo);
+
+    // The same pull request in another spelling, and text that is no URL, are refused in the row.
+    for refused in ["https://github.com/r4ai/topo/pull/12/", "not a url"] {
+        ui.keys("g");
+        ui.type_text(refused);
+        ui.keys("enter");
+        assert!(ui.read(|app| app.inline.as_ref().unwrap().error.is_some()), "{refused}");
+        ui.keys("escape");
+    }
+    // Enter on an empty field adds nothing.
+    ui.keys("g enter");
+    assert_eq!(ui.inline(), None);
+    assert_eq!(ui.node("a").prs, prs);
+
+    ui.click_on("pr-0");
+    assert_eq!(ui.cx.opened_url().as_deref(), Some(prs[0]));
+    ui.click_on("pr-0-remove");
+    assert_eq!(ui.node("a").prs, [prs[1]]);
+    ui.keys("cmd-z");
+    assert_eq!(ui.node("a").prs, prs);
+}
+
+#[gpui::test]
+fn the_canvas_selects_all_copies_and_pastes_nodes(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.keys("cmd-a");
+    assert_eq!(ui.selection(), ["a", "b", "c", "m"]);
+    // The multiple-selection commands apply to it.
+    ui.keys("2");
+    assert_eq!(ui.node("m").status, Status::Doing);
+    ui.keys("cmd-z escape");
+
+    ui.select("a");
+    let more = Modifiers { platform: true, ..Modifiers::none() };
+    let b = ui.card("b", 0.5, 0.5);
+    ui.cx.simulate_mouse_down(b, MouseButton::Left, more);
+    ui.cx.simulate_mouse_up(b, MouseButton::Left, more);
+    ui.keys("cmd-c");
+    let text = ui.cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(text.as_deref(), Some("- [ ] a\n- [ ] b"), "other applications get a list");
+
+    ui.keys("cmd-v");
+    assert_eq!(ui.read(|app| app.graph().nodes().count()), 6);
+    let pasted = ui.selection();
+    assert_eq!(pasted.len(), 2);
+    let copies: Vec<Node> = pasted.iter().map(|id| ui.node(id)).collect();
+    let (a2, b2) = match copies[0].title.as_str() {
+        "a" => (&copies[0], &copies[1]),
+        _ => (&copies[1], &copies[0]),
+    };
+    assert_eq!((b2.depends_on.clone(), b2.milestones.clone()), (vec![a2.id.clone()], vec![id("m")]));
+    assert!(a2.created_at.is_some(), "a copy is created when it is pasted");
+
+    // The paste is one undo step, and the cut is another.
+    ui.keys("cmd-z");
+    assert_eq!(ui.read(|app| app.graph().nodes().count()), 4);
+    ui.app.update(ui.cx, |app, cx| {
+        app.select(Some(id("c")), false);
+        cx.notify();
+    });
+    ui.keys("cmd-x");
+    assert!(ui.read(|app| app.graph().get(&id("c")).is_none()));
+    ui.keys("cmd-v");
+    assert_eq!(ui.titled("c").milestones, [id("m")]);
+    ui.keys("cmd-z cmd-z");
+    assert_eq!(ui.node("c").milestones, [id("m")]);
+
+    // Text that is not a clip of nodes creates nothing.
+    ui.cx.write_to_clipboard(gpui::ClipboardItem::new_string("- [ ] a".into()));
+    ui.keys("cmd-v");
+    assert_eq!(ui.read(|app| app.graph().nodes().count()), 4);
+    assert!(ui.read(|app| app.toast.as_ref().is_some_and(|t| t.error)));
+}
+
+#[gpui::test]
+fn the_priority_filter_dims_and_limits_select_all(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.app.update(ui.cx, |app, cx| {
+        let set = |p| Edit { priority: Some(Some(p)), ..Edit::default() };
+        app.mutate(cx, |g| g.edit(&id("a"), set(Priority::Urgent)).and_then(|()| g.edit(&id("c"), set(Priority::Low))));
+    });
+    ui.keys("shift-p");
+    assert_eq!(ui.read(|app| app.priority_filter), Some(Priority::Urgent));
+    ui.keys("cmd-a");
+    assert_eq!(ui.selection(), ["a"]);
+    ui.keys("escape");
+    ui.click_on("priority-filter");
+    ui.click_on("priority-filter");
+    ui.click_on("priority-filter");
+    assert_eq!(ui.read(|app| app.priority_filter), Some(Priority::Low));
+    ui.keys("cmd-a");
+    assert_eq!(ui.selection(), ["a", "c"]);
+    ui.click_on("priority-filter");
+    assert_eq!(ui.read(|app| app.priority_filter), None);
+}
+
+#[gpui::test]
+fn the_prompt_field_has_the_standard_text_shortcuts(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let text = |ui: &mut Ui| ui.app.read_with(ui.cx, |app, cx| app.input.read(cx).text().to_owned());
+    ui.keys("/");
+    ui.type_text("日本語 text");
+    ui.keys("cmd-a cmd-c right");
+    ui.cx.write_to_clipboard(gpui::ClipboardItem::new_string("two\nlines".into()));
+    ui.keys("cmd-v");
+    assert_eq!(text(&mut ui), "日本語 texttwo lines");
+    assert!(ui.selection().is_empty(), "⌘A in the search field selects no nodes");
+    ui.keys("cmd-z");
+    assert_eq!(text(&mut ui), "日本語 text");
+    ui.keys("cmd-shift-z shift-left shift-left cmd-x");
+    assert_eq!(text(&mut ui), "日本語 texttwo lin");
+    assert_eq!(ui.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("es"));
+    // An empty clipboard pastes nothing.
+    ui.cx.write_to_clipboard(gpui::ClipboardItem::new_string(String::new()));
+    ui.keys("cmd-v escape");
+    assert!(ui.read(|app| app.prompt.is_none()));
+    assert_eq!(ui.read(|app| app.graph().nodes().count()), 4);
+}
+
+#[gpui::test]
+fn recorded_times_show_in_the_narrowest_inspector(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.resize(720., 480.);
+    ui.app.update(ui.cx, |app, _| app.select(Some(id("a")), false));
+    ui.redraw();
+    let created = ui.node("a").created_at.expect("saving records the creation");
+    assert_eq!(ui.node("a").completed_at, None);
+    ui.keys("x");
+    assert!(ui.node("a").completed_at.is_some_and(|at| at >= created));
+    ui.redraw();
+    let inspector = ui.read(|app| app.inspector_width());
+    for row in
+        ["prop-priority", "prop-assignee", "prop-due", "prop-tags", "prop-created", "prop-updated", "prop-completed"]
+    {
+        let bounds = ui.cx.debug_bounds(row).unwrap_or_else(|| panic!("{row} is rendered"));
+        assert!(bounds.left() >= px(720. - inspector) && bounds.right() <= px(720.), "{row} at {bounds:?}");
+    }
+    // Reopening forgets the completion.
+    ui.keys("x");
+    assert_eq!(ui.node("a").completed_at, None);
 }

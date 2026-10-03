@@ -2,6 +2,11 @@
 //!
 //! Enter, Escape, Up and Down are not handled here; they are emitted as
 //! [`InputEvent`]s so the owner decides what they mean.
+//!
+//! The standard editing shortcuts ([`SelectAll`], [`Copy`], [`Cut`], [`Paste`],
+//! [`Undo`], [`Redo`]) are bound for the whole window. A focused field handles
+//! them for its text and lets none through, so they reach the canvas only when
+//! no field has the focus.
 
 use std::ops::Range;
 
@@ -36,6 +41,8 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Undo,
+        Redo,
         ShowCharacterPalette,
         Submit,
         Cancel,
@@ -45,8 +52,24 @@ actions!(
 );
 
 const CONTEXT: &str = "TextInput";
+/// The modifier of the standard editing shortcuts.
+const MOD: &str = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+/// Text states kept for undo.
+const HISTORY: usize = 200;
 
 pub fn bind_keys(cx: &mut App) {
+    let standard = |key: &str| format!("{MOD}-{key}");
+    cx.bind_keys([
+        KeyBinding::new(&standard("a"), SelectAll, None),
+        KeyBinding::new(&standard("c"), Copy, None),
+        KeyBinding::new(&standard("x"), Cut, None),
+        KeyBinding::new(&standard("v"), Paste, None),
+        KeyBinding::new(&standard("z"), Undo, None),
+        KeyBinding::new(&standard("shift-z"), Redo, None),
+    ]);
+    // Emacs-style line start, where Control is not the editing modifier.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([KeyBinding::new("ctrl-a", Home, Some(CONTEXT))]);
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some(CONTEXT)),
         KeyBinding::new("delete", Delete, Some(CONTEXT)),
@@ -62,13 +85,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-left", SelectHome, Some(CONTEXT)),
         KeyBinding::new("shift-end", SelectEnd, Some(CONTEXT)),
         KeyBinding::new("cmd-shift-right", SelectEnd, Some(CONTEXT)),
-        KeyBinding::new("cmd-a", SelectAll, Some(CONTEXT)),
-        KeyBinding::new("cmd-v", Paste, Some(CONTEXT)),
-        KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
-        KeyBinding::new("cmd-x", Cut, Some(CONTEXT)),
         KeyBinding::new("home", Home, Some(CONTEXT)),
         KeyBinding::new("cmd-left", Home, Some(CONTEXT)),
-        KeyBinding::new("ctrl-a", Home, Some(CONTEXT)),
         KeyBinding::new("end", End, Some(CONTEXT)),
         KeyBinding::new("cmd-right", End, Some(CONTEXT)),
         KeyBinding::new("ctrl-e", End, Some(CONTEXT)),
@@ -99,7 +117,15 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// Earlier states of the text and redone ones, newest last.
+    undo: Vec<TextState>,
+    redo: Vec<TextState>,
+    /// The last edit typed text at the cursor; more typing joins its undo step.
+    typing: bool,
 }
+
+/// The content and the selection.
+type TextState = (SharedString, Range<usize>);
 
 impl EventEmitter<InputEvent> for TextInput {}
 
@@ -115,6 +141,9 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: false,
         }
     }
 
@@ -129,6 +158,36 @@ impl TextInput {
         self.selected_range = 0..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
+        self.undo.clear();
+        self.redo.clear();
+        self.typing = false;
+        cx.emit(InputEvent::Changed);
+        cx.notify();
+    }
+
+    /// Records the current text as an undo step, before an edit replaces it.
+    fn checkpoint(&mut self) {
+        self.undo.push((self.content.clone(), self.selected_range.clone()));
+        if self.undo.len() > HISTORY {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    /// Swaps the text with the newest state of `undo` (or `redo`). The key is
+    /// consumed even when there is none, so it never reaches the graph's history.
+    fn restore(&mut self, undo: bool, cx: &mut Context<Self>) {
+        let (from, to) = match undo {
+            true => (&mut self.undo, &mut self.redo),
+            false => (&mut self.redo, &mut self.undo),
+        };
+        let Some((content, selection)) = from.pop() else { return };
+        to.push((self.content.clone(), self.selected_range.clone()));
+        self.content = content;
+        self.selected_range = selection;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.typing = false;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -216,7 +275,9 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            // The field has one line.
+            let line = text.lines().collect::<Vec<_>>().join(" ");
+            self.replace_text_in_range(None, &line, window, cx);
         }
     }
 
@@ -252,6 +313,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.typing = false;
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -390,6 +452,15 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        if range.is_empty() && new_text.is_empty() {
+            return;
+        }
+        // A composition was recorded when it started; typing extends one step.
+        let typed = range.is_empty();
+        if self.marked_range.is_none() && !(typed && self.typing) {
+            self.checkpoint();
+        }
+        self.typing = typed;
         self.content = (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..]).into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
@@ -410,6 +481,10 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        if self.marked_range.is_none() {
+            self.checkpoint();
+        }
+        self.typing = false;
         self.content = (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..]).into();
         self.marked_range = (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
         // The IME reports the selection relative to the text it just inserted.
@@ -617,6 +692,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(|input, _: &Undo, _, cx| input.restore(true, cx)))
+            .on_action(cx.listener(|input, _: &Redo, _, cx| input.restore(false, cx)))
             .on_action(cx.listener(|_, _: &Submit, _, cx| cx.emit(InputEvent::Submit)))
             .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.emit(InputEvent::Cancel)))
             .on_action(cx.listener(|_, _: &Up, _, cx| cx.emit(InputEvent::Up)))

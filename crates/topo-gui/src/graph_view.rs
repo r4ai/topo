@@ -247,10 +247,11 @@ impl TopoApp {
         let matches: Option<BTreeSet<NodeId>> = self.search_matches(cx).map(|ids| ids.into_iter().collect());
         let cursor = self.list_cursor(cx);
         let critical = &self.graph_cache.critical;
+        let filtered = |id: &NodeId| self.passes_filter(graph.get(id).expect("graph invariant"));
         let emphasized = |id: &NodeId| match (&matches, &focus) {
             (Some(m), _) => m.contains(id),
-            (None, Some(f)) => f.contains(id),
-            (None, None) => true,
+            (None, Some(f)) => f.contains(id) && filtered(id),
+            (None, None) => filtered(id),
         };
 
         let link = match &self.drag {
@@ -535,9 +536,14 @@ impl TopoApp {
             let color = if closed { theme::FAINT } else { dates::urgency_color(d, today) };
             div().flex_shrink_0().text_color(rgb(color)).child(format!("⏱ {}", dates::short(d, today)))
         });
+        // Named with a glyph as well as colored. Tags give way to it and to the assignee.
+        let priority = node.priority.map(|p| mini(theme::priority_text(p), theme::priority_color(p)));
+        let assignee = node.assignee.as_ref().map(|a| div().min_w(px(0.)).truncate().child(format!("@{a}")));
+        let tags = 2usize.saturating_sub(usize::from(priority.is_some()) + usize::from(assignee.is_some()));
         let meta = div()
             .flex()
             .items_center()
+            .overflow_hidden()
             .gap(px(6. * z))
             .pl(px(24. * z))
             .text_size(px(10.5 * z))
@@ -549,6 +555,7 @@ impl TopoApp {
                 let color = if closed || (total > 0 && done == total) { theme::GREEN } else { theme::AMBER };
                 meta.child(theme::progress_bar(fraction, color, 4. * z))
                     .child(div().flex_shrink_0().text_color(rgb(theme::MUTED)).child(format!("{done}/{total}")))
+                    .children(priority)
                     .children(due)
             }
             Kind::Task => {
@@ -561,8 +568,10 @@ impl TopoApp {
                     Status::Todo => div().flex_shrink_0().child(format!("Blocked by {open_reqs}")),
                 };
                 meta.child(status)
+                    .children(priority)
                     .children(due)
-                    .children(node.tags.iter().take(2).map(|t| div().flex_shrink_0().child(format!("#{t}"))))
+                    .children(assignee)
+                    .children(node.tags.iter().take(tags).map(|t| div().flex_shrink_0().child(format!("#{t}"))))
             }
         };
 

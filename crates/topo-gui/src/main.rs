@@ -8,10 +8,12 @@
 mod args;
 mod branding;
 mod chrome;
+mod clipboard;
 mod config;
 mod dates;
 mod gesture;
 mod graph_view;
+mod inline;
 mod inspector;
 mod layout;
 #[cfg(feature = "screenshot")]
@@ -29,18 +31,19 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, Pixels, Point, SharedString, Subscription, Window, WindowBounds, WindowOptions, actions, div, point,
-    prelude::*, px, rgb, size,
+    MouseButton, OsAction, Pixels, Point, SharedString, Subscription, Window, WindowBounds, WindowOptions, actions,
+    div, point, prelude::*, px, rgb, size,
 };
 use notify::{RecursiveMode, Watcher};
 use topo_core::wire::Snapshot;
-use topo_core::{Edit, Graph, Kind, Node, NodeId, Status, Workspace};
+use topo_core::{Edit, Graph, Kind, Node, NodeId, Priority, Status, Workspace};
 use topo_jev::organize::{self, Proposal};
 use topo_jev::{Client, Config};
 
 use futures::StreamExt;
 
 use crate::gesture::Gesture;
+use crate::inline::{Field, InlineEdit};
 use crate::text_input::{InputEvent, TextInput};
 
 /// Grid pitch and card size in canvas units (multiplied by the zoom on screen).
@@ -108,8 +111,6 @@ enum Prompt {
     },
     Create(NewNode),
     Rename(NodeId),
-    Due(NodeId),
-    Tags(NodeId),
 }
 
 impl Prompt {
@@ -125,8 +126,6 @@ impl Prompt {
             Prompt::Create(NewNode { depends_on, .. }) if !depends_on.is_empty() => "New follow-up task",
             Prompt::Create(_) => "New task",
             Prompt::Rename(_) => "Rename",
-            Prompt::Due(_) => "Due date",
-            Prompt::Tags(_) => "Tags",
         }
     }
 
@@ -136,8 +135,6 @@ impl Prompt {
             Prompt::Create(NewNode { kind: Kind::Milestone, .. }) => "Milestone title",
             Prompt::Create(_) => "What needs to be done?",
             Prompt::Rename(_) => "Title",
-            Prompt::Due(_) => "2026-10-31, 10-31, +3d, +2w, tomorrow — empty clears",
-            Prompt::Tags(_) => "Space- or comma-separated tags — empty clears",
         }
     }
 }
@@ -179,6 +176,11 @@ struct TopoApp {
     drag: Option<Drag>,
     prompt: Option<Prompt>,
     input: Entity<TextInput>,
+    /// The property of the selected node being edited in its inspector row.
+    inline: Option<InlineEdit>,
+    inline_input: Entity<TextInput>,
+    /// Nodes below this priority, and nodes without one, are dimmed.
+    priority_filter: Option<Priority>,
     /// Position of the highlighted entry in the list of a search or pick prompt.
     search_index: usize,
     show_help: bool,
@@ -228,7 +230,11 @@ impl TopoApp {
         })
         .detach();
         let input = cx.new(TextInput::new);
-        let subscription = cx.subscribe_in(&input, window, Self::on_input_event);
+        let inline_input = cx.new(TextInput::new);
+        let subscriptions = vec![
+            cx.subscribe_in(&input, window, Self::on_input_event),
+            cx.subscribe_in(&inline_input, window, Self::on_inline_event),
+        ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Ok(Self {
@@ -246,6 +252,9 @@ impl TopoApp {
             drag: None,
             prompt: None,
             input,
+            inline: None,
+            inline_input,
+            priority_filter: None,
             search_index: 0,
             show_help: false,
             compact: false,
@@ -258,7 +267,7 @@ impl TopoApp {
             toast: None,
             toast_serial: 0,
             _watcher: watcher,
-            _subscriptions: vec![subscription],
+            _subscriptions: subscriptions,
         })
     }
 
@@ -398,7 +407,8 @@ impl TopoApp {
     fn save(&mut self) -> Result<bool, topo_core::Error> {
         let intended = self.ws.graph.clone();
         self.ws.save()?;
-        let exact = self.ws.graph == intended;
+        // Saving records timestamps, which are not part of what was intended.
+        let exact = self.ws.graph.same_content(&intended);
         if !exact {
             self.undo.clear();
             self.redo.clear();
@@ -420,7 +430,7 @@ impl TopoApp {
 
     /// Records `before` as an undo step, unless the edit changed nothing.
     fn record_undo(&mut self, before: Graph) {
-        if before == self.ws.graph {
+        if before.same_content(&self.ws.graph) {
             return;
         }
         self.graph_cache.invalidate();
@@ -733,17 +743,6 @@ impl TopoApp {
             Prompt::Rename(id) => {
                 self.mutate(cx, |graph| graph.edit(&id, Edit { title: Some(text), ..Edit::default() }));
             }
-            Prompt::Due(id) => match dates::parse_due(&text, dates::today()) {
-                Ok(due) => {
-                    self.mutate(cx, |graph| graph.edit(&id, Edit { due: Some(due), ..Edit::default() }));
-                }
-                // Keep the prompt open so the input can be corrected.
-                Err(e) => return self.toast(e, true, cx),
-            },
-            Prompt::Tags(id) => {
-                let tags = parse_tags(&text);
-                self.mutate(cx, |graph| graph.edit(&id, Edit { tags: Some(tags), ..Edit::default() }));
-            }
         }
         self.close_prompt(window, cx);
     }
@@ -987,6 +986,22 @@ impl TopoApp {
         self.selected = id;
     }
 
+    /// Whether the priority filter leaves `node` undimmed.
+    pub(crate) fn passes_filter(&self, node: &Node) -> bool {
+        self.priority_filter.is_none_or(|least| node.priority.is_some_and(|p| p >= least))
+    }
+
+    /// Steps the priority filter: everything, urgent only, high and up, medium and up, any priority.
+    pub(crate) fn cycle_priority_filter(&mut self) {
+        self.priority_filter = match self.priority_filter {
+            None => Some(Priority::Urgent),
+            Some(Priority::Urgent) => Some(Priority::High),
+            Some(Priority::High) => Some(Priority::Medium),
+            Some(Priority::Medium) => Some(Priority::Low),
+            Some(Priority::Low) => None,
+        };
+    }
+
     fn clear_selection(&mut self) {
         self.selected = None;
         self.selected_nodes.clear();
@@ -1116,7 +1131,8 @@ impl TopoApp {
     // ---- keyboard ------------------------------------------------------
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.prompt.is_some() {
+        // A text field has the keyboard; its keys are text, not canvas commands.
+        if self.prompt.is_some() || self.inline.is_some() {
             return;
         }
         let keystroke = &event.keystroke;
@@ -1126,7 +1142,6 @@ impl TopoApp {
         let char = keystroke.key_char.as_deref().unwrap_or_default();
         let selected = self.selected.clone();
         match (key, cmd) {
-            ("z", true) => self.restore(!m.shift, cx),
             ("k" | "f", true) => self.open_prompt(Prompt::Search, "", window, cx),
             ("=" | "+", true) => self.zoom_by(1.25, self.canvas_center(), true),
             ("-", true) => self.zoom_by(0.8, self.canvas_center(), true),
@@ -1144,6 +1159,7 @@ impl TopoApp {
                 self.prompt_create(Kind::Task, Some(relation), window, cx)
             }
             ("f", _) => self.fit(false),
+            ("p", _) if m.shift => self.cycle_priority_filter(),
             ("escape", _) => match () {
                 _ if self.drag.is_some() => self.drag = None,
                 _ if self.show_help => self.show_help = false,
@@ -1188,11 +1204,11 @@ impl TopoApp {
                     "i" => self.prompt_pick(Relation::Member, window, cx),
                     "o" => self.open_file(&id, cx),
                     "enter" | "f2" | "r" => self.open_prompt(Prompt::Rename(id), &node.title, window, cx),
-                    "d" => {
-                        let due = node.due.map(|d| d.to_string()).unwrap_or_default();
-                        self.open_prompt(Prompt::Due(id), &due, window, cx)
-                    }
-                    "t" => self.open_prompt(Prompt::Tags(id), &node.tags.join(" "), window, cx),
+                    "d" => self.start_inline(Field::Due, window, cx),
+                    "t" => self.start_inline(Field::Tags, window, cx),
+                    "p" => self.start_inline(Field::Priority, window, cx),
+                    "a" => self.start_inline(Field::Assignee, window, cx),
+                    "g" => self.start_inline(Field::Pr, window, cx),
                     _ => return,
                 }
             }
@@ -1226,6 +1242,22 @@ impl Render for TopoApp {
         if self.step_anim() {
             window.request_animation_frame();
         }
+        // The field belongs to the one selected node and lives while it has the
+        // focus. Leaving the window does not move the focus, so it survives that.
+        let focused = self.inline_input.focus_handle(cx).is_focused(window);
+        match &self.inline {
+            Some(edit) if !focused || self.selected_node().is_none_or(|n| n.id != edit.node) => {
+                self.inline = None;
+                window.focus(&self.focus, cx);
+            }
+            None if focused => window.focus(&self.focus, cx),
+            _ => {}
+        }
+        // The canvas takes the standard editing commands only while no text field is
+        // open. A command that cannot run has no handler, which disables its menu item.
+        let canvas = self.prompt.is_none() && self.inline.is_none();
+        let (has_selection, has_nodes) = (!self.selected_nodes.is_empty(), self.graph().nodes().next().is_some());
+        let (can_undo, can_redo) = (!self.undo.is_empty(), !self.redo.is_empty());
         div()
             .size_full()
             .flex()
@@ -1236,13 +1268,30 @@ impl Render for TopoApp {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
-            // A click outside the prompt dismisses it; the prompt keeps its own clicks.
+            .when(canvas && can_undo, |d| {
+                d.on_action(cx.listener(|app, _: &text_input::Undo, _, cx| app.restore(true, cx)))
+            })
+            .when(canvas && can_redo, |d| {
+                d.on_action(cx.listener(|app, _: &text_input::Redo, _, cx| app.restore(false, cx)))
+            })
+            .when(canvas && has_nodes, |d| {
+                d.on_action(cx.listener(|app, _: &text_input::SelectAll, _, cx| app.select_all(cx)))
+            })
+            .when(canvas && has_selection, |d| {
+                d.on_action(cx.listener(|app, _: &text_input::Copy, _, cx| {
+                    app.copy_selection(cx);
+                }))
+                .on_action(cx.listener(|app, _: &text_input::Cut, _, cx| app.cut_selection(cx)))
+            })
+            .when(canvas, |d| d.on_action(cx.listener(|app, _: &text_input::Paste, _, cx| app.paste_nodes(cx))))
+            // A click outside the prompt or the edited field dismisses it; they keep their own clicks.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, _, window, cx| {
                     if app.prompt.is_some() {
                         app.close_prompt(window, cx);
                     }
+                    app.cancel_inline(window, cx);
                 }),
             )
             .on_mouse_move(cx.listener(Self::on_drag_move))
@@ -1303,11 +1352,23 @@ fn run(ws: Workspace) -> Result<()> {
         text_input::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None), KeyBinding::new("cmd-w", CloseWindow, None)]);
-        cx.set_menus(vec![Menu {
-            name: "topo".into(),
-            items: vec![MenuItem::action("Quit topo", Quit)],
-            disabled: false,
-        }]);
+        cx.set_menus(vec![
+            Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)], disabled: false },
+            // Each item acts on the text of a focused field, and on the graph otherwise.
+            Menu {
+                name: "Edit".into(),
+                items: vec![
+                    MenuItem::os_action("Undo", text_input::Undo, OsAction::Undo),
+                    MenuItem::os_action("Redo", text_input::Redo, OsAction::Redo),
+                    MenuItem::separator(),
+                    MenuItem::os_action("Cut", text_input::Cut, OsAction::Cut),
+                    MenuItem::os_action("Copy", text_input::Copy, OsAction::Copy),
+                    MenuItem::os_action("Paste", text_input::Paste, OsAction::Paste),
+                    MenuItem::os_action("Select All", text_input::SelectAll, OsAction::SelectAll),
+                ],
+                disabled: false,
+            },
+        ]);
         let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         let options = WindowOptions {
             app_id: Some("dev.r4ai.topo".into()),

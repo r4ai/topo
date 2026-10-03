@@ -62,6 +62,17 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
     })
     .context("--select")?;
 
+    if let Some(field) = options.edit {
+        cx.update_window(handle.into(), |_, window, cx| {
+            entity.update(cx, |app, cx| {
+                app.start_inline(field, window, cx);
+                if let Some(text) = &options.typed {
+                    app.inline_input().update(cx, |input, cx| input.reset(text, "", cx));
+                }
+            })
+        })?;
+    }
+
     // The first frames settle layout and the camera fit.
     for _ in 0..4 {
         cx.run_until_parked();

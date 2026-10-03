@@ -3,7 +3,7 @@
 use gpui::{
     AnyElement, App, Context, Div, ElementId, MouseButton, SharedString, Stateful, div, hsla, prelude::*, px, rgb,
 };
-use topo_core::{Kind, NodeId, Status};
+use topo_core::{Kind, NodeId, Priority, Status};
 
 use crate::theme::{self, button, icon_button, kbd};
 use crate::{NewNode, OrganizeKind, Prompt, TopoApp, dates};
@@ -204,7 +204,7 @@ impl TopoApp {
                 "Double-click to rename · drag ● onto a node to connect, or onto empty space for a follow-up"
             }
             (None, Some(_)) if self.selected_nodes.len() > 1 => {
-                "Space status · 1–4 set status · ⌫ delete selection · click a row to edit one"
+                "Space status · 1–4 set status · ⌘C copy · ⌫ delete selection · click a row to edit one"
             }
             (None, Some(_)) => "Tab follow-up · ⇧Tab prerequisite · L link · Space status · ⌫ delete · ←→↑↓ move",
             (None, None) => "N task · M milestone · / search · F fit · drag to pan · ? shortcuts",
@@ -230,7 +230,36 @@ impl TopoApp {
             .items_end()
             .justify_between()
             .gap_4()
-            .child(div().min_w(px(0.)).truncate().text_xs().text_color(rgb(theme::FAINT)).child(hint))
+            .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(rgb(theme::FAINT)).child(hint))
+            .child(stop_click(
+                pill().child(
+                    div()
+                        .id("priority-filter")
+                        .debug_selector(|| "priority-filter".to_owned())
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .h(px(24.))
+                        .px_2()
+                        .rounded_md()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .cursor_pointer()
+                        .text_color(rgb(if self.priority_filter.is_some() { theme::TEXT } else { theme::MUTED }))
+                        .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
+                        .child(match self.priority_filter {
+                            None => "Priority: all".to_owned(),
+                            Some(Priority::Urgent) => "Priority: urgent".to_owned(),
+                            Some(Priority::Low) => "Priority: any set".to_owned(),
+                            Some(least) => format!("Priority: {least} and up"),
+                        })
+                        .when(!self.compact, |d| d.child(kbd("⇧P")))
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.cycle_priority_filter();
+                            cx.notify();
+                        })),
+                ),
+            ))
             .child(stop_click(
                 pill()
                     .id("zoom")
@@ -289,7 +318,6 @@ impl TopoApp {
 
     pub(crate) fn prompt_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.prompt.as_ref()?;
-        let query = self.input.read(cx).text().to_owned();
         let mut context: Vec<Div> = Vec::new();
         match prompt {
             Prompt::Create(NewNode { milestones, depends_on, required_by, .. }) => {
@@ -297,17 +325,13 @@ impl TopoApp {
                 context.extend(required_by.iter().map(|id| self.node_chip("before", id)));
                 context.extend(milestones.iter().map(|id| self.node_chip("in", id)));
             }
-            Prompt::Rename(id) | Prompt::Due(id) | Prompt::Tags(id) | Prompt::Pick { node: id, .. } => {
-                context.push(self.node_chip("", id))
-            }
+            Prompt::Rename(id) | Prompt::Pick { node: id, .. } => context.push(self.node_chip("", id)),
             Prompt::Search => {}
         }
         let icon = match prompt {
             Prompt::Search | Prompt::Pick { .. } => "⌕",
             Prompt::Create(_) => "+",
             Prompt::Rename(_) => "✎",
-            Prompt::Due(_) => "⏱",
-            Prompt::Tags(_) => "#",
         };
         let footer = match prompt {
             Prompt::Search => vec![("↵", "jump"), ("↑↓", "choose"), ("esc", "close")],
@@ -362,17 +386,6 @@ impl TopoApp {
                     true => note("No matches".to_owned()).into_any_element(),
                     false => div().flex().flex_col().p_1().children(rows).children(more).into_any_element(),
                 })
-            }
-            Prompt::Due(_) => {
-                let today = dates::today();
-                let (text, color) = match dates::parse_due(&query, today) {
-                    Ok(Some(d)) => {
-                        (format!("{} · {} ({})", d.strftime("%a"), d, dates::relative(d, today)), theme::GREEN)
-                    }
-                    Ok(None) => ("No due date".to_owned(), theme::MUTED),
-                    Err(_) => ("Not a date yet".to_owned(), theme::FAINT),
-                };
-                Some(div().px_4().py_2().text_xs().text_color(rgb(color)).child(format!("→ {text}")).into_any_element())
             }
             _ => None,
         };
@@ -507,7 +520,7 @@ impl TopoApp {
     }
 
     pub(crate) fn help_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let groups: [(&'static str, &'static [(&'static str, &'static str)]); 6] = [
+        let groups: [(&'static str, &'static [(&'static str, &'static str)]); 7] = [
             (
                 "Create",
                 &[
@@ -524,8 +537,9 @@ impl TopoApp {
                     ("Space", "Next status for selected nodes"),
                     ("X", "Toggle done for selected nodes"),
                     ("1–4", "Todo / Doing / Done / Dropped"),
-                    ("D", "Due date (single selection)"),
-                    ("T", "Tags (single selection)"),
+                    ("P  A", "Priority / assignee, in the inspector"),
+                    ("D  T", "Due date / tags, in the inspector"),
+                    ("G", "Link a pull request"),
                     ("O", "Open the file (notes)"),
                     ("⌫", "Delete selected nodes"),
                 ],
@@ -548,7 +562,17 @@ impl TopoApp {
                     ("Esc", "Clear selection"),
                 ],
             ),
-            ("View", &[("F", "Fit graph"), ("+ −", "Zoom"), ("0", "Actual size"), ("⌘Z  ⇧⌘Z", "Undo / redo")]),
+            ("View", &[("F", "Fit graph"), ("+ −", "Zoom"), ("0", "Actual size"), ("⇧P", "Dim below a priority")]),
+            (
+                "Standard shortcuts",
+                &[
+                    ("⌘A", "Canvas: select all nodes · field: all text"),
+                    ("⌘C  ⌘X", "Canvas: copy / cut nodes · field: text"),
+                    ("⌘V", "Canvas: paste nodes as new · field: text"),
+                    ("⌘Z  ⇧⌘Z", "Canvas: undo / redo edits · field: typing"),
+                    ("↵  Esc", "Field: save / cancel"),
+                ],
+            ),
             (
                 "Mouse",
                 &[
@@ -579,7 +603,7 @@ impl TopoApp {
                 }),
             )
         };
-        let [create, edit, connect, nav, view, mouse] = groups;
+        let [create, edit, connect, nav, view, standard, mouse] = groups;
         div()
             .id("help")
             .absolute()
@@ -640,7 +664,8 @@ impl TopoApp {
                                     .gap_4()
                                     .child(group(create))
                                     .child(group(edit))
-                                    .child(group(connect)),
+                                    .child(group(connect))
+                                    .child(group(standard)),
                             )
                             .child(
                                 div()

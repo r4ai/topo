@@ -1,12 +1,18 @@
 //! The right-hand panel: the selected node, or an overview when nothing is selected.
 
+use std::cmp::Reverse;
+
 use gpui::{
-    AnyElement, Context, CursorStyle, Div, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div,
+    AnyElement, App, Context, CursorStyle, Div, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div,
     prelude::*, px, rgb,
 };
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
+use topo_core::model::pr_label;
 use topo_core::{Graph, Kind, Node, NodeId, Status};
 use topo_jev::organize::Proposal;
 
+use crate::inline::Field;
 use crate::theme::{self, button, chip, icon_button, kbd, section_label};
 use crate::{Drag, Prompt, Relation, TopoApp, dates};
 
@@ -220,16 +226,24 @@ impl TopoApp {
                 .into_any_element(),
         );
 
-        let doing: Vec<&Node> = graph.nodes().filter(|n| n.kind == Kind::Task && n.status == Status::Doing).collect();
+        // What matters most comes first; a priority is named, not only colored.
+        let detail = |node: &Node| {
+            let parts = [node.priority.map(theme::priority_text), node.due.map(|d| dates::short(d, today))];
+            Some(parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")).filter(|d| !d.is_empty())
+        };
+        let mut doing: Vec<&Node> =
+            graph.nodes().filter(|n| n.kind == Kind::Task && n.status == Status::Doing).collect();
+        doing.sort_by_key(|n| Reverse(n.priority));
         if !doing.is_empty() {
             out.push(section_label("IN PROGRESS").into_any_element());
             for node in doing {
-                out.push(self.node_row("doing", node, None, None, cx).into_any_element());
+                let who = node.assignee.as_ref().map(|a| format!("@{a}"));
+                out.push(self.node_row("doing", node, who.or_else(|| detail(node)), None, cx).into_any_element());
             }
         }
 
         let mut ready: Vec<&Node> = graph.ready_tasks(None).into_iter().filter(|n| n.status == Status::Todo).collect();
-        ready.sort_by_key(|n| (n.due.is_none(), n.due));
+        ready.sort_by_key(|n| (Reverse(n.priority), n.due.is_none(), n.due));
         out.push(section_label(format!("READY NOW · {}", ready.len())).into_any_element());
         if ready.is_empty() {
             out.push(
@@ -241,8 +255,7 @@ impl TopoApp {
             );
         }
         for node in ready {
-            let due = node.due.map(|d| dates::short(d, today));
-            out.push(self.node_row("ready", node, due, None, cx).into_any_element());
+            out.push(self.node_row("ready", node, detail(node), None, cx).into_any_element());
         }
 
         let milestones: Vec<&Node> = graph.nodes().filter(|n| n.kind == Kind::Milestone).collect();
@@ -399,10 +412,17 @@ impl TopoApp {
         // Status control.
         out.push(self.status_control(Some(node.status), cx).into_any_element());
 
-        // Properties.
-        let due_id = id.clone();
-        let tags_id = id.clone();
-        let due_text = match node.due {
+        // Properties, each edited in place.
+        let none = || div().text_color(rgb(theme::FAINT)).child("None");
+        let priority = match node.priority {
+            Some(p) => div().truncate().text_color(rgb(theme::priority_color(p))).child(theme::priority_text(p)),
+            None => none(),
+        };
+        let assignee = match &node.assignee {
+            Some(name) => div().truncate().child(format!("@{name}")),
+            None => div().text_color(rgb(theme::FAINT)).child("Unassigned"),
+        };
+        let due = match node.due {
             Some(d) => {
                 let c = if node.status.is_closed() { theme::MUTED } else { dates::urgency_color(d, today) };
                 div().truncate().text_color(rgb(c)).child(format!(
@@ -411,49 +431,27 @@ impl TopoApp {
                     dates::relative(d, today)
                 ))
             }
-            None => div().text_color(rgb(theme::FAINT)).child("None"),
+            None => none(),
         };
         let tags = match node.tags.is_empty() {
-            true => div().text_color(rgb(theme::FAINT)).child("None"),
+            true => none(),
             false => div()
                 .flex()
                 .flex_wrap()
                 .gap_1()
                 .children(node.tags.iter().map(|t| chip(format!("#{t}"), theme::ACCENT))),
         };
-        let property = |key: &'static str, label: &'static str, shortcut: &'static str, value: Div| {
-            div()
-                .id(key)
-                .flex()
-                .items_center()
-                .gap_2()
-                .min_h(px(30.))
-                .px_2()
-                .mx_neg_2()
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
-                .child(div().w(px(56.)).flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(label))
-                .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_xs().child(value))
-                .child(kbd(shortcut))
-        };
         out.push(section_label("DETAILS").into_any_element());
-        out.push(
-            property("prop-due", "Due", "D", due_text)
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    let due = app.graph().get(&due_id).and_then(|n| n.due).map(|d| d.to_string()).unwrap_or_default();
-                    app.open_prompt(Prompt::Due(due_id.clone()), &due, window, cx);
-                }))
-                .into_any_element(),
-        );
-        out.push(
-            property("prop-tags", "Tags", "T", tags)
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    let tags = app.graph().get(&tags_id).map(|n| n.tags.join(" ")).unwrap_or_default();
-                    app.open_prompt(Prompt::Tags(tags_id.clone()), &tags, window, cx);
-                }))
-                .into_any_element(),
-        );
+        out.push(self.property(node, Field::Priority, "Priority", "P", priority, cx));
+        out.push(self.property(node, Field::Assignee, "Assignee", "A", assignee, cx));
+        out.push(self.property(node, Field::Due, "Due", "D", due, cx));
+        out.push(self.property(node, Field::Tags, "Tags", "T", tags, cx));
+        let tz = TimeZone::system();
+        out.push(moment_row("created", "Created", node.created_at, "Unknown", &tz));
+        out.push(moment_row("updated", "Updated", node.updated_at, "Unknown", &tz));
+        let not_done = if node.status == Status::Done { "Unknown" } else { "Not completed" };
+        out.push(moment_row("completed", "Completed", node.completed_at, not_done, &tz));
+        out.extend(self.pull_requests(node, cx));
 
         // Milestone progress and critical path.
         if milestone {
@@ -611,6 +609,143 @@ impl TopoApp {
         out
     }
 
+    /// A row of DETAILS. A click, or its key, turns the value into a text field.
+    fn property(
+        &self,
+        node: &Node,
+        field: Field,
+        label: &'static str,
+        shortcut: &'static str,
+        value: Div,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = format!("prop-{}", label.to_lowercase());
+        if self.editing(&node.id, field).is_some() {
+            return self.inline_field(node, field, Some(label), cx);
+        }
+        div()
+            .id(ElementId::Name(key.clone().into()))
+            .debug_selector(move || key)
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_h(px(30.))
+            .px_2()
+            .mx_neg_2()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
+            .child(property_label(label))
+            .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_xs().child(value))
+            .child(kbd(shortcut))
+            .on_click(cx.listener(move |app, _, window, cx| app.start_inline(field, window, cx)))
+            .into_any_element()
+    }
+
+    /// The text field that replaces a row while its value is edited, and under
+    /// it what Enter would save, or why the last Enter saved nothing.
+    fn inline_field(
+        &self,
+        node: &Node,
+        field: Field,
+        label: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let edit = self.editing(&node.id, field).expect("the caller checked that the field is edited");
+        let text = self.inline_input().read(cx).text().to_owned();
+        let (hint, color) = match &edit.error {
+            Some(error) => (error.clone(), theme::RED),
+            None => field.preview(&text, node, dates::today()),
+        };
+        let row = div().flex().items_center().gap_2().min_h(px(30.)).children(label.map(property_label)).child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .px_1p5()
+                .py_0p5()
+                .rounded_md()
+                .bg(rgb(theme::CANVAS))
+                .border_1()
+                .border_color(rgb(if edit.error.is_some() { theme::RED } else { theme::ACCENT }))
+                .text_xs()
+                .child(self.inline_input().clone()),
+        );
+        // The field keeps its own clicks: a click anywhere else closes it.
+        div()
+            .id("inline-edit")
+            .debug_selector(|| "inline-edit".to_owned())
+            .flex()
+            .flex_col()
+            .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
+            .child(row)
+            .child(
+                div()
+                    .debug_selector(|| "inline-hint".to_owned())
+                    .when(label.is_some(), |d| d.pl(px(PROPERTY_LABEL_W + 8.)))
+                    .pb_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_xs()
+                    .text_color(rgb(color))
+                    .child(hint),
+            )
+            .into_any_element()
+    }
+
+    /// The related pull requests: each opens in the browser and can be unlinked.
+    fn pull_requests(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let heading = match node.prs.len() {
+            0 => "PULL REQUESTS".to_owned(),
+            n => format!("PULL REQUESTS · {n}"),
+        };
+        let add = div().flex().items_center().gap_1().child(kbd("G")).child(icon_button("add-pr", "+").on_click(
+            cx.listener(|app, _, window, cx| {
+                app.start_inline(Field::Pr, window, cx);
+            }),
+        ));
+        let mut out = vec![
+            div().flex().items_end().justify_between().child(section_label(heading)).child(add).into_any_element(),
+        ];
+        for (index, url) in node.prs.iter().enumerate() {
+            let group = SharedString::from(format!("pr-{index}"));
+            let (id, open, unlink) = (node.id.clone(), url.clone(), url.clone());
+            out.push(
+                div()
+                    .id(ElementId::Name(group.clone()))
+                    .debug_selector(|| group.to_string())
+                    .group(group.clone())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_h(px(30.))
+                    .px_2()
+                    .mx_neg_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
+                    .child(div().flex_shrink_0().text_color(rgb(theme::ACCENT)).child("↗"))
+                    .child(div().flex_1().min_w(px(0.)).truncate().text_xs().child(pr_label(url)))
+                    .child(
+                        icon_button(format!("{group}-remove"), "×")
+                            .opacity(0.)
+                            .group_hover(group.clone(), |s| s.opacity(1.))
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                cx.stop_propagation();
+                                app.unlink_pr(id.clone(), &unlink, cx);
+                            })),
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&open)))
+                    .into_any_element(),
+            );
+        }
+        if self.editing(&node.id, Field::Pr).is_some() {
+            out.push(self.inline_field(node, Field::Pr, None, cx));
+        } else if node.prs.is_empty() {
+            out.push(div().text_xs().text_color(rgb(theme::FAINT)).child("None linked").into_any_element());
+        }
+        out
+    }
+
     fn proposals_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         if self.proposals.is_empty() {
             return None;
@@ -710,6 +845,38 @@ impl TopoApp {
                 .children(cards),
         )
     }
+}
+
+/// Width of the label column of DETAILS.
+const PROPERTY_LABEL_W: f32 = 64.;
+
+fn property_label(label: &'static str) -> Div {
+    div().w(px(PROPERTY_LABEL_W)).flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(label)
+}
+
+/// A read-only row of DETAILS showing a recorded moment in the time zone `tz`,
+/// or `absent` when there is none. The value is the part that gives way in a
+/// narrow panel, and it stays readable there: it has the row to itself.
+fn moment_row(
+    key: &'static str,
+    label: &'static str,
+    at: Option<Timestamp>,
+    absent: &'static str,
+    tz: &TimeZone,
+) -> AnyElement {
+    let value = match at {
+        Some(at) => div().truncate().text_color(rgb(theme::MUTED)).child(dates::moment(at, tz.clone())),
+        None => div().truncate().text_color(rgb(theme::FAINT)).child(absent),
+    };
+    div()
+        .debug_selector(move || format!("prop-{key}"))
+        .flex()
+        .items_center()
+        .gap_2()
+        .min_h(px(24.))
+        .child(property_label(label))
+        .child(div().flex_1().min_w(px(0.)).text_xs().child(value))
+        .into_any_element()
 }
 
 /// The node title, clamped to three lines that end in `…`. `line_clamp` alone
