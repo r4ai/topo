@@ -1022,6 +1022,18 @@ fn a_field_offers_values_to_choose_from(cx: &mut TestAppContext) {
     assert_eq!(choices(&mut ui), ["urgent", "high", "medium", "low"]);
     ui.keys("down down up down enter");
     assert_eq!(ui.node("a").priority, Some(Priority::High));
+    // The list stands in for the preview line, which returns for an error or a value of its own.
+    ui.keys("d");
+    assert!(ui.cx.debug_bounds("choice-0").is_some() && ui.cx.debug_bounds("inline-hint").is_none());
+    ui.type_text("2026-12-24");
+    assert!(ui.cx.debug_bounds("choice-0").is_none() && ui.cx.debug_bounds("inline-hint").is_some());
+    ui.keys("escape p");
+    ui.type_text("zz");
+    ui.keys("enter");
+    ui.redraw();
+    assert!(ui.read(|app| app.inline.as_ref().unwrap().error.is_some()));
+    assert!(ui.cx.debug_bounds("inline-hint").is_some(), "an error is always shown");
+    ui.keys("escape");
     // Reopened, the list is whole again although the field holds a value; typing narrows it.
     ui.keys("p");
     assert_eq!(choices(&mut ui).len(), 4);

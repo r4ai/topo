@@ -643,7 +643,8 @@ impl TopoApp {
     }
 
     /// The text field that replaces a row while its value is edited, and under
-    /// it what Enter would save, or why the last Enter saved nothing.
+    /// it the values to choose from, or what Enter would save when there are
+    /// none, and why the last Enter saved nothing.
     fn inline_field(
         &self,
         node: &Node,
@@ -726,17 +727,20 @@ impl TopoApp {
             .flex_col()
             .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
             .child(row)
-            .child(
-                indent(div())
-                    .debug_selector(|| "inline-hint".to_owned())
-                    .pb_1()
-                    .min_w(px(0.))
-                    .truncate()
-                    .text_xs()
-                    .text_color(rgb(color))
-                    .child(hint),
-            )
-            .children(list.map(|list| indent(div()).child(list)))
+            // The list already shows what can be saved; the line is for an error, or a value the list does not have.
+            .when(list.is_none() || edit.error.is_some(), |d| {
+                d.child(
+                    indent(div())
+                        .debug_selector(|| "inline-hint".to_owned())
+                        .pb_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_xs()
+                        .text_color(rgb(color))
+                        .child(hint),
+                )
+            })
+            .children(list.map(|list| indent(div()).pt_0p5().child(list)))
             .into_any_element()
     }
 
