@@ -48,5 +48,8 @@ if [[ "$BUILD_GUI" == true ]]; then
 </dict></plist>
 PLIST
   plutil -lint "$app/Info.plist"
+  # Bind the completed bundle metadata and resources to a local ad hoc signature.
+  codesign --force --sign - "$stage/topo.app"
+  codesign --verify --deep --strict "$stage/topo.app"
   tar -czf "dist/topo-gui-$RELEASE_TAG-$TARGET.tar.gz" -C "$smoke_dir" "$(basename "$stage")"
 fi
