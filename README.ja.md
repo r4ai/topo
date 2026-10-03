@@ -279,6 +279,25 @@ topo status <id> doing --if todo --assign "$TOPO_AGENT"
 
 リンクは `.topo/config.toml` の `[cloud]` テーブルに保存される。秘密情報を含まないためコミットできる。`topo cloud pull` はノードを Markdown ファイルへ書き戻し、リンクを解除する。
 
+## 優先度と記録日時
+
+priority は任意の属性で、`low`・`medium`・`high`・`urgent` の4段階。依存関係や着手可能かどうかの判定は変えない。`ls --priority high --priority urgent` はいずれかの値、`ls --no-priority` は未設定のノードを選ぶ。この2つのフィルタは併用できない。`ls --sort priority` と `ready --sort priority` は優先度の高い順、未設定は最後に並べ、同順位では ID 順を保つ。`organize prioritize` のモデル推奨スコア（0〜1）は保存された priority を変更しない（`--apply` 指定時も同様）。
+
+新規ノードの保存時に `created_at` と `updated_at` を記録し、実際に内容が変わったときだけ `updated_at` を更新する。`done` への遷移で `completed_at` を記録し、再オープンや `dropped` への変更で解除する。読み取り・失敗した操作・変更のない編集では日時は変わらない。日時は UTC の秒精度で保存し、クラウドの書き込みではサーバー時刻を使う。cloud push/pull は既存日時を保持し、旧ノードの不明な日時をファイルの更新時刻から推測しない。
+
+`show` と TUI の詳細欄には3つの日時を表示する（不明は `Unknown`、未完了や dropped の完了日時は `Not completed`）。CLI の日時は UTC を示す `Z` 付き、GUI の DETAILS はローカルタイムゾーンで表示する。`show --json`・`ls --json`・`ready --json` と `--format jsonl` は既知の日時を含み、不明な日時はフィールドを省略する。簡潔なテキスト一覧と5列の TSV は既存の形式を維持する。
+
+```bash
+topo add "ログインを修正" --priority high --assignee codex
+topo edit <id> --priority urgent --pr owner/repo#12
+topo status <id> doing --if todo --assign codex
+topo ready --sort priority
+topo ls --no-priority --format jsonl
+topo edit <id> --no-priority
+topo status <id> done
+topo show <id> # 完了日時も確認できる
+```
+
 ## コマンドリファレンス
 
 | コマンド | 説明 | 主要引数・フラグ |
@@ -294,7 +313,7 @@ topo status <id> doing --if todo --assign "$TOPO_AGENT"
 | `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | `--if <st>`（現在のステータスが一致しなければ失敗）, `--assign <name>`（同じアトミックな書き込みで担当者を設定） |
 | `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--priority`, `--no-priority`, `--assignee`, `--no-assignee`, `--pr`, `--unpr`, `--note` |
 | `topo rm <id>` | ノードおよび接続エッジの削除 | |
-| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
+| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
 | `topo show <id>` | ノードの詳細（優先度・担当者・プルリクエスト・作成/更新/完了日時）・隣接ノード・メモの表示 | |
 | `topo deps <id>` | 前提ノードの一覧（マイルストーンのメンバーも含む） | `--transitive`, `--format`, `--json` |
 | `topo dependents <id>` | 指定ノードに依存するノードの一覧 | `--transitive`（所属関係もたどる）, `--format`, `--json` |

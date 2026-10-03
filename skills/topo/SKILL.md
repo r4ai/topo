@@ -83,7 +83,7 @@ topo status <id> doing --assign alice       # status and assignee in one atomic 
 - `--due-before <date>` and `--due-after <date>` are inclusive and omit nodes without a due date. `--no-due` cannot be combined with either.
 - `--ready` selects open nodes with closed prerequisites; `--blocked` selects open nodes whose prerequisites remain open. These flags are mutually exclusive.
 - `--title <text>` matches a case-insensitive substring.
-- Repeat `--priority <p>` to select nodes with any of the priorities. `--assignee <name>` selects that assignee's nodes and `--unassigned` those without one; the two are mutually exclusive.
+- Repeat `--priority <p>` to select nodes with any of the priorities; `--no-priority` selects those without one and cannot be combined with `--priority`. `--assignee <name>` selects that assignee's nodes and `--unassigned` those without one; the two are mutually exclusive.
 
 `ls` and `ready` take `--sort priority`: highest first, nodes without a priority last, otherwise in the usual order. `topo ready --sort priority --format ids | head -1` is the most important task that can start now.
 
@@ -116,6 +116,8 @@ topo organize dupes --json        # likely duplicates (never auto-merged)
 topo organize kinds --json        # task vs milestone corrections
 topo organize prioritize --json   # ready tasks ranked by score (0..1)
 ```
+
+`organize prioritize` returns model recommendation scores and leaves stored `priority` values unchanged, including with `--apply`. Use `edit --priority` to save a choice; `ready --sort priority` ranks by those saved values.
 
 Review proposals and apply them with `--apply` (strongest first; ones that would form a cycle are reported as skipped), or pick individual ones with `topo link`. If the server is not running, say so and continue without it.
 

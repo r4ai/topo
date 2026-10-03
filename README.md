@@ -279,6 +279,25 @@ topo status <id> doing --if todo --assign "$TOPO_AGENT"
 
 The link is a `[cloud]` table in `.topo/config.toml`, which holds no secret and can be committed. `topo cloud pull` writes the nodes back to Markdown files and removes the link.
 
+## Priority and recorded times
+
+Priority is optional: `low`, `medium`, `high`, or `urgent`. It ranks work without changing dependencies or readiness. `ls --priority high --priority urgent` selects either value; `ls --no-priority` selects nodes without one. These filters cannot be combined. `ls --sort priority` and `ready --sort priority` put the highest value first and unset values last, keeping ID order for ties. `organize prioritize` returns model recommendation scores (0–1) and leaves saved priorities unchanged, including with `--apply`.
+
+Topo records `created_at` and `updated_at` when it saves a new node, updates `updated_at` only for actual changes, and sets `completed_at` on transition to `done`. Reopening or dropping a node clears its completion time. Reading, failed operations, and no-op edits keep the times unchanged. Times are stored as UTC seconds, using the server clock for cloud writes, and retained by cloud push/pull. Old nodes keep unknown times; topo never guesses them from file modification times.
+
+`show` and the TUI details show all three times (`Unknown` for missing records, `Not completed` for open or dropped nodes). CLI timestamps include the UTC `Z` suffix; GUI DETAILS displays the local time zone. `show --json`, `ls --json`, `ready --json`, and `--format jsonl` include known timestamps; absent times are omitted. Compact text listings and the five-column TSV format keep their existing layout.
+
+```bash
+topo add "Fix login" --priority high --assignee codex
+topo edit <id> --priority urgent --pr owner/repo#12
+topo status <id> doing --if todo --assign codex
+topo ready --sort priority
+topo ls --no-priority --format jsonl
+topo edit <id> --no-priority
+topo status <id> done
+topo show <id> # includes its completion time
+```
+
 ## Command Reference
 
 | Command | Description | Common Flags |
@@ -294,7 +313,7 @@ The link is a `[cloud]` table in `.topo/config.toml`, which holds no secret and 
 | `topo status <id> <st>` | Update status (`todo`, `doing`, `done`, `dropped`) | `--if <st>` (fail unless the node has this status), `--assign <name>` (set the assignee in the same atomic write) |
 | `topo edit <id>` | Modify node fields | `--title`, `--due`, `--no-due`, `--tag`, `--priority`, `--no-priority`, `--assignee`, `--no-assignee`, `--pr`, `--unpr`, `--note` |
 | `topo rm <id>` | Delete node and adjacent edges | |
-| `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
+| `topo ls [-]` | List or filter incoming nodes | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--priority`, `--no-priority`, `--assignee`, `--unassigned`, `--sort priority`, `--format` |
 | `topo show <id>` | Show node details (priority, assignee, pull requests, created/updated/completed times) and adjacent nodes | |
 | `topo deps <id>` | List prerequisites, including milestone members | `--transitive`, `--format`, `--json` |
 | `topo dependents <id>` | List nodes depending on a node | `--transitive` (also follows membership), `--format`, `--json` |

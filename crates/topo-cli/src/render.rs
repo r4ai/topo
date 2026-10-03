@@ -115,9 +115,8 @@ pub fn detail_text(graph: &Graph, node: &Node) -> String {
     // Times are known only for nodes written since they were recorded.
     for (label, time) in [("created", node.created_at), ("updated", node.updated_at), ("completed", node.completed_at)]
     {
-        if let Some(time) = time {
-            text += &format!("\n{label} {time}");
-        }
+        let missing = if label == "completed" && node.status != Status::Done { "Not completed" } else { "Unknown" };
+        text += &format!("\n{label} {}", time.map(|t| t.to_string()).unwrap_or_else(|| missing.to_owned()));
     }
     if !node.prs.is_empty() {
         text += &format!(

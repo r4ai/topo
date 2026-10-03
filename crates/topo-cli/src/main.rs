@@ -265,8 +265,11 @@ struct ListFilters {
     #[arg(long)]
     title: Option<String>,
     /// Only nodes with one of the supplied priorities (repeatable).
-    #[arg(long = "priority")]
+    #[arg(long = "priority", conflicts_with = "no_priority")]
     priorities: Vec<Priority>,
+    /// Only nodes without a priority.
+    #[arg(long)]
+    no_priority: bool,
     /// Only nodes assigned to NAME.
     #[arg(long, value_name = "NAME", conflicts_with = "unassigned")]
     assignee: Option<String>,
@@ -445,6 +448,7 @@ fn list_nodes<'a>(graph: &'a Graph, input: Option<&str>, stdin: &str, filters: L
         .filter(|n| !filters.blocked || (!n.status.is_closed() && !graph.is_ready(n)))
         .filter(|n| title.as_ref().is_none_or(|title| n.title.to_lowercase().contains(title)))
         .filter(|n| filters.priorities.is_empty() || n.priority.is_some_and(|p| filters.priorities.contains(&p)))
+        .filter(|n| !filters.no_priority || n.priority.is_none())
         .filter(|n| assignee.is_none() || n.assignee == assignee)
         .filter(|n| !filters.unassigned || n.assignee.is_none())
         .collect())

@@ -624,6 +624,8 @@ fn ls_filters_and_sorts_by_priority_and_assignee() {
     for (filters, expected) in [
         (vec!["--priority", "urgent"], vec!["c", "e"]),
         (vec!["--priority", "low", "--priority", "high"], vec!["a", "d"]),
+        (vec!["--no-priority"], vec!["b"]),
+        (vec!["--no-priority", "--assignee", "alice"], vec![]),
         (vec!["--assignee", " alice "], vec!["a", "e"]),
         (vec!["--unassigned"], vec!["b", "d"]),
         (vec!["--unassigned", "--priority", "high"], vec!["d"]),
@@ -636,6 +638,9 @@ fn ls_filters_and_sorts_by_priority_and_assignee() {
     assert_eq!(fixture.ids(&["ready", "--sort", "priority", "--format", "ids"], ""), ["c", "e", "d", "a", "b"]);
     assert_eq!(fixture.text(&["ls", "--priority", "low"], ""), "[ ] a  a  !low  @alice\n");
     failure(fixture.run(&["ls", "--priority", "p0"], ""), "invalid priority");
+    failure(fixture.run(&["ls", "--priority", "high", "--no-priority"], ""), "cannot be used with");
+    assert_eq!(fixture.ids(&["ls", "-", "--no-priority", "--format", "ids"], "a b c"), ["b"]);
+    assert_eq!(fixture.json(&["ls", "--no-priority", "--format", "jsonl"], "")["id"], "b");
 }
 
 #[test]
@@ -707,6 +712,7 @@ fn timestamps_record_creation_change_and_completion() {
     assert_eq!(times("timed1")[2], completed);
     fixture.text(&["status", "timed1", "doing"], "");
     assert_eq!(times("timed1")[2], Value::Null);
+    assert!(fixture.text(&["show", "timed1"], "").contains("\ncompleted Not completed\n"));
 
     let added = fixture.json(&["add", "New", "--json"], "");
     assert_eq!(added["created_at"], added["updated_at"]);
@@ -716,7 +722,11 @@ fn timestamps_record_creation_change_and_completion() {
     // Unknown times are shown as unknown and never guessed, even once the node changes.
     assert_eq!(times("old001"), [Value::Null, Value::Null, Value::Null]);
     let shown = fixture.text(&["show", "old001"], "");
-    assert_eq!(shown, "[ ] old001  Old\n");
+    assert_eq!(shown, "[ ] old001  Old\ncreated Unknown\nupdated Unknown\ncompleted Not completed\n");
+    let mut old_done = node("old002", Kind::Task, "Old done");
+    old_done.status = Status::Done;
+    fs::write(nodes.join("old002.md"), topo_core::store::render(&old_done)).unwrap();
+    assert!(fixture.text(&["show", "old002"], "").contains("\ncompleted Unknown\n"));
     fixture.text(&["status", "old001", "done"], "");
     let [was_created, changed, completed] = times("old001");
     assert_eq!(was_created, Value::Null);
