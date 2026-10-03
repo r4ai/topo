@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the shared native app icons and favicon (macOS Swift and sips)."""
+"""Compile the layered macOS icon and regenerate native fallbacks (Xcode 26+)."""
 from pathlib import Path
 import struct
 import subprocess
@@ -10,10 +10,20 @@ sizes = [(16, "icp4"), (32, "icp5"), (64, "icp6"), (128, "ic07"), (256, "ic08"),
 images = []
 with tempfile.TemporaryDirectory() as temporary:
     source = Path(temporary) / "app-icon.png"
+    compiled = Path(temporary) / "compiled"
+    compiled.mkdir()
     subprocess.run(
-        ["swift", str(branding / "render-app-icon.swift"),
-         str(branding / "topo-logo.svg"), str(source)],
+        ["xcrun", "actool", str(branding / "topo.icon"),
+         "--compile", str(compiled), "--platform", "macosx",
+         "--minimum-deployment-target", "13.0", "--app-icon", "topo",
+         "--output-partial-info-plist", str(Path(temporary) / "icon-info.plist"),
+         "--output-format", "human-readable-text", "--warnings", "--errors"],
         check=True,
+    )
+    (branding / "topo.icns").write_bytes((compiled / "topo.icns").read_bytes())
+    subprocess.run(
+        ["sips", "-s", "format", "png", str(compiled / "topo.icns"), "--out", str(source)],
+        check=True, stdout=subprocess.DEVNULL,
     )
     for size, _ in sizes:
         output = Path(temporary) / f"{size}.png"
@@ -22,10 +32,6 @@ with tempfile.TemporaryDirectory() as temporary:
             check=True, stdout=subprocess.DEVNULL,
         )
         images.append(output.read_bytes())
-
-chunks = [tag.encode() + struct.pack(">I", len(data) + 8) + data for (_, tag), data in zip(sizes, images)]
-body = b"".join(chunks)
-(branding / "topo.icns").write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
 
 offset = 6 + 16 * 5
 entries = []

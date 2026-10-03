@@ -83,7 +83,7 @@ flowchart LR
 
 ### インストール
 
-Linux・Windows・macOS 向けCLIとmacOS向けGUIのビルド済みバイナリを
+Linux・Windows・macOS 向けCLIのビルド済みバイナリと、macOS・Windows向けGUIインストーラーを
 [GitHub Releases](https://github.com/r4ai/topo/releases)から取得できる。
 インストール・チェックサム検証・リリース手順は[リリースガイド](docs/releasing.md)を参照。
 

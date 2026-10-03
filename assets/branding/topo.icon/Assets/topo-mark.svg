@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title">
+  <title id="title">topo logo</title>
+  <g fill="#FFFFFF">
+    <path d="M 246 64 C 180 74 150 98 150 139 L 150 203 L 246 159 Z"/>
+    <path d="M 150 218 L 259 166 L 376 166 C 376 212 349 232 305 232 L 246 232 L 246 350 C 246 371 254 381 277 381 L 337 381 C 335 423 305 448 258 448 C 186 448 150 407 150 344 Z"/>
+  </g>
+</svg>

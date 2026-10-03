@@ -5,6 +5,8 @@
 //! (press `?` for the list), every edit can be undone, and edits made
 //! elsewhere (CLI, agents) appear live.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod args;
 mod branding;
 mod chrome;

@@ -24,13 +24,16 @@ Dependabot opens weekly Cargo and SHA-pinned Actions updates for review.
 The Release workflow verifies the stable `vMAJOR.MINOR.PATCH` tag against the
 workspace version and main ancestry. It runs CI on that exact tag commit and
 builds CLI archives for Linux x86_64 (glibc), Windows x86_64 (MSVC), and macOS
-Apple Silicon and Intel. Both macOS targets also include separate GUI archives.
+Apple Silicon and Intel. Both macOS targets include GUI `.pkg` installers; Windows includes a GUI `-setup.exe` installer.
+The Windows installer is compiled with Inno Setup supplied by the hosted runner,
+then silently installed, upgraded and uninstalled to verify the installed binary
+and Start menu shortcut while preserving user settings.
 Archives contain the READMEs; CLI archives also contain the bundled agent skill.
 Each built CLI runs a smoke test that initializes a workspace, creates a task,
 and confirms it appears in JSON ready output.
 
 Only after all checks and builds succeed does the publish job create a draft,
-upload all six archives plus `SHA256SUMS`, and publish the release with generated
+upload all four CLI archives, two macOS installers, one Windows installer, and `SHA256SUMS`, and publish the release with generated
 notes. Builds use read-only tokens, checkouts do not persist credentials, release
 builds do not reuse CI caches, and only the final publish job can write releases.
 The publish job refuses to overwrite an existing release. If publication failed
@@ -65,16 +68,35 @@ Download the matching checksums and verify before running the binary. On Linux,
 On macOS, use `shasum -a 256 ARCHIVE.tar.gz` and compare to `SHA256SUMS`.
 On Windows, use `Get-FileHash ARCHIVE.tar.gz -Algorithm SHA256`.
 
-The macOS GUI archives contain both a command-line executable and a `topo.app`
-bundle with the topo logo in Finder and the Dock. Launch from your initialized
-workspace, or pass the `.topo` directory: `./topo-gui /path/to/project/.topo`.
-To launch the bundle with a workspace, use
-`open topo.app --args /path/to/project/.topo`. The bundle is unsigned and not
-notarized. Apple signing/notarization requires
-separate developer credentials and is not configured by this workflow.
+The macOS GUI installers contain a `topo.app` bundle with the topo logo in
+Finder and the Dock. Launch it from Applications, or pass a workspace with
+`open /Applications/topo.app --args /path/to/project/.topo`.
+The completed bundle is ad hoc signed and strictly verified before packaging,
+and the app extracted from each installer is verified again. Developer ID signing
+and notarization require separate Apple credentials and are not configured.
+
+For macOS GUI installation, prefer `topo-gui-vVERSION-TARGET.pkg` from the release.
+Choose `aarch64-apple-darwin` for Apple Silicon or `x86_64-apple-darwin` for Intel.
+The installer places `topo.app` in `/Applications`, including on upgrades. It does
+not install the CLI or modify workspaces, user settings, or macOS security policy.
+The installer is not Developer ID signed: if macOS blocks it, explicitly allow
+that installer in System Settings → Privacy & Security → Open Anyway. Once installed,
+open `/Applications/topo.app`. See [macOS installation](macos-install.md).
+
+A valid ad hoc signature verifies bundle integrity; it is not Apple approval.
+GUI `.pkg` installers replace the legacy GUI `.tar.gz` downloads from v0.2.0.
+A browser-downloaded archive copy of an ad hoc signed app can still be rejected
+by Gatekeeper. The installer is the supported installation path; it does not
+remove quarantine attributes or disable macOS security policy.
+
+For Windows GUI installation, run `topo-gui-vVERSION-x86_64-pc-windows-msvc-setup.exe`
+and open topo from the Start menu. It installs per user into
+`%LOCALAPPDATA%\Programs\topo`, supports upgrades, and appears in Settings → Apps
+for uninstall. An optional desktop shortcut is available. Workspaces and settings
+are preserved. This installer is unsigned and may trigger SmartScreen.
 
 Build provenance attestations are enabled automatically for public repositories:
 `gh attestation verify ARCHIVE.tar.gz --repo r4ai/topo`. GitHub requires Enterprise
-Cloud for private repository attestations; this private repository uses SHA256
+Cloud for private repository attestations; private repositories can use SHA256
 checksums and GitHub's workflow/artifact records. No long-lived release secret
 is needed; publication uses the job-scoped `GITHUB_TOKEN`.

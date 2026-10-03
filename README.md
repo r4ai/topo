@@ -84,7 +84,7 @@ Running `topo ready` outputs only unblocked tasks (`DB Schema` and `UI Mockups`)
 
 ### Installation
 
-Download prebuilt CLI binaries for Linux, Windows, and macOS, or macOS GUI binaries
+Download prebuilt CLI binaries for Linux, Windows, and macOS, or GUI installers for macOS and Windows
 from [GitHub Releases](https://github.com/r4ai/topo/releases). See
 [installation, verification, and release workflow](docs/releasing.md) for details.
 

@@ -61,7 +61,7 @@ jobs:
             gui: false
           - os: windows-2025
             target: x86_64-pc-windows-msvc
-            gui: false
+            gui: true
           - os: macos-15
             target: aarch64-apple-darwin
             gui: true
@@ -82,11 +82,21 @@ jobs:
         with:
           toolchain: '1.96.0'
           targets: ${{ matrix.target }}
+      - name: Select Xcode for Liquid Glass icons
+        if: runner.os == 'macOS'
+        run: |
+          developer_dir=/Applications/Xcode_26.3.app/Contents/Developer
+          test -d "$developer_dir"
+          echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+          echo 'MACOSX_DEPLOYMENT_TARGET=13.0' >> "$GITHUB_ENV"
       - name: Build release binaries from the lockfile
         env:
           TARGET: ${{ matrix.target }}
           BUILD_GUI: ${{ matrix.gui }}
         run: |
+          if [[ "$TARGET" == x86_64-pc-windows-msvc ]]; then
+            export RUSTFLAGS='-C target-feature=+crt-static'
+          fi
           cargo build --locked --release --target "$TARGET" -p topo-cli
           if [[ "$BUILD_GUI" == true ]]; then
             cargo build --locked --release --target "$TARGET" -p topo-gui
@@ -97,6 +107,12 @@ jobs:
           TARGET: ${{ matrix.target }}
           BUILD_GUI: ${{ matrix.gui }}
         run: bash .github/scripts/package-release.sh
+      - name: Verify Windows installation, upgrade and uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: ./.github/scripts/test-windows-installer.ps1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.target }}
@@ -126,8 +142,8 @@ jobs:
       - name: Check release assets and write SHA256 checksums
         working-directory: dist
         run: |
-          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
-          sha256sum ./*.tar.gz > SHA256SUMS
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 7
+          sha256sum ./*.tar.gz ./*.pkg ./*-setup.exe > SHA256SUMS
           sha256sum --check SHA256SUMS
       # Private repository attestations require GitHub Enterprise Cloud.
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

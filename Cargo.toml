@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/topo-core", "crates/topo-jev", "crates/topo-cloud", "crates/topo-server", "crates/topo-cli", "crates/topo-gui"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 

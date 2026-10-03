@@ -13,6 +13,14 @@ pub fn set_app_icon() {
     // embedded bytes; NSImage decodes that data and NSApplication retains the
     // image. Release our owned image after handing it to the application.
     unsafe {
+        // Bundled releases use Assets.car so macOS can render Liquid Glass and
+        // appearance variants. A custom NSImage would replace that system icon.
+        let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
+        let key: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c"CFBundleIconName".as_ptr()];
+        let icon_name: *mut Object = msg_send![bundle, objectForInfoDictionaryKey: key];
+        if !icon_name.is_null() {
+            return;
+        }
         let data: *mut Object = msg_send![class!(NSData), dataWithBytes: bytes.as_ptr() length: bytes.len()];
         let image: *mut Object = msg_send![class!(NSImage), alloc];
         let image: *mut Object = msg_send![image, initWithData: data];

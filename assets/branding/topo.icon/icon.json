@@ -1,0 +1,33 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "srgb:0.22,0.25,0.31,1",
+      "srgb:0.10,0.12,0.16,1"
+    ]
+  },
+  "groups": [
+    {
+      "name": "Topo mark",
+      "layers": [
+        {
+          "name": "Topo mark",
+          "image-name": "topo-mark.svg",
+          "glass": true
+        }
+      ],
+      "lighting": "individual",
+      "specular": true,
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.35
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}
