@@ -18,6 +18,7 @@ topo-core = { workspace = true, features = ["fs"] }
 topo-jev.workspace = true
 topo-cloud.workspace = true
 anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
 notify.workspace = true
 jiff.workspace = true
 serde.workspace = true

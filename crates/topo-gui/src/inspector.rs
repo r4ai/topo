@@ -359,18 +359,7 @@ impl TopoApp {
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(theme::CARD)))
                 .child(div().pt_0p5().text_color(rgb(color)).text_lg().child(icon))
-                .child(
-                    div()
-                        .id("title-text")
-                        .debug_selector(|| "title-text".to_owned())
-                        .flex_1()
-                        .min_w(px(0.))
-                        .line_clamp(3)
-                        .text_ellipsis()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(node.title.clone()),
-                )
+                .child(title_text(node.title.clone()))
                 .on_click(cx.listener(move |app, _, window, cx| {
                     let title = app.title_of(&rename_id);
                     app.open_prompt(Prompt::Rename(rename_id.clone()), &title, window, cx);
@@ -720,5 +709,39 @@ impl TopoApp {
                 )
                 .children(cards),
         )
+    }
+}
+
+/// The node title, clamped to three lines that end in `…`. `line_clamp` alone
+/// limits the lines but clips the last one mid-character.
+fn title_text(title: impl Into<SharedString>) -> Stateful<Div> {
+    div()
+        .id("title-text")
+        .debug_selector(|| "title-text".to_owned())
+        .flex_1()
+        .min_w(px(0.))
+        .line_clamp(3)
+        .text_ellipsis()
+        .text_lg()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(title.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TextOverflow;
+
+    use super::*;
+
+    #[test]
+    fn the_title_clamp_ends_in_an_ellipsis() {
+        let mut title = title_text("title");
+        let style = title.text_style();
+        assert_eq!(style.line_clamp, Some(3));
+        assert!(
+            matches!(&style.text_overflow, Some(TextOverflow::Truncate(affix)) if affix.as_ref() == "…"),
+            "the clamped title must truncate with an ellipsis, got {:?}",
+            style.text_overflow
+        );
     }
 }

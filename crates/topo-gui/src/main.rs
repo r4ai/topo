@@ -5,6 +5,7 @@
 //! (press `?` for the list), every edit can be undone, and edits made
 //! elsewhere (CLI, agents) appear live.
 
+mod args;
 mod branding;
 mod chrome;
 mod config;
@@ -1279,20 +1280,20 @@ fn open_workspace(start: Option<&Path>) -> Result<Workspace> {
     })
 }
 
-#[cfg(feature = "screenshot")]
 fn main() -> Result<()> {
-    let parsed = screenshot::parse_args(std::env::args().skip(1))?;
-    let ws = open_workspace(parsed.workspace.as_deref())?;
-    match parsed.screenshot {
-        Some(options) => screenshot::render(ws, &options),
-        None => run(ws),
+    let args = <args::Args as clap::Parser>::parse();
+    #[cfg(not(feature = "screenshot"))]
+    if args.screenshot.is_some() {
+        anyhow::bail!(
+            "--screenshot needs a build with the `screenshot` feature (cargo build -p topo-gui --features screenshot)"
+        );
     }
-}
-
-#[cfg(not(feature = "screenshot"))]
-fn main() -> Result<()> {
-    let start = std::env::args_os().nth(1).map(PathBuf::from);
-    run(open_workspace(start.as_deref())?)
+    let ws = open_workspace(args.workspace.as_deref())?;
+    #[cfg(feature = "screenshot")]
+    if let Some(path) = &args.screenshot {
+        return screenshot::render(ws, path, &args);
+    }
+    run(ws)
 }
 
 fn run(ws: Workspace) -> Result<()> {

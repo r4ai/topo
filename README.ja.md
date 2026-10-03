@@ -214,7 +214,7 @@ cargo run -p topo-gui --features screenshot -- \
   --screenshot qa.png --width 1360 --height 860 --select <id>
 ```
 
-`--select` はID1つまたはカンマ区切りの複数、`--inspector-width` はパネル幅の強制、`--help-overlay` はショートカット一覧を表示します。視覚QAとドキュメント用です。
+`--select` はID1つまたはカンマ区切りの複数（存在しないIDはエラー）、`--inspector-width` はパネル幅の指定（省略時は保存済みの設定を使わず、ウィンドウ幅から決定）、`--help-overlay` はショートカット一覧を表示します。サイズは整数のポイントで指定し、ディスプレイより大きいサイズはエラーになります。全オプションは `topo-gui --help` で確認できます。視覚QAとドキュメント用です。
 
 ## AI・自動化との連携
 

@@ -214,7 +214,7 @@ cargo run -p topo-gui --features screenshot -- \
   --screenshot qa.png --width 1360 --height 860 --select <id>
 ```
 
-`--select` accepts one id or a comma-separated list, `--inspector-width` forces a panel width, and `--help-overlay` opens the shortcuts sheet. This is meant for visual QA and documentation.
+`--select` accepts one id or a comma-separated list (an unknown id is an error), `--inspector-width` sets the panel width (otherwise derived from the window, ignoring the saved preference), and `--help-overlay` opens the shortcuts sheet. Sizes are whole points; a size larger than the display is an error. `topo-gui --help` lists every option. This is meant for visual QA and documentation.
 
 ## AI & Automation
 
