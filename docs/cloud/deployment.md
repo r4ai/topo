@@ -108,6 +108,24 @@ writers, a contested claim, and pull. The tests under `cargo test` run the same
 router over SQLite and do not need wrangler; the smoke test covers what they
 cannot, the WebAssembly build and D1 itself.
 
+The smoke test uses a temporary D1 state directory and preserves existing
+local development databases. It also runs
+[`dev/metadata-smoke.py`](../../crates/topo-server/dev/metadata-smoke.py) to
+check priority filters and sorting, atomic metadata edits and claims,
+creation/update/completion times, no-op and failed writes, reopening, and
+retention of metadata during pull. To repeat these checks against a deployed
+API, create a disposable workspace, push it with the current CLI, then run:
+
+```bash
+python3 crates/topo-server/dev/metadata-smoke.py /absolute/path/to/topo /absolute/path/to/disposable-workspace
+```
+
+This creates four test nodes and pulls the workspace back to files. Delete
+the disposable remote workspace afterwards with the API. For metadata
+rollouts, apply `0002_node_metadata.sql` before updating the Worker; check
+`/openapi.json` and run the CLI smoke test against the deployed domain before
+considering the rollout complete.
+
 ## Limits
 
 | Limit | Free plan | Consequence |
