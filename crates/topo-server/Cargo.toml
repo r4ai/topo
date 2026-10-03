@@ -1,0 +1,40 @@
+[package]
+name = "topo-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# In-memory SQLite implementation of `Db`, for tests on the host.
+native = ["dep:rusqlite"]
+
+[dependencies]
+topo-core = { workspace = true, features = ["openapi"] }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+axum = { version = "0.8", default-features = false, features = ["json", "macros", "query"] }
+utoipa = "6"
+utoipa-axum = "0.3"
+utoipa-scalar = { version = "0.4", features = ["axum"] }
+sea-query = { version = "1", default-features = false, features = ["backend-sqlite", "derive"] }
+sha2 = "0.11"
+getrandom = "0.4"
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = { version = "0.8", features = ["http", "d1"] }
+tower-service = "0.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+base64 = "0.22"
+
+[dev-dependencies]
+# The tests run the router over SQLite.
+topo-server = { path = ".", features = ["native"] }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

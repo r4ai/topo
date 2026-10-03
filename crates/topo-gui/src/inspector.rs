@@ -1,11 +1,14 @@
 //! The right-hand panel: the selected node, or an overview when nothing is selected.
 
-use gpui::{AnyElement, Context, Div, ElementId, SharedString, Stateful, div, prelude::*, px, rgb};
+use gpui::{
+    AnyElement, Context, CursorStyle, Div, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div,
+    prelude::*, px, rgb,
+};
 use topo_core::{Graph, Kind, Node, NodeId, Status};
 use topo_jev::organize::Proposal;
 
 use crate::theme::{self, button, chip, icon_button, kbd, section_label};
-use crate::{Prompt, Relation, TopoApp, dates};
+use crate::{Drag, Prompt, Relation, TopoApp, dates};
 
 type Remove = fn(&mut Graph, &NodeId, &NodeId) -> Result<(), topo_core::Error>;
 /// The two ends of a relation and how to remove it.
@@ -20,20 +23,42 @@ impl TopoApp {
                 None => self.overview(cx),
             },
         };
+        div().relative().flex_shrink_0().h_full().w(px(self.inspector_width())).child(self.resize_handle(cx)).child(
+            div()
+                .id("inspector")
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(rgb(theme::SURFACE))
+                .border_l_1()
+                .border_color(rgb(theme::BORDER))
+                .text_sm()
+                .overflow_y_scroll()
+                .children(self.proposals_view(cx))
+                .child(div().flex().flex_col().p_4().children(content)),
+        )
+    }
+
+    /// A strip on the inspector's left border that drags its width.
+    fn resize_handle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .id("inspector")
-            .w(px(if self.compact { 300. } else { 360. }))
-            .flex_shrink_0()
+            .id("inspector-resize")
+            .debug_selector(|| "inspector-resize".to_owned())
+            .absolute()
+            .left_neg_1()
+            .top_0()
             .h_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(theme::SURFACE))
-            .border_l_1()
-            .border_color(rgb(theme::BORDER))
-            .text_sm()
-            .overflow_y_scroll()
-            .children(self.proposals_view(cx))
-            .child(div().flex().flex_col().p_4().children(content))
+            .w(px(7.))
+            .cursor(CursorStyle::ResizeLeftRight)
+            .hover(|s| s.bg(theme::alpha(theme::ACCENT, 0.5)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|app, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    app.drag = Some(Drag::Resize);
+                    cx.notify();
+                }),
+            )
     }
 
     fn selection_details(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -334,7 +359,15 @@ impl TopoApp {
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(theme::CARD)))
                 .child(div().pt_0p5().text_color(rgb(color)).text_lg().child(icon))
-                .child(div().flex_1().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child(node.title.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .line_clamp(3)
+                        .text_lg()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(node.title.clone()),
+                )
                 .on_click(cx.listener(move |app, _, window, cx| {
                     let title = app.title_of(&rename_id);
                     app.open_prompt(Prompt::Rename(rename_id.clone()), &title, window, cx);
@@ -360,7 +393,16 @@ impl TopoApp {
             }
             (_, n) => (format!("Blocked by {n} open requirement{}", if n == 1 { "" } else { "s" }), theme::AMBER),
         };
-        out.push(div().mt_1().text_xs().text_color(rgb(state_color)).child(state).into_any_element());
+        out.push(
+            div()
+                .mt_1()
+                .min_w(px(0.))
+                .truncate()
+                .text_xs()
+                .text_color(rgb(state_color))
+                .child(state)
+                .into_any_element(),
+        );
 
         // Status control.
         out.push(self.status_control(Some(node.status), cx).into_any_element());
@@ -371,7 +413,11 @@ impl TopoApp {
         let due_text = match node.due {
             Some(d) => {
                 let c = if node.status.is_closed() { theme::MUTED } else { dates::urgency_color(d, today) };
-                div().text_color(rgb(c)).child(format!("{} · {}", dates::short(d, today), dates::relative(d, today)))
+                div().truncate().text_color(rgb(c)).child(format!(
+                    "{} · {}",
+                    dates::short(d, today),
+                    dates::relative(d, today)
+                ))
             }
             None => div().text_color(rgb(theme::FAINT)).child("None"),
         };
@@ -396,7 +442,7 @@ impl TopoApp {
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
                 .child(div().w(px(56.)).flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(label))
-                .child(div().flex_1().min_w(px(0.)).text_xs().child(value))
+                .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_xs().child(value))
                 .child(kbd(shortcut))
         };
         out.push(section_label("DETAILS").into_any_element());
@@ -476,6 +522,7 @@ impl TopoApp {
         out.push(match node.body.trim().is_empty() {
             true => div().text_xs().text_color(rgb(theme::FAINT)).child("No notes").into_any_element(),
             false => div()
+                .min_w(px(0.))
                 .p_3()
                 .rounded_lg()
                 .bg(rgb(theme::CANVAS))
@@ -632,7 +679,7 @@ impl TopoApp {
                             },
                         ))),
                 )
-                .child(div().text_xs().child(text))
+                .child(div().min_w(px(0.)).truncate().text_xs().child(text))
         });
         Some(
             div()
@@ -652,6 +699,8 @@ impl TopoApp {
                         .child(
                             div()
                                 .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child(format!("Suggestions · {}", self.proposals.len())),
                         )

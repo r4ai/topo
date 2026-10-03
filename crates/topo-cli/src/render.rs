@@ -19,6 +19,59 @@ pub fn nodes_json(graph: &Graph, nodes: &[&Node]) -> Value {
     Value::Array(nodes.iter().map(|n| node_json(graph, n)).collect())
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+pub enum ListFormat {
+    /// Human-readable node or milestone lines.
+    Text,
+    /// One node ID per line.
+    Ids,
+    /// Tab-separated ID, kind, status, due date, and title, without a header.
+    Tsv,
+    /// One compact JSON object per line.
+    Jsonl,
+}
+
+pub fn list_json(graph: &Graph, nodes: &[&Node], milestones: bool) -> Value {
+    if milestones {
+        Value::Array(nodes.iter().map(|n| milestone_json(graph, n)).collect())
+    } else {
+        nodes_json(graph, nodes)
+    }
+}
+
+pub fn list_text(graph: &Graph, nodes: &[&Node], format: ListFormat, milestones: bool) -> String {
+    nodes
+        .iter()
+        .map(|node| match format {
+            ListFormat::Text if milestones => milestone_line(graph, node),
+            ListFormat::Text => node_line(node),
+            ListFormat::Ids => node.id.to_string(),
+            ListFormat::Tsv => {
+                let kind = match node.kind {
+                    Kind::Task => "task",
+                    Kind::Milestone => "milestone",
+                };
+                let status = match node.status {
+                    Status::Todo => "todo",
+                    Status::Doing => "doing",
+                    Status::Done => "done",
+                    Status::Dropped => "dropped",
+                };
+                let due = node.due.map(|d| d.to_string()).unwrap_or_default();
+                format!("{}\t{kind}\t{status}\t{due}\t{}", tsv_field(node.id.as_str()), tsv_field(&node.title))
+            }
+            ListFormat::Jsonl => {
+                if milestones { milestone_json(graph, node) } else { node_json(graph, node) }.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tsv_field(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n").replace('\r', "\\r")
+}
+
 pub fn status_mark(status: Status) -> &'static str {
     match status {
         Status::Todo => "[ ]",
@@ -33,10 +86,6 @@ pub fn node_line(node: &Node) -> String {
     let due = node.due.map(|d| format!("  due {d}")).unwrap_or_default();
     let tags: String = node.tags.iter().map(|t| format!("  #{t}")).collect();
     format!("{} {}  {kind}{}{due}{tags}", status_mark(node.status), node.id, node.title)
-}
-
-pub fn node_lines(nodes: &[&Node]) -> String {
-    nodes.iter().map(|n| node_line(n)).collect::<Vec<_>>().join("\n")
 }
 
 pub fn detail_json(graph: &Graph, node: &Node) -> Value {
@@ -196,26 +245,26 @@ pub fn graph(graph: &Graph, format: Format, under: Option<&NodeId>) -> String {
 /// Each node followed by its requirements (dependencies, and members of a milestone), indented. Nodes reached a second
 /// time are printed once more as a reference only.
 fn tree(graph: &Graph, under: Option<&NodeId>) -> String {
-    fn walk(graph: &Graph, id: &NodeId, depth: usize, seen: &mut BTreeSet<NodeId>, out: &mut String) {
-        let node = graph.get(id).expect("ids come from the graph");
-        let indent = "  ".repeat(depth);
-        if !seen.insert(id.clone()) {
-            *out += &format!("{indent}↑ {} {}\n", node.id, node.title);
-            return;
-        }
-        *out += &format!("{indent}{}\n", node_line(node));
-        for dep in graph.requirements(node) {
-            walk(graph, dep, depth + 1, seen, out);
-        }
-    }
     let roots: Vec<NodeId> = match under {
         Some(id) => vec![id.clone()],
         None => graph.roots().iter().map(|n| n.id.clone()).collect(),
     };
     let mut out = String::new();
     let mut seen = BTreeSet::new();
-    for root in &roots {
-        walk(graph, root, 0, &mut seen, &mut out);
+    let mut pending: Vec<_> = roots.iter().rev().map(|id| (id, 0)).collect();
+    while let Some((id, depth)) = pending.pop() {
+        let node = graph.get(id).expect("ids come from the graph");
+        // Keep every node while bounding output size for deeply nested remote graphs.
+        let mut indent = "  ".repeat(depth.min(32));
+        if depth > 32 {
+            indent += &format!("…(depth {depth}) ");
+        }
+        if !seen.insert(id.clone()) {
+            out += &format!("{indent}↑ {} {}\n", node.id, node.title);
+            continue;
+        }
+        out += &format!("{indent}{}\n", node_line(node));
+        pending.extend(graph.requirements(node).into_iter().rev().map(|dep| (dep, depth + 1)));
     }
     out
 }

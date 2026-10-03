@@ -144,7 +144,16 @@ topo graph --format tree
 
 ### CLI
 
-全コマンドで `--json` オプションを利用可能。標準入力からのパイプ処理や外部ツールとの連携に対応する。
+構造化出力には `--json` を使う。`ls`・`ready`・`milestones` とグラフ走査コマンドでは `--format text|ids|tsv|jsonl` も選べる。一覧の既定出力はリダイレクト時もテキスト、走査コマンドはID列となる。
+
+`status`・`edit`・`rm`・`join`・`leave`・`link`・`unlink` の第1引数に `-` を指定すると、標準入力の空白区切りID列を一括処理する。IDと変更を全件検証してから保存し、空入力では何も変更しない。`topo ls -` では入力されたIDを一覧のフラグで絞り込める。
+
+```bash
+topo ready --format ids | topo status - doing
+topo ls --tag gui --format ids | topo ls - --due-before 2026-10-31 --format ids | topo join - a1b2c3
+topo deps a1b2c3 --transitive | topo ls - --blocked --format tsv
+topo ready --format jsonl | jq -r 'select(.status == "todo") | .id'
+```
 
 ### TUI (`topo tui`)
 
@@ -169,6 +178,10 @@ Zedエディタのレンダリング基盤であるGPUIによるネイティブ�
   - 2本指ダブルタップ: 全体表示と実寸表示の切り替え
   - `Cmd+=` / `Cmd+-` / `Cmd+0`: ズームイン / ズームアウト / 実寸表示
   - `f`: キャンバス全体を表示（Fit）
+- 右パネル（インスペクタ）:
+  - 左端をドラッグ: パネル幅を変更（キャンバスが潰れないようクランプ）
+  - 選んだ幅はユーザー設定に保存され、次回起動時も保持（ワークスペースには保存しない）
+  - タイトルは最大3行で折り返し、溢れる1行表示は末尾を `…` に統一
 - ノード操作:
   - クリック: ノードを選択（`Cmd` / `Ctrl` + クリックで複数選択、ステータス変更や削除を一括適用）
   - `n`: 新規タスクの作成
@@ -222,27 +235,57 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 
 `--apply` を指定すると、サイクルを形成しない妥当な提案のみを自動で適用する。
 
+## クラウドワークスペース
+
+ワークスペースを `.topo/nodes` の代わりにサーバーに置き、複数の端末や並列に動く AI エージェントで 1 つのグラフを共有できる。サーバーは Cloudflare Workers と D1 で動く。設計とデプロイ手順は [docs/cloud](docs/cloud/README.md) を参照。
+
+```bash
+# GitHub でサインイン（デバイスフロー）し、ローカルのワークスペースをサーバーへ移す
+topo login --url https://topo.example.com
+topo cloud push --url https://topo.example.com
+
+# 以降のコマンドはサーバーを読み書きする。TUI と GUI はサーバーをポーリングする
+topo ready
+
+# エージェント用に、このワークスペース限定のトークンを発行する
+topo token create --name agent-1 --workspace <workspace-id> --expires 90d
+
+# エージェントは TOPO_TOKEN を設定してタスクを確保する。複数が競合しても成功するのは 1 つ
+topo status <id> doing --if todo
+```
+
+リンクは `.topo/config.toml` の `[cloud]` テーブルに保存される。秘密情報を含まないためコミットできる。`topo cloud pull` はノードを Markdown ファイルへ書き戻し、リンクを解除する。
+
 ## コマンドリファレンス
 
 | コマンド | 説明 | 主要引数・フラグ |
 | :--- | :--- | :--- |
 | `topo init` | ワークスペース（`.topo`）の初期化 | |
-| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>` |
-| `topo milestones` | マイルストーン一覧・進捗率・クリティカルパスの表示 | |
+| `topo ready` | 着手可能なタスクの一覧表示 | `--under <id>`, `--format <text\|ids\|tsv\|jsonl>` |
+| `topo milestones` | マイルストーン一覧・進捗率・クリティカルパスの表示 | `--format <text\|ids\|tsv\|jsonl>` |
 | `topo add <title>` | タスクまたはマイルストーンの作成 | `--milestone`, `--dep <id>`, `--in <ms>`, `--due <date>`, `--tag <tag>`, `--note <text>` |
 | `topo link <from> <to>` | `<from>` が `<to>` に依存するエッジを追加 | |
 | `topo unlink <from> <to>` | 依存関係の解除 | |
 | `topo join <task> <ms>` | タスクをマイルストーンの構成員に追加 | |
 | `topo leave <task> <ms>` | タスクをマイルストーンから除外 | |
-| `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | |
+| `topo status <id> <st>` | ステータス変更（`todo`, `doing`, `done`, `dropped`） | `--if <st>`（現在のステータスが一致しなければ失敗） |
 | `topo edit <id>` | ノード属性の変更 | `--title`, `--due`, `--no-due`, `--tag`, `--note` |
 | `topo rm <id>` | ノードおよび接続エッジの削除 | |
-| `topo ls` | ノードの一覧表示 | `--kind <task\|milestone>`, `--status <status>`, `--under <id>`, `--all` |
+| `topo ls [-]` | ノードの一覧表示・入力IDの絞り込み | `--kind`, `--status`, `--under`, `--all`, `--tag`, `--in`, `--due-before`, `--due-after`, `--no-due`, `--ready`, `--blocked`, `--title`, `--format` |
 | `topo show <id>` | ノードの詳細・隣接ノード・メモの表示 | |
+| `topo deps <id>` | 前提ノードの一覧（マイルストーンのメンバーも含む） | `--transitive`, `--format`, `--json` |
+| `topo dependents <id>` | 指定ノードに依存するノードの一覧 | `--transitive`（所属関係もたどる）, `--format`, `--json` |
+| `topo members <ms>` | マイルストーンの構成タスクの一覧 | `--format`, `--json` |
+| `topo critical-path <id>` | 残る最長の依存経路を実行順に表示 | `--format`, `--json` |
 | `topo graph` | グラフ構造の出力 | `--format [tree\|mermaid\|dot]`, `--under <id>` |
 | `topo apply` | JSONバッチによるアトミック更新 | `[file]` または標準入力 |
 | `topo organize <what>` | 決定モデルによるグラフ改善提案・適用 | `deps`, `place`, `dupes`, `kinds`, `prioritize`, `--apply`, `--under <id>` |
 | `topo tui` | TUIダッシュボードの起動 | |
+| `topo login` / `topo logout` | GitHub でクラウドサーバーにサインイン／トークンの失効と削除 | `--url <url>`, `--name <トークン名>` |
+| `topo token <create\|ls\|revoke>` | クライアントやエージェント用トークンの管理 | `--name`, `--workspace <id>`, `--expires <90d>` |
+| `topo cloud <push\|pull\|link\|ls>` | ワークスペースのサーバーへの移行・書き戻し・既存ワークスペースへのリンク・一覧 | `--url <url>`, `--name <name>` |
+| `topo cloud <members\|invite\|remove>` | リンク中のワークスペースのメンバー一覧・追加・削除 | `--role <owner\|editor\|viewer>` |
+| `topo cloud log` | リンク中のワークスペースの変更履歴 | `--after <version>` |
 
 ## プロジェクト構成
 
@@ -252,9 +295,13 @@ topo organize prioritize --json  # 着手可能タスクの優先度スコアリ
 │   ├── topo-core/  # DAG検証、トポロジカルソート、ファイルI/O
 │   ├── topo-cli/   # CLIコマンド群、レンダラー、Ratatui TUI
 │   ├── topo-gui/   # GPUIベースのネイティブデスクトップアプリ
-│   └── topo-jev/   # Jev互換決定モデルクライアント・整理ロジック
+│   ├── topo-jev/   # Jev互換決定モデルクライアント・整理ロジック
+│   ├── topo-cloud/ # クラウドAPIのクライアント（サインイン、トークン、クラウド接続のワークスペース）
+│   └── topo-server/ # クラウドAPI（Cloudflare Workers + D1）
+├── docs/
+│   └── cloud/      # クラウド版の設計
 └── skills/
-    └── topological-todo/ # AIエージェント向け指示セット (SKILL.md)
+    └── topo/ # AIエージェント向け指示セット (SKILL.md)
 ```
 
 ## ライセンス

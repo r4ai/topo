@@ -1,0 +1,49 @@
+# Cloudflare Worker that serves the topo cloud API. See docs/cloud/deployment.md.
+name = "topo"
+account_id = "175c274ef2b4a71132bce0bbf96756b4"
+main = "build/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+routes = [{ pattern = "topo.r4ai.dev", custom_domain = true }]
+
+[build]
+command = "cargo install -q 'worker-build@^0.8' && worker-build --release"
+
+[vars]
+# Client id of the production GitHub OAuth app (device flow enabled).
+GITHUB_CLIENT_ID = "Ov23liL3oBnnNyvOftCM"
+
+[secrets]
+required = ["GITHUB_CLIENT_SECRET"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "topo"
+database_id = "4f290c93-5795-457e-b863-04d13d01f176"
+migrations_dir = "migrations"
+
+[[ratelimits]]
+name = "AUTH_RATE_LIMITER"
+namespace_id = "2026100301"
+simple = { limit = 10, period = 60 }
+
+[env.staging]
+name = "topo-staging"
+routes = []
+
+[env.staging.vars]
+GITHUB_CLIENT_ID = "REPLACE_WITH_STAGING_CLIENT_ID"
+
+[env.staging.secrets]
+required = ["GITHUB_CLIENT_SECRET"]
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "topo-staging"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[env.staging.ratelimits]]
+name = "AUTH_RATE_LIMITER"
+namespace_id = "2026100302"
+simple = { limit = 10, period = 60 }

@@ -421,6 +421,59 @@ fn graph_reload_removes_only_missing_selected_nodes(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn cloud_workspace_merges_other_writers_and_drops_stale_undo_steps(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+    use topo_core::store::MemoryRemote;
+    use topo_core::{Op, Remote};
+
+    let add = |name: &str| -> Op {
+        serde_json::from_value(serde_json::json!({ "op": "add", "id": name, "title": name })).unwrap()
+    };
+    let status = |name: &str, status| Op::Status { id: name.into(), status, if_status: None };
+    let dir = tempfile::tempdir().unwrap();
+    let remote = Arc::new(MemoryRemote::default());
+    remote.apply(&[add("a"), add("b")]).unwrap();
+    let ws = Workspace::open_remote(dir.path().to_owned(), remote.clone()).unwrap();
+    let (app, cx) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
+    let server = |remote: &MemoryRemote| -> Vec<(String, Status)> {
+        let nodes = remote.fetch(None).unwrap().unwrap().nodes;
+        nodes.into_iter().map(Node::from).map(|n| (n.id.0, n.status)).collect()
+    };
+
+    // An edit goes to the server and can be undone.
+    app.update(cx, |app, cx| assert!(app.mutate(cx, |g| g.set_status(&id("a"), Status::Done))));
+    assert_eq!(server(&remote), [("a".into(), Status::Done), ("b".into(), Status::Todo)]);
+    assert_eq!(app.read_with(cx, |app, _| app.undo.len()), 1);
+
+    // A poll brings in what another writer did. Undoing past it would undo their change.
+    remote.apply(&[add("c")]).unwrap();
+    app.update(cx, |app, cx| {
+        let (remote, version) = app.ws.remote().unwrap();
+        app.fetched(remote.fetch(Some(version)), cx);
+        assert!(app.graph().get(&id("c")).is_some());
+        assert!(app.undo.is_empty());
+        // A poll that was overtaken by a save of ours is ignored.
+        let stale = topo_core::wire::Snapshot { version: 1, nodes: Vec::new() };
+        app.fetched(Ok(Some(stale)), cx);
+        assert!(app.graph().get(&id("c")).is_some());
+    });
+
+    // Another writer gets in between two polls: our edit is applied on top of theirs.
+    remote.apply(&[status("b", Status::Doing)]).unwrap();
+    app.update(cx, |app, cx| {
+        assert!(app.mutate(cx, |g| g.set_status(&id("a"), Status::Todo)));
+        assert_eq!(app.graph().get(&id("b")).unwrap().status, Status::Doing);
+        assert!(app.undo.is_empty());
+        assert!(app.mutate(cx, |g| g.set_status(&id("c"), Status::Done)));
+        assert_eq!(app.undo.len(), 1);
+        app.restore(true, cx);
+        assert_eq!((app.undo.len(), app.redo.len()), (0, 1));
+    });
+    let expected = [("a".into(), Status::Todo), ("b".into(), Status::Doing), ("c".into(), Status::Todo)];
+    assert_eq!(server(&remote), expected);
+}
+
+#[gpui::test]
 fn modifier_click_toggles_selection_and_middle_drag_preserves_it(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
     let a = ui.card("a", 0.5, 0.5);
@@ -443,6 +496,42 @@ fn modifier_click_toggles_selection_and_middle_drag_preserves_it(cx: &mut TestAp
     ui.cx.simulate_mouse_down(c, MouseButton::Left, additive);
     ui.cx.simulate_mouse_up(c, MouseButton::Left, additive);
     assert_eq!(ui.selected().as_deref(), Some("a"));
+}
+
+#[gpui::test]
+fn dragging_the_inspector_border_resizes_and_clamps(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let handle = ui.cx.debug_bounds("inspector-resize").expect("resize handle is rendered");
+    let before = ui.read(|app| app.inspector_width());
+    // Drag the border left, widening the panel.
+    let to = handle.center() - point(px(80.), px(0.));
+    ui.drag(handle.center(), to);
+    assert!((ui.read(|app| app.inspector_width()) - (before + 80.)).abs() < 1.5);
+
+    // Dragging the border to the far left clamps to a share of the window.
+    let handle = ui.cx.debug_bounds("inspector-resize").unwrap();
+    ui.drag(handle.center(), point(px(20.), handle.center().y));
+    let max = 1360. * crate::config::INSPECTOR_MAX_FRACTION;
+    assert!((ui.read(|app| app.inspector_width()) - max).abs() < 1.5);
+
+    // Dragging it to the far right clamps the other way.
+    let handle = ui.cx.debug_bounds("inspector-resize").unwrap();
+    ui.drag(handle.center(), point(px(1340.), handle.center().y));
+    assert!((ui.read(|app| app.inspector_width()) - crate::config::INSPECTOR_MIN_WIDTH).abs() < 1.5);
+
+    // The canvas never overlaps the panel it sits next to.
+    let area = ui.read(|app| app.area.get());
+    let inspector = ui.read(|app| app.inspector_width());
+    assert!((f32::from(area.right()) - (1360. - inspector)).abs() < 1.5);
+}
+
+#[gpui::test]
+fn the_inspector_starts_with_the_window_proportion(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    assert_eq!(ui.read(|app| app.inspector_width()), 1360. * crate::config::INSPECTOR_DEFAULT_FRACTION);
+    // A narrow window falls back to the compact width.
+    ui.resize(900., 700.);
+    assert_eq!(ui.read(|app| app.inspector_width()), crate::config::INSPECTOR_COMPACT_WIDTH);
 }
 
 #[gpui::test]

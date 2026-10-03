@@ -1,7 +1,7 @@
 //! `topo tui`: browse views, change status, and follow external edits live.
 
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -11,7 +11,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListState, Paragraph, Tabs, Wrap};
 use ratatui::{DefaultTerminal, Frame};
-use topo_core::{Kind, Node, NodeId, Status, Workspace};
+use topo_core::{Kind, Node, NodeId, Op, Status, Workspace};
 
 use crate::render;
 
@@ -60,20 +60,16 @@ impl App {
 
     fn set_status(&mut self, status: Status) -> Result<()> {
         if let Some(id) = self.selected() {
-            self.ws.graph.set_status(&id, status)?;
-            self.ws.save()?;
+            self.ws.apply(vec![Op::Status { id: id.0, status, if_status: None }])?;
         }
         Ok(())
     }
 
     /// Picks up edits made outside the TUI; its own saves reload an identical graph.
     fn reload(&mut self) {
-        match Workspace::open(self.ws.dir().to_owned()) {
-            Ok(ws) if ws.graph == self.ws.graph => {}
-            Ok(ws) => {
-                self.ws = ws;
-                self.message = "reloaded".into();
-            }
+        match self.ws.reload() {
+            Ok(false) => {}
+            Ok(true) => self.message = "reloaded".into(),
             Err(e) => self.message = format!("reload failed: {e}"),
         }
     }
@@ -115,25 +111,58 @@ impl App {
     }
 }
 
-pub fn run(ws: Workspace) -> Result<()> {
-    let (tx, rx) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok() {
-            let _ = tx.send(());
-        }
-    })?;
-    watcher.watch(&ws.nodes_dir(), RecursiveMode::NonRecursive)?;
+/// How often a cloud workspace is asked whether it changed.
+const POLL: Duration = Duration::from_secs(5);
 
+/// Tells when the nodes may have changed outside the TUI.
+enum Outside {
+    /// The Markdown files are watched.
+    Files { events: mpsc::Receiver<()>, _watcher: notify::RecommendedWatcher },
+    /// The server is asked every [`POLL`].
+    Remote { asked: Instant },
+}
+
+impl Outside {
+    fn watch(ws: &Workspace) -> Result<Self> {
+        if ws.remote().is_some() {
+            return Ok(Outside::Remote { asked: Instant::now() });
+        }
+        let (tx, events) = mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if event.is_ok() {
+                let _ = tx.send(());
+            }
+        })?;
+        watcher.watch(&ws.nodes_dir(), RecursiveMode::NonRecursive)?;
+        Ok(Outside::Files { events, _watcher: watcher })
+    }
+
+    fn may_have_changed(&mut self) -> bool {
+        match self {
+            Outside::Files { events, .. } => events.try_iter().count() > 0,
+            Outside::Remote { asked } => {
+                let due = asked.elapsed() >= POLL;
+                if due {
+                    *asked = Instant::now();
+                }
+                due
+            }
+        }
+    }
+}
+
+pub fn run(ws: Workspace) -> Result<()> {
+    let mut outside = Outside::watch(&ws)?;
     let mut app = App { ws, view: View::Ready, list: ListState::default(), message: String::new() };
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app, &rx);
+    let result = event_loop(&mut terminal, &mut app, &mut outside);
     ratatui::restore();
     result
 }
 
-fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, changes: &mpsc::Receiver<()>) -> Result<()> {
+fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, outside: &mut Outside) -> Result<()> {
     loop {
-        if changes.try_iter().count() > 0 {
+        if outside.may_have_changed() {
             app.reload();
         }
         terminal.draw(|f| app.draw(f))?;
