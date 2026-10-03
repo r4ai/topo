@@ -14,13 +14,12 @@ topo() { "$root/target/debug/topo" "$@"; }
 
 # The secret only has to exist; the smoke test never calls GitHub.
 [ -f "$server/.dev.vars" ] || echo 'GITHUB_CLIENT_SECRET=dev' > "$server/.dev.vars"
-rm -rf "$server/.wrangler/state"
-wrangler d1 migrations apply topo --local > /dev/null
-wrangler d1 execute topo --local --file dev/seed.sql > /dev/null
+wrangler d1 migrations apply topo --local --persist-to "$work/state" > /dev/null
+wrangler d1 execute topo --local --persist-to "$work/state" --file dev/seed.sql > /dev/null
 
 # Job control gives the dev server its own process group, so the whole of it can be stopped.
 set -m
-wrangler dev --port 8787 > "$work/wrangler.log" 2>&1 &
+wrangler dev --port 8787 --persist-to "$work/state" > "$work/wrangler.log" 2>&1 &
 dev=$!
 set +m
 trap 'kill -- -$dev 2> /dev/null; rm -rf "$work"' EXIT
@@ -59,8 +58,8 @@ if topo status "$design" doing --if todo 2> /dev/null; then echo 'the second cla
 
 cd "$work/one"
 [ "$(topo cloud log --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))')" -eq 10 ]
-topo cloud pull > /dev/null
-[ "$(ls .topo/nodes | wc -l)" -eq 11 ]
+python3 "$server/dev/metadata-smoke.py" "$root/target/debug/topo" "$work/one"
+[ "$(ls .topo/nodes | wc -l)" -eq 15 ]
 grep -q 'status: doing' ".topo/nodes/$design.md"
 
 curl --silent --fail "$url/openapi.json" | python3 -c 'import json, sys; assert len(json.load(sys.stdin)["paths"]) == 13'

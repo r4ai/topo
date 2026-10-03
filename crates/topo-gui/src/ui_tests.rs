@@ -1197,6 +1197,51 @@ fn notes_are_written_in_the_inspector(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn cloud_metadata_edits_reload_server_times_and_survive_undo(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+    use topo_core::store::MemoryRemote;
+    use topo_core::{Op, Remote};
+
+    let dir = tempfile::tempdir().unwrap();
+    let remote = Arc::new(MemoryRemote::default());
+    let add: Op = serde_json::from_value(serde_json::json!({ "op": "add", "id": "a", "title": "a" })).unwrap();
+    remote.apply(&[add]).unwrap();
+    let ws = Workspace::open_remote(dir.path().to_owned(), remote.clone()).unwrap();
+    cx.update(text_input::bind_keys);
+    let (app, cx) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
+    let mut ui = Ui { app, cx, _dir: dir };
+    ui.resize(1360., 860.);
+    ui.select("a");
+    assert_eq!(ui.selected().as_deref(), Some("a"));
+    ui.resize(800., 640.);
+    let stored = || Node::from(remote.fetch(None).unwrap().unwrap().nodes.remove(0));
+    let created = stored().created_at;
+    assert!(created.is_some());
+
+    ui.keys("p");
+    ui.type_text("urgent");
+    ui.keys("enter");
+    assert_eq!(stored().priority, Some(Priority::Urgent));
+    assert_eq!(ui.node("a"), stored());
+    assert_eq!(stored().created_at, created);
+    for selector in ["prop-priority", "prop-created", "prop-updated", "prop-completed"] {
+        assert!(ui.cx.debug_bounds(selector).is_some());
+    }
+    ui.keys("3");
+    assert!(stored().completed_at.is_some());
+    assert_eq!(ui.node("a"), stored());
+    ui.keys("cmd-z");
+    assert_eq!((stored().status, stored().completed_at), (Status::Todo, None));
+    ui.keys("cmd-shift-z");
+    assert_eq!(stored().status, Status::Done);
+    assert!(stored().completed_at.is_some());
+    ui.keys("p backspace enter");
+    assert_eq!(stored().priority, None);
+    assert_eq!(ui.node("a"), stored());
+    assert!(!ui.read(|app| app.ws.nodes_dir().exists()), "cloud edits never write node files");
+}
+
+#[gpui::test]
 fn a_cloud_workspace_edits_notes_in_place(cx: &mut TestAppContext) {
     use std::sync::Arc;
     use topo_core::store::MemoryRemote;
