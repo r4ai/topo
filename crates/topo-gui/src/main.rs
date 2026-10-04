@@ -19,6 +19,7 @@ mod graph_view;
 mod inline;
 mod inspector;
 mod layout;
+mod markdown;
 mod notes;
 #[cfg(test)]
 mod perf_tests;
@@ -42,8 +43,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, OsAction, Pixels, Point, SharedString, Subscription, Window, WindowBounds, WindowOptions, actions,
-    div, point, prelude::*, px, rgb, size,
+    MouseButton, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, WindowBounds,
+    WindowOptions, actions, div, point, prelude::*, px, rgb, size,
 };
 use notify::{RecursiveMode, Watcher};
 use topo_core::wire::Snapshot;
@@ -181,6 +182,9 @@ struct TopoApp {
     pending_fit: bool,
     selected: Option<NodeId>,
     selected_nodes: BTreeSet<NodeId>,
+    /// The card the selection was last put on by the pointer or the arrow keys: with
+    /// grouping a node has one card per group, and arrow keys move from this one.
+    placed: Option<layout::Cell>,
     graph_cache: graph_view::GraphCache,
     hovered: Option<NodeId>,
     drag: Option<Drag>,
@@ -190,11 +194,19 @@ struct TopoApp {
     /// The node whose notes are being edited in the inspector.
     notes: Option<NodeId>,
     notes_input: Entity<TextInput>,
+    /// The notes as the editor opened with them, to tell whether they changed.
+    notes_base: String,
+    /// The question of what to do with unsaved notes, while it is open.
+    notes_ask: Option<notes::Then>,
+    /// The scroll position of the inspector, which the notes editor keeps its cursor within.
+    inspector_scroll: ScrollHandle,
     /// The property of the selected node being edited in its inspector row.
     inline: Option<InlineEdit>,
     combo: Entity<Combobox>,
     /// Nodes below this priority, and nodes without one, are dimmed.
     priority_filter: Option<Priority>,
+    /// Which nodes the canvas shows and how it groups them.
+    view: layout::View,
     show_help: bool,
     /// Narrow window: the toolbar and inspector drop secondary text.
     compact: bool,
@@ -222,6 +234,9 @@ struct TopoApp {
     _gesture_task: Option<gpui::Task<()>>,
 }
 
+/// A watcher (absent when inert) and the channel it signals.
+pub(crate) type Updates = (Option<notify::RecommendedWatcher>, mpsc::Receiver<()>);
+
 impl TopoApp {
     #[cfg(test)]
     fn new(ws: Workspace, window: &mut Window, cx: &mut Context<Self>) -> Result<Self> {
@@ -235,26 +250,29 @@ impl TopoApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Self> {
-        let source = if ws.remote().is_none() { Some(Self::file_watcher(&ws)?) } else { None };
-        Ok(Self::with_source(ws, inspector_width, source, window, cx))
+        let source = Self::updates(&ws)?;
+        Ok(Self::with_source(ws, inspector_width, layout::View::default(), source, window, cx))
     }
 
     fn with_source(
         ws: Workspace,
         inspector_width: Option<f32>,
-        source: Option<(notify::RecommendedWatcher, mpsc::Receiver<()>)>,
+        view: layout::View,
+        source: Option<Updates>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let editor = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |_, cx| editor.update(cx, |app, cx| app.can_leave(cx)).unwrap_or(true));
+        window.on_window_should_close(cx, move |_, cx| {
+            editor.update(cx, |app, cx| app.can_leave_to(notes::Then::CloseWindow, cx)).unwrap_or(true)
+        });
         let active = window.is_window_active();
         let (watcher, sync_task, poll_wake) = match source {
             None => {
                 let (wake, task) = Self::poll_remote(cx);
                 (None, task, Some(wake))
             }
-            Some((watcher, rx)) => (Some(watcher), Self::watch_files(rx, cx), None),
+            Some((watcher, rx)) => (watcher, Self::watch_files(rx, cx), None),
         };
         let (mut gestures, gesture_monitor) = gesture::watch();
         let gesture_task = cx.spawn_in(window, async move |this, cx| {
@@ -265,7 +283,8 @@ impl TopoApp {
             }
         });
         let palette = cx.new(Combobox::palette);
-        let notes_input = cx.new(TextInput::multiline);
+        let inspector_scroll = ScrollHandle::new();
+        let notes_input = cx.new(|cx| TextInput::markdown(inspector_scroll.clone(), cx));
         let combo = cx.new(Combobox::new);
         let subscriptions = vec![
             cx.subscribe_in(&palette, window, Self::on_palette_event),
@@ -288,6 +307,7 @@ impl TopoApp {
             pending_fit: true,
             selected: None,
             selected_nodes: BTreeSet::new(),
+            placed: None,
             graph_cache: graph_view::GraphCache::default(),
             hovered: None,
             drag: None,
@@ -295,9 +315,13 @@ impl TopoApp {
             palette,
             notes: None,
             notes_input,
+            notes_base: String::new(),
+            notes_ask: None,
+            inspector_scroll,
             inline: None,
             combo,
             priority_filter: None,
+            view,
             show_help: false,
             compact: false,
             inspector_width,
@@ -366,6 +390,19 @@ impl TopoApp {
         }
     }
 
+    /// Saves the display toggles so the next launch starts with the same view.
+    /// Collapsed groups are not saved: they belong to one graph's tags.
+    #[cfg_attr(test, allow(unused_variables))]
+    fn persist_view(&self) {
+        #[cfg(not(test))]
+        {
+            let mut config = config::UserConfig::load();
+            config.hide_completed = self.view.hide_completed;
+            config.group_by_tag = self.view.group_by_tag;
+            let _ = config.save();
+        }
+    }
+
     /// Clamps an explicit width when the window shrinks below what it needs.
     fn clamp_inspector_width_to_viewport(&mut self) {
         if let Some(width) = self.inspector_width {
@@ -385,6 +422,20 @@ impl TopoApp {
     }
 
     // ---- persistence ---------------------------------------------------
+
+    /// How the view hears about changes: file events for a local workspace,
+    /// `None` (polling) for a cloud one.
+    pub(crate) fn updates(ws: &Workspace) -> Result<Option<Updates>> {
+        if ws.remote().is_some() {
+            return Ok(None);
+        }
+        // gpui's test scheduler must not see the OS watcher thread, so tests
+        // get a source that never fires. `file_watcher` has its own test.
+        #[cfg(test)]
+        return Ok(Some((None, mpsc::channel(1).1)));
+        #[cfg(not(test))]
+        Self::file_watcher(ws).map(|(watcher, rx)| Some((Some(watcher), rx)))
+    }
 
     /// Reloads the graph whenever a Markdown file changes.
     fn file_watcher(ws: &Workspace) -> Result<(notify::RecommendedWatcher, mpsc::Receiver<()>)> {
@@ -766,8 +817,10 @@ impl TopoApp {
     /// The list of the open search or pick prompt: the nodes it offers that
     /// match the typed query by title, `#tag` or id prefix; open work first.
     pub(crate) fn listed(&self, cx: &App) -> Vec<NodeId> {
+        // Nodes the canvas hides cannot be jumped to; linking may still offer them.
+        let cells = self.graph_cache.cells();
         let offered = |n: &&Node| match &self.prompt {
-            Some(Prompt::Search) => true,
+            Some(Prompt::Search) => cells.contains_key(&n.id),
             Some(Prompt::Pick { candidates, .. }) => candidates.contains(&n.id),
             _ => false,
         };
@@ -902,12 +955,11 @@ impl TopoApp {
     fn fit(&mut self, initial: bool) {
         let area = self.area.get().size;
         self.ensure_graph_cache();
-        let cells = self.graph_cache.cells();
-        if area.width <= px(0.) || cells.is_empty() {
+        if area.width <= px(0.) || self.graph_cache.cells().is_empty() {
             return;
         }
-        let cols = cells.values().map(|c| c.0).max().unwrap_or(0) as f32;
-        let rows = cells.values().map(|c| c.1).max().unwrap_or(0) as f32;
+        let (cols, rows) = self.graph_cache.extent();
+        let (cols, rows) = (cols as f32, rows as f32);
         let (w, h) = (cols * CELL_W + NODE_W, rows * CELL_H + NODE_H);
         let (aw, ah) = (f32::from(area.width), f32::from(area.height));
         let fit = ((aw - 120.) / w).min((ah - 160.) / h);
@@ -975,7 +1027,8 @@ impl TopoApp {
     fn reveal(&mut self, id: &NodeId, force: bool) {
         self.ensure_graph_cache();
         let cells = self.graph_cache.cells();
-        let Some(&cell) = cells.get(id) else { return };
+        let placed = self.placed.filter(|cell| self.graph_cache.at(*cell) == Some(id));
+        let Some(cell) = placed.or_else(|| cells.get(id).copied()) else { return };
         let area = self.area.get().size;
         // Where the node will be once a camera move in flight has finished.
         let (offset, z) = self.target();
@@ -997,6 +1050,7 @@ impl TopoApp {
         }
         self.selected_nodes = id.iter().cloned().collect();
         self.selected = id;
+        self.placed = None;
     }
 
     /// Whether the priority filter leaves `node` undimmed.
@@ -1013,6 +1067,32 @@ impl TopoApp {
             Some(Priority::Medium) => Some(Priority::Low),
             Some(Priority::Low) => None,
         };
+    }
+
+    /// Frames the new layout at once: a different set of cards is not a camera move to animate.
+    fn refit(&mut self) {
+        self.fit(false);
+        if let Some(anim) = self.anim.take() {
+            (self.offset, self.zoom) = anim.to;
+        }
+    }
+
+    pub(crate) fn toggle_hide_completed(&mut self) {
+        self.view.hide_completed = !self.view.hide_completed;
+        self.refit();
+        self.persist_view();
+    }
+
+    pub(crate) fn toggle_group_by_tag(&mut self) {
+        self.view.group_by_tag = !self.view.group_by_tag;
+        self.refit();
+        self.persist_view();
+    }
+
+    pub(crate) fn toggle_group(&mut self, group: &layout::Group) {
+        if !self.view.collapsed.remove(group) {
+            self.view.collapsed.insert(group.clone());
+        }
     }
 
     fn clear_selection(&mut self) {
@@ -1106,15 +1186,21 @@ impl TopoApp {
         let graph = &self.ws.graph;
         let cells = self.graph_cache.cells();
         let Some(current) = self.selected.as_ref().and_then(|id| graph.get(id)) else {
-            let first =
-                graph.ready_tasks(None).first().map(|n| n.id.clone()).or(graph.nodes().next().map(|n| n.id.clone()));
+            let first = (graph.ready_tasks(None).into_iter().map(|n| &n.id))
+                .find(|id| cells.contains_key(*id))
+                .or(cells.keys().next())
+                .cloned();
             return self.select(first, true);
         };
-        let (col, row) = cells[&current.id];
+        // Hidden nodes have no card to move to, whatever the graph says about them.
+        let shown = |id: &&NodeId| cells.contains_key(*id);
+        let cache = &self.graph_cache;
+        let from = self.placed.filter(|cell| cache.at(*cell) == Some(&current.id)).unwrap_or(cells[&current.id]);
+        let (col, row) = from;
         let column = |c: usize| cells.iter().filter(move |(_, cell)| cell.0 == c).map(|(id, _)| id.clone());
         let candidates: Vec<NodeId> = match direction {
             Direction::Left => {
-                let reqs: Vec<NodeId> = graph.requirements(current).into_iter().cloned().collect();
+                let reqs: Vec<NodeId> = graph.requirements(current).into_iter().filter(shown).cloned().collect();
                 match (reqs.is_empty(), col) {
                     (false, _) => reqs,
                     (true, 0) => Vec::new(),
@@ -1122,18 +1208,26 @@ impl TopoApp {
                 }
             }
             Direction::Right => {
-                let deps: Vec<NodeId> = graph
-                    .dependents(&current.id)
-                    .map(|n| n.id.clone())
-                    .chain(current.milestones.iter().cloned())
+                let deps: Vec<NodeId> = (graph.dependents(&current.id).map(|n| &n.id))
+                    .chain(current.milestones.iter())
+                    .filter(shown)
+                    .cloned()
                     .collect();
                 match deps.is_empty() {
                     false => deps,
                     true => column(col + 1).collect(),
                 }
             }
-            Direction::Up => column(col).filter(|id| cells[id].1 + 1 == row).collect(),
-            Direction::Down => column(col).filter(|id| cells[id].1 == row + 1).collect(),
+            Direction::Up | Direction::Down => {
+                let neighbour = cache.neighbour(from, matches!(direction, Direction::Up));
+                if let Some((cell, id)) = neighbour {
+                    let id = id.clone();
+                    self.select(Some(id.clone()), false);
+                    self.placed = Some(cell);
+                    self.reveal(&id, false);
+                }
+                return;
+            }
         };
         let next = candidates.into_iter().min_by_key(|id| cells[id].1.abs_diff(row));
         if next.is_some() {
@@ -1144,6 +1238,9 @@ impl TopoApp {
     // ---- keyboard ------------------------------------------------------
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.notes_ask.is_some() {
+            return self.on_notes_ask_key(event, window, cx);
+        }
         // A text field has the keyboard; its keys are text, not canvas commands.
         if self.prompt.is_some() || self.inline.is_some() || self.notes.is_some() {
             return;
@@ -1173,6 +1270,8 @@ impl TopoApp {
             }
             ("f", _) => self.fit(false),
             ("p", _) if m.shift => self.cycle_priority_filter(),
+            ("h", _) if m.shift => self.toggle_hide_completed(),
+            ("g", _) if m.shift => self.toggle_group_by_tag(),
             ("escape", _) => match () {
                 _ if self.drag.is_some() => self.drag = None,
                 _ if self.show_help => self.show_help = false,
@@ -1269,11 +1368,7 @@ impl Render for TopoApp {
             None if focused => window.focus(&self.focus, cx),
             _ => {}
         }
-        // Leaving the notes saves them; only Escape discards.
-        let writing = self.notes_input.focus_handle(cx).is_focused(window);
-        if self.notes.as_ref().is_some_and(|id| !writing || self.selected_node().is_none_or(|n| n.id != *id)) {
-            self.finish_notes(true, window, cx);
-        }
+        self.sync_notes(window, cx);
         // The canvas takes the standard editing commands only while no text field is
         // open. A command that cannot run has no handler, which disables its menu item.
         let canvas = self.prompt.is_none() && self.inline.is_none() && self.notes.is_none();
@@ -1289,12 +1384,12 @@ impl Render for TopoApp {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
-                if app.can_leave(cx) {
+                if app.can_leave_to(notes::Then::CloseWindow, cx) {
                     window.remove_window();
                 }
             }))
             .on_action(cx.listener(|app, _: &Quit, _, cx| {
-                if app.can_leave(cx) {
+                if app.can_leave_to(notes::Then::Quit, cx) {
                     cx.quit();
                 }
             }))
@@ -1322,7 +1417,9 @@ impl Render for TopoApp {
                         app.close_prompt(window, cx);
                     }
                     app.cancel_inline(window, cx);
-                    app.finish_notes(true, window, cx);
+                    if app.notes.is_some() && app.notes_ask.is_none() {
+                        app.leave_notes(window, cx);
+                    }
                 }),
             )
             .on_mouse_move(cx.listener(Self::on_drag_move))
@@ -1331,6 +1428,7 @@ impl Render for TopoApp {
             .child(self.toolbar(cx))
             .when(self.persistence.pending_count() > 0, |d| d.child(self.persistence_bar(cx)))
             .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(cx)).child(self.inspector(cx)))
+            .when(self.notes_ask.is_some(), |d| d.child(self.notes_dialog(cx)))
     }
 }
 
@@ -1445,5 +1543,20 @@ mod tests {
     fn tags_are_split_stripped_and_deduplicated() {
         assert_eq!(parse_tags("#core, io　core  #ui"), ["core", "io", "ui"]);
         assert!(parse_tags(" , ").is_empty());
+    }
+
+    /// The real OS watcher signals a change to a Markdown file. It runs outside
+    /// gpui's test scheduler, which rejects the watcher thread's activity.
+    #[test]
+    fn file_watcher_signals_changes_to_the_nodes_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::init(dir.path()).unwrap();
+        let (_watcher, mut rx) = TopoApp::file_watcher(&ws).unwrap();
+        std::fs::write(ws.nodes_dir().join("changed.md"), "x").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while rx.try_recv().is_err() {
+            assert!(std::time::Instant::now() < deadline, "no file event arrived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

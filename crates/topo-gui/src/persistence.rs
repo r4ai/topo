@@ -7,6 +7,7 @@ use gpui::Context;
 use topo_core::{Graph, Node, NodeId, Op, Workspace, ops, wire::Snapshot};
 
 use crate::TopoApp;
+use crate::notes::Then;
 
 #[derive(Clone)]
 struct Patch {
@@ -314,7 +315,16 @@ impl TopoApp {
     }
 
     pub(crate) fn can_leave(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.persistence.unsettled() {
+        self.can_leave_to(Then::Stay, cx)
+    }
+
+    /// Whether the window may be left now. Unsaved notes stop it and ask what to
+    /// do with them first, after which `then` happens.
+    pub(crate) fn can_leave_to(&mut self, then: Then, cx: &mut Context<Self>) -> bool {
+        if self.notes_dirty(cx) {
+            self.ask_notes(then, cx);
+            false
+        } else if self.persistence.unsettled() {
             self.toast("Finish saving or resolve unsaved changes before closing or switching repositories", true, cx);
             false
         } else {

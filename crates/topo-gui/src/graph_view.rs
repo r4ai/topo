@@ -11,6 +11,7 @@ use jiff::civil::Date;
 use topo_core::{Graph, Kind, Node, NodeId, Status};
 
 use crate::inline::Field;
+use crate::layout::Band;
 use crate::{Drag, NODE_H, NODE_W, TopoApp, dates, layout, theme};
 
 /// How a card is emphasized in the current frame.
@@ -23,6 +24,15 @@ struct CardState {
     cursor: bool,
     /// `Some(allowed)` while a link is being dragged over this card.
     drop: Option<bool>,
+}
+
+/// A drawn edge with the cells it joins; a node shown in several groups has one per group.
+struct PlacedEdge {
+    from: NodeId,
+    to: NodeId,
+    membership: bool,
+    from_cell: layout::Cell,
+    to_cell: layout::Cell,
 }
 
 struct EdgePaint {
@@ -55,7 +65,11 @@ pub(crate) struct GraphCache {
     columns: BTreeMap<usize, BTreeMap<usize, NodeId>>,
     edge_tiles: BTreeMap<(i32, i32), Vec<usize>>,
     long_edges: Vec<usize>,
-    edges: Vec<(NodeId, NodeId, bool)>,
+    edges: Vec<PlacedEdge>,
+    view: layout::View,
+    bands: Vec<layout::Band>,
+    /// Rightmost column and bottom row, group headers included.
+    extent: layout::Cell,
     pub(crate) ready: Vec<NodeId>,
     pub(crate) overdue: Vec<NodeId>,
     today: Option<Date>,
@@ -86,6 +100,9 @@ impl Default for GraphCache {
             edge_tiles: BTreeMap::new(),
             long_edges: Vec::new(),
             edges: Vec::new(),
+            view: layout::View::default(),
+            bands: Vec::new(),
+            extent: (0, 0),
             ready: Vec::new(),
             overdue: Vec::new(),
             today: None,
@@ -116,6 +133,15 @@ impl GraphCache {
         self.layout_dirty = true;
     }
 
+    /// Switches what the canvas shows; the layout is rebuilt once, not per frame.
+    pub(crate) fn set_view(&mut self, view: &layout::View) {
+        if self.view != *view {
+            self.view.clone_from(view);
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+    }
+
     /// Classify changes at the mutation boundary; metadata edits keep layout and metrics.
     pub(crate) fn changed(&mut self, before: &Graph, after: &Graph) {
         let structure = before.nodes().count() != after.nodes().count()
@@ -124,8 +150,15 @@ impl GraphCache {
             });
         let metrics = structure
             || after.nodes().any(|n| before.get(&n.id).is_none_or(|old| old.status != n.status || old.kind != n.kind));
-        self.layout_dirty |= structure;
-        self.dirty |= metrics;
+        // Closing a node moves cards only while closed nodes are hidden; tags only while grouped.
+        let reshaped = after.nodes().any(|n| {
+            before.get(&n.id).is_some_and(|old| {
+                (self.view.hide_completed && old.status.is_closed() != n.status.is_closed())
+                    || (self.view.group_by_tag && old.tags != n.tags)
+            })
+        });
+        self.layout_dirty |= structure || reshaped;
+        self.dirty |= metrics || reshaped;
         if structure
             || after.nodes().any(|n| before.get(&n.id).is_none_or(|old| old.status != n.status || old.due != n.due))
         {
@@ -133,25 +166,37 @@ impl GraphCache {
         }
     }
 
-    fn index_layout(&mut self, graph: &Graph) {
+    fn index_layout(&mut self, graph: &Graph, slots: &[layout::Slot]) {
         self.columns.clear();
-        for (id, (col, row)) in &self.cells {
-            self.columns.entry(*col).or_default().insert(*row, id.clone());
+        let mut placed: BTreeMap<&NodeId, Vec<(usize, layout::Cell)>> = BTreeMap::new();
+        for slot in slots {
+            self.columns.entry(slot.cell.0).or_default().insert(slot.cell.1, slot.id.clone());
+            placed.entry(&slot.id).or_default().push((slot.band, slot.cell));
         }
-        self.edges = graph
-            .nodes()
-            .flat_map(|n| {
-                n.depends_on
-                    .iter()
-                    .map(|d| (d.clone(), n.id.clone(), false))
-                    .chain(n.milestones.iter().map(|m| (n.id.clone(), m.clone(), true)))
-            })
-            .collect();
+        // An edge is drawn inside each band that shows both ends; edges to hidden nodes are dropped.
+        self.edges.clear();
+        for n in graph.nodes() {
+            let links =
+                n.depends_on.iter().map(|d| (d, &n.id, false)).chain(n.milestones.iter().map(|m| (&n.id, m, true)));
+            for (from, to, membership) in links {
+                for &(band, from_cell) in placed.get(from).into_iter().flatten() {
+                    let target = placed.get(to).and_then(|cells| cells.iter().find(|(b, _)| *b == band));
+                    if let Some(&(_, to_cell)) = target {
+                        self.edges.push(PlacedEdge {
+                            from: from.clone(),
+                            to: to.clone(),
+                            membership,
+                            from_cell,
+                            to_cell,
+                        });
+                    }
+                }
+            }
+        }
         self.edge_tiles.clear();
         self.long_edges.clear();
-        for (i, (from, to, _)) in self.edges.iter().enumerate() {
-            let (fc, fr) = self.cells[from];
-            let (tc, tr) = self.cells[to];
+        for (i, PlacedEdge { from_cell: (fc, fr), to_cell: (tc, tr), .. }) in self.edges.iter().enumerate() {
+            let (fc, fr, tc, tr) = (*fc, *fr, *tc, *tr);
             // Covers the control hull, arrowhead and stroke at every supported zoom.
             let x0 = ((fc as f32 * crate::CELL_W + NODE_W - 48.) / TILE).floor() as i32;
             let x1 = ((tc as f32 * crate::CELL_W + 48.) / TILE).floor() as i32;
@@ -169,9 +214,13 @@ impl GraphCache {
         }
     }
 
-    fn visible_nodes(&self, offset: Point<Pixels>, zoom: f32, viewport: Bounds<Pixels>) -> Vec<NodeId> {
+    fn visible_nodes(&self, offset: Point<Pixels>, zoom: f32, viewport: Bounds<Pixels>) -> Vec<(NodeId, layout::Cell)> {
         if viewport.size.width <= px(0.) {
-            return self.cells.keys().cloned().collect();
+            return self
+                .columns
+                .iter()
+                .flat_map(|(col, rows)| rows.iter().map(|(row, id)| (id.clone(), (*col, *row))))
+                .collect();
         }
         let left = (-f32::from(offset.x) / zoom - NODE_W - 8.).max(0.) / crate::CELL_W;
         let right = ((f32::from(viewport.size.width - offset.x)) / zoom).max(0.) / crate::CELL_W;
@@ -182,7 +231,9 @@ impl GraphCache {
         }
         self.columns
             .range(left.ceil() as usize..=right.floor() as usize)
-            .flat_map(|(_, rows)| rows.range(top.ceil() as usize..=bottom.floor() as usize).map(|(_, id)| id.clone()))
+            .flat_map(|(col, rows)| {
+                rows.range(top.ceil() as usize..=bottom.floor() as usize).map(|(row, id)| (id.clone(), (*col, *row)))
+            })
             .collect()
     }
 
@@ -205,8 +256,48 @@ impl GraphCache {
         result
     }
 
+    /// Where each shown node is; one cell per node, its first group's with grouping.
     pub(crate) fn cells(&self) -> &BTreeMap<NodeId, layout::Cell> {
         &self.cells
+    }
+
+    #[cfg(test)]
+    pub(crate) fn placements(&self, id: &NodeId) -> usize {
+        self.columns.values().flat_map(|rows| rows.values()).filter(|placed| *placed == id).count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn group_labels(&self) -> Vec<String> {
+        self.bands.iter().map(|band| band.group.label()).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn group_counts(&self) -> Vec<usize> {
+        self.bands.iter().map(|band| band.count).collect()
+    }
+
+    /// The node drawn in `cell`; with grouping a node has a card in each of its groups.
+    pub(crate) fn at(&self, cell: layout::Cell) -> Option<&NodeId> {
+        self.columns.get(&cell.0)?.get(&cell.1)
+    }
+
+    /// The nearest card above (`up`) or below `cell` in its column, skipping group headers.
+    pub(crate) fn neighbour(&self, cell: layout::Cell, up: bool) -> Option<(layout::Cell, &NodeId)> {
+        let rows = self.columns.get(&cell.0)?;
+        let found = match up {
+            true => rows.range(..cell.1).next_back(),
+            false => rows.range(cell.1 + 1..).next(),
+        };
+        found.map(|(row, id)| ((cell.0, *row), id))
+    }
+
+    pub(crate) fn extent(&self) -> layout::Cell {
+        self.extent
     }
 
     pub(crate) fn refresh(&mut self, graph: &Graph, selected: &BTreeSet<NodeId>) {
@@ -215,8 +306,19 @@ impl GraphCache {
             self.dirty = false;
             if self.layout_dirty {
                 self.order = graph.topo_order().expect("graph invariant");
-                self.cells = layout::layout(graph);
-                self.index_layout(graph);
+                let layout = layout::layout(graph, &self.view);
+                self.cells.clear();
+                for slot in &layout.slots {
+                    self.cells.entry(slot.id.clone()).or_insert(slot.cell);
+                }
+                self.extent = layout
+                    .slots
+                    .iter()
+                    .map(|slot| slot.cell)
+                    .chain(layout.bands.iter().map(|band| (0, band.row)))
+                    .fold((0, 0), |(col, row), cell| (col.max(cell.0), row.max(cell.1)));
+                self.index_layout(graph, &layout.slots);
+                self.bands = layout.bands;
                 self.layout_dirty = false;
             }
             self.ready = graph
@@ -345,21 +447,36 @@ fn edge_visible(from: Point<Pixels>, to: Point<Pixels>, viewport: Bounds<Pixels>
 
 impl TopoApp {
     pub(crate) fn ensure_graph_cache(&mut self) {
+        self.graph_cache.set_view(&self.view);
         self.graph_cache.refresh(&self.ws.graph, &self.selected_nodes);
+        // A selection never points at a node the canvas does not show.
+        let cells = self.graph_cache.cells();
+        if self.selected_nodes.iter().any(|id| !cells.contains_key(id)) {
+            self.selected_nodes.retain(|id| cells.contains_key(id));
+            if self.selected.as_ref().is_none_or(|id| !self.selected_nodes.contains(id)) {
+                self.selected = self.selected_nodes.first().cloned();
+            }
+            self.graph_cache.refresh(&self.ws.graph, &self.selected_nodes);
+        }
     }
 
     /// The node whose card contains `local` (canvas coordinates).
-    fn node_at(&self, local: Point<Pixels>, cells: &BTreeMap<NodeId, layout::Cell>) -> Option<NodeId> {
+    fn node_at(&self, local: Point<Pixels>) -> Option<NodeId> {
+        self.card_at(local).map(|(id, _)| id)
+    }
+
+    /// The node whose card contains `local`, and the cell of that card.
+    fn card_at(&self, local: Point<Pixels>) -> Option<(NodeId, layout::Cell)> {
         let x = f32::from(local.x - self.offset.x) / self.zoom;
         let y = f32::from(local.y - self.offset.y) / self.zoom;
         if x < 0. || y < 0. {
             return None;
         }
         let cell = ((x / crate::CELL_W) as usize, (y / crate::CELL_H) as usize);
-        let id = self.graph_cache.columns.get(&cell.0)?.get(&cell.1)?;
-        Bounds::new(self.to_screen(cells[id]), size(px(NODE_W * self.zoom), px(NODE_H * self.zoom)))
+        let id = self.graph_cache.at(cell)?;
+        Bounds::new(self.to_screen(cell), size(px(NODE_W * self.zoom), px(NODE_H * self.zoom)))
             .contains(&local)
-            .then(|| id.clone())
+            .then(|| (id.clone(), cell))
     }
 
     pub(crate) fn on_drag_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -407,8 +524,7 @@ impl TopoApp {
             Some(Drag::Link { source, .. }) => {
                 let area = self.area.get();
                 self.ensure_graph_cache();
-                let cells = self.graph_cache.cells();
-                match self.node_at(event.position - area.origin, cells) {
+                match self.node_at(event.position - area.origin) {
                     Some(target) if target == source => {}
                     Some(target) => self.finish_link(source, target, cx),
                     // Dropped on empty canvas: the link gets a new task at its end.
@@ -445,7 +561,7 @@ impl TopoApp {
             Some(Drag::Link { source, mouse }) => Some((source.clone(), *mouse - origin)),
             _ => None,
         };
-        let over = link.as_ref().and_then(|(_, mouse)| self.node_at(*mouse, cells));
+        let over = link.as_ref().and_then(|(_, mouse)| self.node_at(*mouse));
         let drop = link.as_ref().zip(over.as_ref()).filter(|((source, _), target)| source != *target).map(
             |((source, _), target)| {
                 let (label, allowed) = self.connect_preview(source, target);
@@ -455,56 +571,60 @@ impl TopoApp {
 
         // Edges run from the right side of a requirement to the left side of
         // the node requiring it: prerequisite → dependent, member → milestone.
-        let anchor = |id: &NodeId, right: bool| {
-            let p = self.to_screen(cells[id]);
+        let anchor = |cell: layout::Cell, right: bool| {
+            let p = self.to_screen(cell);
             point(p.x + px(if right { NODE_W * z } else { 0. }), p.y + px(NODE_H * z / 2.))
         };
-        let edge = |from: &NodeId, to: &NodeId, membership: bool| {
+        let edge = |placed: &PlacedEdge| {
+            let PlacedEdge { from, to, membership, .. } = placed;
             let closed = graph.get(from).expect("graph invariant").status.is_closed();
             let on_focus = focus.as_ref().is_some_and(|f| f.contains(from) && f.contains(to));
             let on_critical = self.graph_cache.critical_edges.get(from).is_some_and(|targets| targets.contains(to));
             let (color, width) = match () {
                 _ if !emphasized(from) || !emphasized(to) => (theme::alpha(theme::BORDER_STRONG, 0.25), 1.),
                 _ if on_critical => (rgb(theme::AMBER).into(), 2.5),
-                _ if on_focus && membership => (theme::alpha(theme::AMBER, 0.9), 2.),
+                _ if on_focus && *membership => (theme::alpha(theme::AMBER, 0.9), 2.),
                 _ if on_focus => (rgb(theme::ACCENT).into(), 2.),
                 _ if closed => (theme::alpha(theme::BORDER_STRONG, 0.7), 1.25),
-                _ if membership => (theme::alpha(theme::AMBER, 0.45), 1.25),
+                _ if *membership => (theme::alpha(theme::AMBER, 0.45), 1.25),
                 _ => (rgb(0x565a68).into(), 1.5),
             };
-            EdgePaint { from: anchor(from, true), to: anchor(to, false), color, width, dashed: membership }
+            EdgePaint {
+                from: anchor(placed.from_cell, true),
+                to: anchor(placed.to_cell, false),
+                color,
+                width,
+                dashed: *membership,
+            }
         };
         let mut edges: Vec<EdgePaint> = self
             .graph_cache
             .visible_edges(self.offset, z, viewport)
             .into_iter()
-            .map(|i| {
-                let (from, to, membership) = &self.graph_cache.edges[i];
-                edge(from, to, *membership)
-            })
+            .map(|i| edge(&self.graph_cache.edges[i]))
             .filter(|e| edge_visible(e.from, e.to, viewport, z))
             .collect();
         edges.sort_by(|a, b| a.width.total_cmp(&b.width));
-        let pending = link.as_ref().map(|(source, mouse)| {
+        let pending = link.as_ref().and_then(|(source, mouse)| {
             let color = match &drop {
                 Some((_, _, false)) => theme::RED,
                 Some(_) => theme::GREEN,
                 None => theme::ACCENT,
             };
-            (anchor(source, true), *mouse, color)
+            Some((anchor(*cells.get(source)?, true), *mouse, color))
         });
 
         let nodes: Vec<AnyElement> = self
             .graph_cache
             .visible_nodes(self.offset, z, viewport)
             .iter()
-            .filter_map(|id| graph.get(id))
-            .filter(|n| {
+            .filter_map(|(id, cell)| graph.get(id).map(|n| (n, *cell)))
+            .filter(|(_, cell)| {
                 viewport.size.width <= px(0.)
-                    || Bounds::new(self.to_screen(cells[&n.id]), size(px((NODE_W + 8.) * z), px(NODE_H * z)))
+                    || Bounds::new(self.to_screen(*cell), size(px((NODE_W + 8.) * z), px(NODE_H * z)))
                         .intersects(&viewport)
             })
-            .map(|n| {
+            .map(|(n, cell)| {
                 let state = CardState {
                     selected: self.selected_nodes.contains(&n.id),
                     hovered: self.hovered.as_ref() == Some(&n.id) && self.drag.is_none(),
@@ -513,8 +633,16 @@ impl TopoApp {
                     cursor: cursor.as_ref() == Some(&n.id),
                     drop: drop.as_ref().filter(|(t, ..)| *t == n.id).map(|(_, _, allowed)| *allowed),
                 };
-                self.node_card(n, self.to_screen(cells[&n.id]), state, today, cx)
+                self.node_card(n, self.to_screen(cell), state, today, cx)
             })
+            .collect();
+        let headers: Vec<AnyElement> = (0..self.graph_cache.bands.len())
+            .filter(|&band| {
+                let pos = self.to_screen((0, self.graph_cache.bands[band].row));
+                viewport.size.width <= px(0.)
+                    || Bounds::new(pos, size(px(NODE_W * z), px(NODE_H * z))).intersects(&viewport)
+            })
+            .map(|band| self.group_header(band, cx))
             .collect();
 
         let area = self.area.clone();
@@ -591,8 +719,12 @@ impl TopoApp {
             .bg(rgb(theme::CANVAS))
             .cursor(cursor)
             .child(painter)
+            .children(headers)
             .children(nodes)
             .when(self.graph().nodes().next().is_none(), |d| d.child(self.empty_state(cx)))
+            .when(self.graph().nodes().next().is_some() && cells.is_empty() && self.graph_cache.bands.is_empty(), |d| {
+                d.child(self.all_hidden_state(cx))
+            })
             .children(link_label)
             .child(self.zoom_controls(cx))
             .children(self.prompt_overlay())
@@ -647,6 +779,45 @@ impl TopoApp {
                 }
                 cx.notify();
             }))
+    }
+
+    /// The header of group `band`: click to fold or unfold its cards.
+    fn group_header(&self, band: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Band { group, row, count } = &self.graph_cache.bands[band];
+        let z = self.zoom;
+        let collapsed = self.graph_cache.view.collapsed.contains(group);
+        let toggled = group.clone();
+        let name = format!("group-{}", group.label());
+        div()
+            .id(ElementId::Name(name.clone().into()))
+            .debug_selector(move || name.clone())
+            .absolute()
+            .left(self.to_screen((0, *row)).x)
+            // Sits at the bottom of its row, right above the first card of the group.
+            .top(self.to_screen((0, *row)).y + px((crate::CELL_H - 6. - 28.) * z))
+            .h(px(28. * z))
+            .px(px(10. * z))
+            .flex()
+            .items_center()
+            .gap(px(6. * z))
+            .rounded(px(6. * z))
+            .bg(rgb(theme::SURFACE))
+            .border_1()
+            .border_color(rgb(theme::BORDER))
+            .text_size(px(12. * z))
+            .text_color(rgb(theme::MUTED))
+            .whitespace_nowrap()
+            .cursor_pointer()
+            .hover(|s| s.text_color(rgb(theme::TEXT)).border_color(rgb(theme::BORDER_STRONG)))
+            .child(if collapsed { "▸" } else { "▾" })
+            .child(div().text_color(rgb(theme::TEXT)).child(group.label()))
+            .child(div().text_color(rgb(theme::FAINT)).child(count.to_string()))
+            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .on_click(cx.listener(move |app, _, _, cx| {
+                app.toggle_group(&toggled);
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     fn node_card(
@@ -824,6 +995,7 @@ impl TopoApp {
                         return;
                     }
                     app.select(Some(down_id.clone()), false);
+                    app.placed = app.card_at(ev.position - app.area.get().origin).map(|(_, cell)| cell);
                     app.drag = match () {
                         _ if ev.modifiers.shift => Some(Drag::Link { source: down_id.clone(), mouse: ev.position }),
                         _ if ev.click_count >= 2 => {
@@ -1100,7 +1272,8 @@ mod tests {
         cache.changed(&before, &graph);
         assert!(cache.layout_dirty);
         cache.refresh(&graph, &selected);
-        assert_eq!(cache.cells, layout::layout(&graph));
+        assert_eq!(cache.cells.len(), graph.nodes().count());
+        assert_eq!(cache.cells[&id("a")], (0, 0));
     }
 
     #[test]
@@ -1118,7 +1291,8 @@ mod tests {
                         let (col, row) = cache.cells[id];
                         offset + point(px(col as f32 * crate::CELL_W * zoom), px(row as f32 * crate::CELL_H * zoom))
                     };
-                    let nodes: BTreeSet<_> = cache.visible_nodes(offset, zoom, viewport).into_iter().collect();
+                    let nodes: BTreeSet<_> =
+                        cache.visible_nodes(offset, zoom, viewport).into_iter().map(|(id, _)| id).collect();
                     for id in cache.cells.keys() {
                         if Bounds::new(screen(id), size(px((NODE_W + 8.) * zoom), px(NODE_H * zoom)))
                             .intersects(&viewport)
@@ -1127,7 +1301,7 @@ mod tests {
                         }
                     }
                     let edges = cache.visible_edges(offset, zoom, viewport);
-                    for (i, (from, to, _)) in cache.edges.iter().enumerate() {
+                    for (i, PlacedEdge { from, to, .. }) in cache.edges.iter().enumerate() {
                         let from = screen(from) + point(px(NODE_W * zoom), px(NODE_H * zoom / 2.));
                         let to = screen(to) + point(px(0.), px(NODE_H * zoom / 2.));
                         if edge_visible(from, to, viewport, zoom) {

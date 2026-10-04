@@ -1,12 +1,14 @@
 //! Interaction tests: a headless window that takes simulated keys and clicks.
 
+use std::ops::Range;
+
 use gpui::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, point, px, size};
 use tempfile::TempDir;
 use topo_core::{Edit, Graph, Kind, Node, NodeId, Priority, Status, Workspace};
 
 use crate::gesture::Gesture;
 use crate::inline::Field;
-use crate::{NODE_H, NODE_W, Prompt, TopoApp, layout, text_input};
+use crate::{NODE_H, NODE_W, Prompt, TopoApp, layout::Group, text_input};
 
 fn id(s: &str) -> NodeId {
     NodeId(s.into())
@@ -75,7 +77,7 @@ impl Ui<'_> {
     /// Window position of the point `(fx, fy)` of the card of `node`, as fractions of its size.
     fn card(&mut self, node: &str, fx: f32, fy: f32) -> Point<Pixels> {
         self.read(|app| {
-            let cell = layout::layout(app.graph())[&id(node)];
+            let cell = app.graph_cache.cells()[&id(node)];
             let origin = app.area.get().origin + app.to_screen(cell);
             origin + point(px(NODE_W * app.zoom * fx), px(NODE_H * app.zoom * fy))
         })
@@ -118,6 +120,16 @@ impl Ui<'_> {
     fn click_on(&mut self, selector: &'static str) {
         let bounds = self.cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is rendered"));
         self.click(bounds.center());
+    }
+
+    /// The text of the notes editor.
+    fn notes(&mut self) -> String {
+        self.app.read_with(self.cx, |app, cx| app.notes_input.read(cx).text().to_owned())
+    }
+
+    /// The selection of the notes editor; an empty range is the cursor.
+    fn sel(&mut self) -> Range<usize> {
+        self.app.read_with(self.cx, |app, cx| app.notes_input.read(cx).selection())
     }
 
     fn selected(&mut self) -> Option<String> {
@@ -1168,7 +1180,6 @@ fn the_title_is_edited_in_the_inspector(cx: &mut TestAppContext) {
 #[gpui::test]
 fn notes_are_written_in_the_inspector(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
-    let notes = |ui: &mut Ui| ui.app.read_with(ui.cx, |app, cx| app.notes_input.read(cx).text().to_owned());
     ui.select("a");
     ui.keys("e");
     assert_eq!(ui.read(|app| app.notes.clone()), Some(id("a")));
@@ -1176,7 +1187,7 @@ fn notes_are_written_in_the_inspector(cx: &mut TestAppContext) {
     ui.type_text("first x");
     ui.keys("enter");
     ui.type_text("second");
-    assert_eq!(notes(&mut ui), "first x\nsecond");
+    assert_eq!(ui.notes(), "first x\nsecond");
     assert_eq!(ui.node("a").status, Status::Todo);
     ui.keys("cmd-enter");
     assert_eq!(ui.read(|app| app.notes.clone()), None);
@@ -1188,15 +1199,22 @@ fn notes_are_written_in_the_inspector(cx: &mut TestAppContext) {
     ui.type_text("!");
     ui.keys("down");
     ui.type_text("?");
-    assert_eq!(notes(&mut ui), "first !x\nsecond?");
-    // Escape discards.
+    assert_eq!(ui.notes(), "first !x\nsecond?");
+    // Escape asks about the changes, and discarding them keeps the saved notes.
     ui.keys("escape");
     assert_eq!(ui.node("a").body, "first x\nsecond\n");
+    assert!(ui.read(|app| app.notes_ask.is_some()));
+    ui.keys("d");
+    assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.clone())), (None, None));
+    assert_eq!(ui.node("a").body, "first x\nsecond\n");
 
-    // Anything else that leaves the editor saves: a click elsewhere, another selection.
+    // Another selection asks too, and saving it goes on to select.
     ui.click_on("edit-notes");
     ui.type_text(" more");
     ui.select("c");
+    assert_eq!(ui.node("a").body, "first x\nsecond\n");
+    assert_eq!(ui.selected().as_deref(), Some("a"));
+    ui.keys("enter");
     assert_eq!(ui.node("a").body, "first x\nsecond more\n");
     assert_eq!(ui.selected().as_deref(), Some("c"));
     // Each save is one undo step, and emptied notes are no text at all.
@@ -1205,6 +1223,319 @@ fn notes_are_written_in_the_inspector(cx: &mut TestAppContext) {
     ui.select("a");
     ui.keys("e cmd-a backspace cmd-enter");
     assert_eq!(ui.node("a").body, "");
+}
+
+#[gpui::test]
+fn unsaved_notes_ask_before_they_are_left(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    // Nothing changed: the editor says so, and leaving it is silent.
+    assert!(ui.cx.debug_bounds("notes-saved").is_some() && ui.cx.debug_bounds("notes-unsaved").is_none());
+    ui.keys("escape");
+    assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.clone())), (None, None));
+
+    // A change shows, and the question over it has three answers.
+    ui.keys("e");
+    ui.type_text("draft");
+    assert!(ui.cx.debug_bounds("notes-unsaved").is_some() && ui.cx.debug_bounds("notes-saved").is_none());
+    ui.keys("escape");
+    assert!(ui.cx.debug_bounds("notes-dialog").is_some());
+    assert_eq!(ui.node("a").body, "");
+    // Keep editing: the text and the cursor are as they were, and the keys are text again.
+    ui.click_on("notes-keep");
+    assert_eq!(ui.read(|app| app.notes_ask.clone()), None);
+    ui.type_text("!");
+    assert_eq!(ui.notes(), "draft!");
+    // Typing the change away is no change.
+    ui.keys("backspace backspace backspace backspace backspace backspace");
+    assert!(ui.cx.debug_bounds("notes-saved").is_some());
+    ui.keys("escape");
+    assert_eq!(ui.read(|app| app.notes.clone()), None);
+
+    // Discard.
+    ui.keys("e");
+    ui.type_text("gone");
+    ui.keys("escape");
+    ui.click_on("notes-discard");
+    assert_eq!((ui.read(|app| app.notes.clone()), ui.node("a").body.as_str()), (None, ""));
+    assert!(ui.cx.debug_bounds("notes-dialog").is_none());
+
+    // Save, from a click elsewhere on the canvas.
+    ui.keys("e");
+    ui.type_text("kept");
+    let empty = ui.card("a", 0.5, 0.5) + point(px(0.), px(300.));
+    ui.click(empty);
+    assert!(ui.read(|app| app.notes_ask.is_some()));
+    ui.click_on("notes-save");
+    assert_eq!((ui.read(|app| app.notes.clone()), ui.node("a").body.as_str()), (None, "kept\n"));
+    // The keys the canvas knows are the canvas's again.
+    ui.keys("2");
+    assert_eq!(ui.node("a").status, Status::Doing);
+}
+
+#[gpui::test]
+fn another_selection_waits_for_the_answer(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    for (answer, body, selected) in [("escape", "", "a"), ("d", "", "c"), ("enter", "x\n", "c")] {
+        ui.select("a");
+        ui.keys("e");
+        ui.type_text("x");
+        ui.select("c");
+        // The selection is held back: the inspector keeps showing the notes.
+        assert_eq!(ui.selected().as_deref(), Some("a"));
+        assert!(ui.cx.debug_bounds("notes-editor").is_some());
+        ui.keys(answer);
+        assert_eq!((ui.selected().as_deref(), ui.node("a").body.as_str()), (Some(selected), body), "{answer}");
+        // Put the state back for the next round.
+        if ui.read(|app| app.notes.is_some()) {
+            ui.keys("escape d");
+        }
+        ui.app.update(ui.cx, |app, cx| {
+            app.mutate(cx, |g| g.edit(&id("a"), Edit { body: Some(String::new()), ..Edit::default() }));
+        });
+    }
+}
+
+#[gpui::test]
+fn closing_the_window_with_unsaved_notes_asks(cx: &mut TestAppContext) {
+    use crate::notes::Then;
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    // Nothing changed, nothing to ask.
+    assert!(ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::CloseWindow, cx)));
+    ui.type_text("x");
+    assert!(!ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::CloseWindow, cx)));
+    ui.redraw();
+    assert_eq!(ui.read(|app| app.notes_ask.clone()), Some(Then::CloseWindow));
+    assert!(ui.cx.debug_bounds("notes-dialog").is_some());
+    // The question, not the text, has the keyboard.
+    ui.type_text("y");
+    assert_eq!(ui.notes(), "x");
+    ui.keys("escape");
+    assert_eq!(ui.read(|app| app.notes_ask.clone()), None);
+    ui.type_text("y");
+    assert_eq!(ui.notes(), "xy");
+
+    // The window closes once the answer settles the notes.
+    assert!(!ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::CloseWindow, cx)));
+    ui.redraw();
+    ui.keys("d");
+    assert_eq!(ui.node("a").body, "");
+    assert!(ui.cx.windows().is_empty());
+}
+
+#[gpui::test]
+fn lines_start_and_end_where_the_line_breaks_are(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    ui.type_text("one two");
+    ui.keys("enter");
+    ui.type_text("three four");
+    ui.keys("enter");
+    ui.type_text("five");
+    // 0..7 "one two", 8..18 "three four", 19..23 "five".
+    assert_eq!(ui.sel(), 23..23);
+    let moves: &[(&str, Range<usize>)] = &[
+        ("home", 19..19),
+        ("end", 23..23),
+        ("up", 12..12),
+        ("home", 8..8),
+        ("cmd-right", 18..18),
+        ("cmd-left", 8..8),
+        ("cmd-up", 0..0),
+        ("cmd-down", 23..23),
+        ("ctrl-home", 0..0),
+        ("ctrl-end", 23..23),
+        ("left", 22..22),
+        ("alt-left", 19..19),
+        ("alt-right", 23..23),
+    ];
+    for (keys, expected) in moves {
+        ui.keys(keys);
+        assert_eq!(&ui.sel(), expected, "{keys}");
+    }
+    if cfg!(target_os = "macos") {
+        ui.keys("ctrl-a");
+        assert_eq!(ui.sel(), 19..19);
+        ui.keys("ctrl-e");
+        assert_eq!(ui.sel(), 23..23);
+    }
+}
+
+#[gpui::test]
+fn moving_with_shift_extends_the_selection(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    ui.type_text("one two");
+    ui.keys("enter");
+    ui.type_text("three four");
+    // 0..7 "one two", 8..18 "three four"; the cursor is at 18.
+    let extend: &[(&str, Range<usize>)] = &[
+        ("shift-home", 8..18),
+        ("shift-end", 18..18),
+        ("cmd-shift-left", 8..18),
+        ("cmd-shift-right", 18..18),
+        ("cmd-shift-up", 0..18),
+        ("cmd-shift-down", 18..18),
+        ("ctrl-shift-home", 0..18),
+        ("ctrl-shift-end", 18..18),
+        ("alt-shift-left", 14..18),
+        ("alt-shift-right", 18..18),
+        ("shift-left", 17..18),
+    ];
+    for (keys, expected) in extend {
+        ui.keys(keys);
+        assert_eq!(&ui.sel(), expected, "{keys}");
+    }
+    // The selection grows from where it started, even past it.
+    ui.keys("home");
+    ui.keys("shift-end shift-home");
+    assert_eq!(ui.sel(), 8..8);
+    ui.keys("cmd-up");
+    ui.keys("shift-end");
+    assert_eq!(ui.sel(), 0..7);
+    ui.keys("shift-end");
+    assert_eq!(ui.sel(), 0..7);
+    ui.keys("shift-right shift-end");
+    assert_eq!(ui.sel(), 0..18);
+    // Typing replaces what is selected.
+    ui.type_text("x");
+    assert_eq!(ui.notes(), "x");
+}
+
+#[gpui::test]
+fn deleting_to_the_start_stops_at_the_line(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    ui.type_text("one");
+    ui.keys("enter");
+    ui.type_text("two");
+    ui.keys("cmd-backspace");
+    assert_eq!(ui.notes(), "one\n");
+    // At the start of a line the line break goes.
+    ui.keys("cmd-backspace");
+    assert_eq!(ui.notes(), "one");
+}
+
+#[gpui::test]
+fn tab_indents_and_shift_tab_outdents(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    ui.type_text("plain");
+    // In a plain line Tab types an indentation where the cursor is, and stays in the editor.
+    ui.keys("home tab");
+    assert_eq!((ui.notes().as_str(), ui.sel()), ("  plain", 2..2));
+    ui.keys("shift-tab");
+    assert_eq!((ui.notes().as_str(), ui.sel()), ("plain", 0..0));
+    ui.keys("shift-tab");
+    assert_eq!(ui.notes(), "plain");
+    assert!(ui.read(|app| app.notes.is_some()));
+
+    // On a list item it indents the item, and the cursor stays in the text.
+    ui.keys("cmd-a backspace");
+    ui.type_text("- one");
+    ui.keys("enter");
+    ui.type_text("two");
+    ui.keys("tab");
+    assert_eq!((ui.notes().as_str(), ui.sel()), ("- one\n  - two", 13..13));
+    // A selection of several lines indents each of them and stays selected.
+    ui.keys("cmd-a tab");
+    assert_eq!((ui.notes().as_str(), ui.sel()), ("  - one\n    - two", 2..17));
+    ui.keys("shift-tab");
+    assert_eq!((ui.notes().as_str(), ui.sel()), ("- one\n  - two", 0..13));
+    // Each is one undo step.
+    ui.keys("cmd-z");
+    assert_eq!(ui.notes(), "  - one\n    - two");
+    ui.keys("cmd-z");
+    assert_eq!(ui.notes(), "- one\n  - two");
+    ui.keys("cmd-z");
+    assert_eq!(ui.notes(), "- one\n- two");
+    ui.keys("cmd-shift-z");
+    assert_eq!(ui.notes(), "- one\n  - two");
+}
+
+#[gpui::test]
+fn enter_continues_lists_and_undo_follows_each_step(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    ui.type_text("- one");
+    ui.keys("enter");
+    assert_eq!(ui.notes(), "- one\n- ");
+    ui.type_text("two");
+    ui.keys("enter enter");
+    // The empty item ends the list.
+    assert_eq!((ui.notes().as_str(), ui.sel()), ("- one\n- two\n", 12..12));
+    // Each is one undo step: the end of the list, the second item with what was typed in it, the first.
+    let steps = ["- one\n- two\n- ", "- one\n- two", "- one", ""];
+    for step in steps {
+        ui.keys("cmd-z");
+        assert_eq!(ui.notes(), step);
+    }
+    for step in steps.iter().rev().skip(1).chain(&["- one\n- two\n"]) {
+        ui.keys("cmd-shift-z");
+        assert_eq!(&ui.notes(), step);
+    }
+
+    // Shift-Enter breaks the line plainly; a quote and a task carry on.
+    ui.keys("cmd-a backspace");
+    ui.type_text("- [x] done");
+    ui.keys("shift-enter");
+    assert_eq!(ui.notes(), "- [x] done\n");
+    ui.keys("backspace enter");
+    assert_eq!(ui.notes(), "- [x] done\n- [ ] ");
+    ui.keys("enter");
+    ui.type_text("> q");
+    ui.keys("enter");
+    assert_eq!(ui.notes(), "- [x] done\n> q\n> ");
+}
+
+#[gpui::test]
+fn the_inspector_follows_the_cursor_through_long_notes(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.resize(1360., 480.);
+    ui.keys("e");
+    assert_eq!(ui.read(|app| app.notes.clone()), Some(id("a")));
+    for line in 0..60 {
+        ui.type_text(&format!("line {line}"));
+        ui.keys("enter");
+    }
+    ui.redraw();
+    // Whether the row `row` (of 18 points) of the notes is inside the panel, with a line to spare.
+    let visible = |ui: &mut Ui, row: usize| {
+        let editor = ui.cx.debug_bounds("notes-editor").expect("the editor is shown");
+        let view = ui.read(|app| app.inspector_scroll.bounds());
+        let top = editor.top() + px(13. + 18. * row as f32);
+        top >= view.top() + px(18.) && top + px(18.) <= view.bottom() - px(18.)
+    };
+    let offset = |ui: &mut Ui| ui.read(|app| app.inspector_scroll.offset().y);
+    // Typing at the end scrolled down to it.
+    assert!(visible(&mut ui, 60));
+    let end = offset(&mut ui);
+    assert!(end < px(-300.), "the notes are longer than the panel");
+    // Moving within the view does not scroll; moving out of it does.
+    ui.keys("up up up");
+    ui.redraw();
+    assert_eq!(offset(&mut ui), end);
+    ui.keys("cmd-up");
+    ui.redraw();
+    assert!(visible(&mut ui, 0));
+    ui.keys("cmd-down");
+    ui.redraw();
+    assert!(visible(&mut ui, 60) && offset(&mut ui) == end);
+    // A caret in the middle comes into view by scrolling no further than it takes.
+    ui.keys("cmd-up");
+    ui.keys(&"down ".repeat(40));
+    ui.redraw();
+    assert!(visible(&mut ui, 40));
+    assert!(!visible(&mut ui, 0) && !visible(&mut ui, 60));
 }
 
 #[gpui::test]
@@ -1277,4 +1608,340 @@ fn a_cloud_workspace_edits_notes_in_place(cx: &mut TestAppContext) {
     let stored: Vec<Node> = remote.fetch(None).unwrap().unwrap().nodes.into_iter().map(Node::from).collect();
     assert_eq!(stored[0].body, "from the gui\n");
     assert!(ui.read(|app| app.toast.as_ref().is_none_or(|t| !t.error)));
+}
+
+/// a (done, #core #ui) → b (todo, #ui) → m (todo, no tag); c dropped, no tag; d todo, #core.
+fn view_fixture(ui: &mut Ui) {
+    ui.app.update(ui.cx, |app, cx| {
+        let tags =
+            |tags: &[&str]| Edit { tags: Some(tags.iter().map(|t| (*t).to_owned()).collect()), ..Edit::default() };
+        assert!(app.mutate(cx, |g| {
+            g.set_status(&id("a"), Status::Done)?;
+            g.set_status(&id("c"), Status::Dropped)?;
+            g.edit(&id("a"), tags(&["core", "ui"]))?;
+            g.edit(&id("b"), tags(&["ui"]))?;
+            g.edit(&id("d"), tags(&["core"]))
+        }));
+    });
+}
+
+const VIEW_SAMPLE: &[(&str, Kind, &[&str], &[&str])] = &[
+    ("a", Kind::Task, &[], &[]),
+    ("b", Kind::Task, &["a"], &["m"]),
+    ("c", Kind::Task, &[], &["m"]),
+    ("d", Kind::Task, &[], &[]),
+    ("m", Kind::Milestone, &[], &[]),
+];
+
+impl Ui<'_> {
+    /// Ids of the cards placed on the canvas, once per placement.
+    fn shown(&mut self) -> Vec<String> {
+        self.redraw();
+        let mut ids = self.read(|app| {
+            let mut ids: Vec<String> = app.graph_cache.cells().keys().map(|id| id.to_string()).collect();
+            ids.sort();
+            ids
+        });
+        ids.dedup();
+        ids
+    }
+
+    fn placements(&mut self, node: &str) -> usize {
+        self.redraw();
+        self.read(|app| app.graph_cache.placements(&id(node)))
+    }
+}
+
+#[gpui::test]
+fn hiding_completed_removes_done_and_dropped_nodes_and_their_edges(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    assert_eq!(ui.shown(), ["a", "b", "c", "d", "m"]);
+    let edges = ui.read(|app| app.graph_cache.edge_count());
+    assert_eq!(edges, 3);
+    ui.keys("shift-h");
+    assert!(ui.read(|app| app.view.hide_completed));
+    assert_eq!(ui.shown(), ["b", "d", "m"]);
+    // b → m is the only edge left; b lost its requirement a without being re-routed.
+    assert_eq!(ui.read(|app| app.graph_cache.edge_count()), 1);
+    assert_eq!(ui.read(|app| app.graph_cache.cells()[&id("b")]), (0, 0));
+    ui.click_on("hide-completed");
+    assert!(!ui.read(|app| app.view.hide_completed));
+    assert_eq!(ui.shown(), ["a", "b", "c", "d", "m"]);
+}
+
+#[gpui::test]
+fn hiding_the_selected_node_clears_the_selection(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.keys("shift-h");
+    ui.select("b");
+    ui.keys("3");
+    assert_eq!(ui.shown(), ["d", "m"]);
+    assert_eq!(ui.selected(), None);
+    assert!(ui.read(|app| app.selected_nodes.is_empty()));
+    // Turning the toggle on with a done node selected clears it too.
+    ui.keys("shift-h");
+    ui.select("a");
+    assert_eq!(ui.selected().as_deref(), Some("a"));
+    ui.keys("shift-h");
+    assert_eq!(ui.selected(), None);
+    // Select all only takes what is shown.
+    ui.keys("cmd-a");
+    assert_eq!(ui.selection(), ["d", "m"]);
+}
+
+#[gpui::test]
+fn hide_completed_composes_with_the_priority_filter_and_search(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.app.update(ui.cx, |app, cx| {
+        let set = |p| Edit { priority: Some(Some(p)), ..Edit::default() };
+        app.mutate(cx, |g| {
+            g.edit(&id("a"), set(Priority::Urgent)).and_then(|()| g.edit(&id("b"), set(Priority::Urgent)))
+        });
+    });
+    ui.keys("shift-h shift-p");
+    // Only b is both open and urgent; a is hidden even though it passes the filter.
+    ui.keys("cmd-a");
+    assert_eq!(ui.selection(), ["b"]);
+    ui.keys("escape /");
+    ui.type_text("a");
+    let listed = ui.app.read_with(ui.cx, |app, cx| app.listed(cx));
+    assert!(!listed.contains(&id("a")), "a hidden node is not offered by search");
+}
+
+#[gpui::test]
+fn grouping_places_a_multi_tag_node_in_each_of_its_groups(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.keys("shift-g");
+    assert!(ui.read(|app| app.view.group_by_tag));
+    let groups = ui.read(|app| app.graph_cache.group_labels());
+    // Tags are sorted; untagged comes last.
+    assert_eq!(groups, ["#core", "#ui", "untagged"]);
+    assert_eq!(ui.placements("a"), 2);
+    assert_eq!(ui.placements("b"), 1);
+    assert_eq!(ui.placements("d"), 1);
+    // c and m have no tags: one card each, in the single untagged group.
+    assert_eq!(ui.placements("c"), 1);
+    assert_eq!(ui.placements("m"), 1);
+    // Folding the untagged group removes c and m; unfolding brings them back.
+    ui.click_on("group-untagged");
+    assert_eq!(ui.placements("c"), 0);
+    assert_eq!(ui.placements("m"), 0);
+    ui.click_on("group-untagged");
+    assert_eq!(ui.placements("c"), 1);
+}
+
+#[gpui::test]
+fn collapsing_a_group_hides_its_cards_but_not_copies_in_other_groups(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.keys("shift-g");
+    ui.click_on("group-#core");
+    assert!(ui.read(|app| app.view.collapsed.contains(&Group::Tag("core".into()))));
+    // a stays visible through #ui; d only lived in #core.
+    assert_eq!(ui.placements("a"), 1);
+    assert_eq!(ui.placements("d"), 0);
+    // Selecting d is impossible while its only group is folded: select-all skips it.
+    ui.keys("cmd-a");
+    assert!(!ui.selection().contains(&"d".to_owned()));
+    ui.click_on("group-#core");
+    assert_eq!(ui.placements("d"), 1);
+    assert_eq!(ui.placements("a"), 2);
+}
+
+#[gpui::test]
+fn folding_the_group_of_the_selection_clears_it(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.keys("shift-g");
+    ui.select("d");
+    assert_eq!(ui.selected().as_deref(), Some("d"));
+    ui.click_on("group-#core");
+    assert_eq!(ui.selected(), None);
+}
+
+#[gpui::test]
+fn grouping_and_hiding_completed_compose(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.keys("shift-g shift-h");
+    // a (done) is gone from both of its groups, c (dropped) from untagged.
+    assert_eq!(ui.placements("a"), 0);
+    assert_eq!(ui.placements("c"), 0);
+    assert_eq!(ui.read(|app| app.graph_cache.group_labels()), ["#core", "#ui", "untagged"]);
+    assert_eq!(ui.read(|app| app.graph_cache.group_counts()), [1, 1, 1]);
+    // Editing tags regroups while grouped.
+    ui.app.update(ui.cx, |app, cx| {
+        app.mutate(cx, |g| g.edit(&id("d"), Edit { tags: Some(vec!["ops".into()]), ..Edit::default() }));
+    });
+    assert_eq!(ui.read(|app| app.graph_cache.group_labels()), ["#ops", "#ui", "untagged"]);
+}
+
+#[gpui::test]
+fn the_bottom_bar_fits_the_smallest_window_with_every_toggle_state(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.resize(720., 480.);
+    ui.keys("shift-h shift-g");
+    // Longest label of the priority filter last: "Priority: medium and up".
+    for step in 0..5 {
+        ui.redraw();
+        let area = ui.read(|app| app.area.get());
+        let mut previous = None;
+        for selector in ["hide-completed", "group-by-tag", "priority-filter", "zoom"] {
+            let bounds = ui.cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is rendered"));
+            assert!(bounds.right() <= area.right(), "{selector} ends at {:?} (step {step})", bounds.right());
+            assert!(bounds.size.height <= px(32.), "{selector} is {:?} high", bounds.size.height);
+            if let Some(before) = previous {
+                assert!(bounds.left() >= before, "{selector} overlaps its neighbour (step {step})");
+            }
+            previous = Some(bounds.right());
+        }
+        ui.keys("shift-p");
+    }
+}
+
+#[gpui::test]
+fn arrow_keys_skip_hidden_nodes(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.keys("shift-h");
+    // b requires the hidden a; there is no card to move left to.
+    ui.select("b");
+    ui.keys("left");
+    assert_eq!(ui.selected().as_deref(), Some("b"));
+    ui.keys("right");
+    assert_eq!(ui.selected().as_deref(), Some("m"));
+    ui.keys("left");
+    assert_eq!(ui.selected().as_deref(), Some("b"));
+}
+
+#[gpui::test]
+fn arrow_keys_walk_through_group_bands_and_repeated_cards(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.keys("shift-g");
+    // Column 0, top to bottom: #core (a, d), #ui (a, with b to its right), untagged (c).
+    ui.select("d");
+    let mut walked = vec![];
+    for _ in 0..3 {
+        ui.keys("down");
+        walked.push(ui.selected().unwrap());
+    }
+    assert_eq!(walked, ["a", "c", "c"]);
+    for _ in 0..2 {
+        ui.keys("up");
+        walked.push(ui.selected().unwrap());
+    }
+    // The second card of a was reached from below, so up goes on to d, not back to a's first card.
+    assert_eq!(walked[3..], ["a", "d"]);
+    // From a's second card the follow-up is b of the #ui band.
+    ui.keys("down down up");
+    assert_eq!(ui.selected().as_deref(), Some("a"));
+    ui.keys("right");
+    assert_eq!(ui.selected().as_deref(), Some("b"));
+}
+
+#[gpui::test]
+fn the_canvas_can_be_emptied_by_hiding_and_still_works(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.app.update(ui.cx, |app, cx| {
+        app.mutate(cx, |g| {
+            for name in ["a", "b", "c", "m"] {
+                g.set_status(&id(name), Status::Done)?;
+            }
+            Ok(())
+        });
+    });
+    ui.keys("shift-h");
+    assert!(ui.shown().is_empty());
+    // The empty canvas says why, and offers the way back.
+    assert!(ui.cx.debug_bounds("all-hidden").is_some() || ui.cx.debug_bounds("show-completed").is_some());
+    ui.keys("down left right cmd-a f shift-g");
+    assert_eq!(ui.selected(), None);
+    assert!(ui.read(|app| app.graph_cache.group_labels().is_empty()));
+    ui.keys("shift-g shift-h");
+    assert_eq!(ui.shown(), ["a", "b", "c", "m"]);
+}
+
+#[gpui::test]
+fn a_workspace_without_tags_groups_into_one_untagged_band(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.keys("shift-g");
+    assert_eq!(ui.read(|app| app.graph_cache.group_labels()), ["untagged"]);
+    assert_eq!(ui.read(|app| app.graph_cache.group_counts()), [4]);
+}
+
+#[gpui::test]
+fn view_shortcuts_typed_into_the_notes_editor_are_text(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    ui.keys("shift-h shift-g");
+    assert_eq!(ui.notes(), "HG");
+    assert_eq!(ui.read(|app| app.view.clone()), Default::default());
+}
+
+#[gpui::test]
+fn notes_of_a_node_that_gets_hidden_are_asked_about_not_lost(cx: &mut TestAppContext) {
+    for answer in ["enter", "d"] {
+        let mut ui = open(cx, SAMPLE);
+        ui.keys("shift-h");
+        ui.select("b");
+        ui.keys("e");
+        ui.type_text("keep me");
+        // Marked done elsewhere (the CLI, an agent): the card goes away under the editor.
+        ui.app.update(ui.cx, |app, cx| {
+            app.mutate(cx, |g| g.set_status(&id("b"), Status::Done));
+        });
+        ui.redraw();
+        assert!(ui.read(|app| app.notes_ask.is_some()), "{answer}: the notes are asked about");
+        assert_eq!(ui.node("b").body, "");
+        ui.keys(answer);
+        let saved = ui.node("b").body;
+        assert_eq!(saved, if answer == "enter" { "keep me\n" } else { "" }, "{answer}");
+        assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.clone())), (None, None));
+        assert!(ui.cx.debug_bounds("notes-dialog").is_none());
+    }
+}
+
+#[gpui::test]
+fn keep_editing_a_node_that_got_hidden_keeps_the_notes(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.keys("shift-h");
+    ui.select("b");
+    ui.keys("e");
+    ui.type_text("draft");
+    ui.app.update(ui.cx, |app, cx| {
+        app.mutate(cx, |g| g.set_status(&id("b"), Status::Done));
+    });
+    ui.redraw();
+    ui.keys("escape");
+    ui.redraw();
+    // Whatever the editor does now, the draft is still there to save.
+    assert_eq!(ui.notes(), "draft");
+    assert!(ui.read(|app| app.notes.is_some()));
+}
+
+#[gpui::test]
+fn quitting_with_unsaved_notes_asks_and_then_quits(cx: &mut TestAppContext) {
+    use crate::notes::Then;
+    let mut ui = open(cx, SAMPLE);
+    ui.select("a");
+    ui.keys("e");
+    ui.type_text("x");
+    assert!(!ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::Quit, cx)));
+    ui.redraw();
+    assert_eq!(ui.read(|app| app.notes_ask.clone()), Some(Then::Quit));
+    // Keep editing does not quit.
+    ui.keys("escape");
+    assert!(ui.read(|app| app.notes.is_some() && app.notes_ask.is_none()));
+    assert!(!ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::Quit, cx)));
+    ui.redraw();
+    // Saving settles the notes and then quits; the test platform's quit only flags the app.
+    ui.keys("enter");
+    assert_eq!(ui.node("a").body, "x\n");
+    assert_eq!(ui.read(|app| app.notes.clone()), None);
 }

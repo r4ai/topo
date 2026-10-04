@@ -53,6 +53,14 @@ pub struct Args {
     #[arg(long, requires = "select", conflicts_with = "edit")]
     pub edit_notes: bool,
 
+    /// Replace the text of the notes opened by `--edit-notes`, which leaves them unsaved
+    #[arg(long, requires = "edit_notes", value_name = "TEXT")]
+    pub notes_text: Option<String>,
+
+    /// Capture with the question about unsaved notes open (needs `--notes-text`)
+    #[arg(long, requires = "notes_text")]
+    pub unsaved_dialog: bool,
+
     /// Capture with the search prompt open on this query
     #[arg(long, requires = "screenshot", value_name = "QUERY")]
     pub search: Option<String>,
@@ -60,6 +68,18 @@ pub struct Args {
     /// Capture with the keyboard-shortcuts overlay open
     #[arg(long, requires = "screenshot")]
     pub help_overlay: bool,
+
+    /// Capture with done and dropped nodes hidden; never read from the saved preference
+    #[arg(long, requires = "screenshot")]
+    pub hide_completed: bool,
+
+    /// Capture with the nodes grouped by tag; never read from the saved preference
+    #[arg(long, requires = "screenshot")]
+    pub group_by_tag: bool,
+
+    /// Tags (or `untagged`) whose groups are collapsed in the capture
+    #[arg(long, requires = "group_by_tag", value_name = "TAG", value_delimiter = ',', value_parser = node_id)]
+    pub collapse: Vec<String>,
 }
 
 /// A length in whole points that the renderer can allocate a texture for.

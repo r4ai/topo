@@ -32,6 +32,7 @@ impl TopoApp {
         div().relative().flex_shrink_0().h_full().w(px(self.inspector_width())).child(self.resize_handle(cx)).child(
             div()
                 .id("inspector")
+                .track_scroll(&self.inspector_scroll)
                 .size_full()
                 .flex()
                 .flex_col()
@@ -656,7 +657,17 @@ impl TopoApp {
                         .on_click(cx.listener(move |app, _, _, cx| app.open_file(&file_id, cx))),
                 )
             });
-        let header = div().flex().items_end().justify_between().child(section_label("NOTES")).child(actions);
+        let state = match (editing, self.notes_dirty(cx)) {
+            (true, true) => Some(chip("● Unsaved changes", theme::AMBER).debug_selector(|| "notes-unsaved".to_owned())),
+            (true, false) => Some(chip("Saved", theme::GREEN).debug_selector(|| "notes-saved".to_owned())),
+            (false, _) => None,
+        };
+        let header = div()
+            .flex()
+            .items_end()
+            .justify_between()
+            .child(div().flex().items_end().gap_2().child(section_label("NOTES")).children(state.map(|s| s.mb_1())))
+            .child(actions);
         let text =
             div().min_w(px(0.)).p_3().rounded_lg().bg(rgb(theme::CANVAS)).border_1().text_xs().line_height(px(18.));
         let body = match (editing, node.body.trim().is_empty()) {
@@ -680,10 +691,10 @@ impl TopoApp {
                         .text_xs()
                         .text_color(rgb(theme::FAINT))
                         .children(
-                            [("⌘↵", "save"), ("esc", "discard")]
+                            [("⌘↵", "save"), ("esc", "close"), ("tab", "indent")]
                                 .map(|(key, what)| div().flex().items_center().gap_1().child(kbd(key)).child(what)),
                         )
-                        .child("a click elsewhere saves"),
+                        .child("unsaved changes ask first"),
                 )
                 .into_any_element(),
             (false, empty) => text

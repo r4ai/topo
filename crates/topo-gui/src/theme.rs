@@ -3,6 +3,8 @@
 use gpui::{BoxShadow, Div, Hsla, Rgba, SharedString, Stateful, Styled, div, hsla, point, prelude::*, px, rgb, rgba};
 use topo_core::{Kind, Node, Priority, Status};
 
+use crate::markdown::Style;
+
 pub const CANVAS: u32 = 0x111216;
 pub const SURFACE: u32 = 0x17181d;
 pub const CARD: u32 = 0x1e1f26;
@@ -18,6 +20,7 @@ pub const GREEN: u32 = 0x4cc38a;
 pub const AMBER: u32 = 0xf5b949;
 pub const RED: u32 = 0xf2555a;
 pub const GRID_DOT: u32 = 0x24262e;
+const LINK: u32 = 0x5ad1e6;
 
 pub fn faint() -> Rgba {
     rgb(FAINT)
@@ -36,6 +39,18 @@ pub fn alpha(color: u32, alpha: f32) -> Hsla {
     let mut c: Hsla = rgb(color).into();
     c.a = alpha;
     c
+}
+
+/// The color of Markdown text in `style`; plain text keeps the color it inherits.
+pub fn markdown_color(style: Style) -> Option<Rgba> {
+    match style {
+        Style::Plain | Style::Emphasis | Style::Strong => None,
+        Style::Heading => Some(rgb(ACCENT)),
+        Style::Code => Some(rgb(GREEN)),
+        Style::Link => Some(rgb(LINK)),
+        Style::Marker => Some(rgb(AMBER)),
+        Style::Quote => Some(rgb(MUTED)),
+    }
 }
 
 pub fn status_color(status: Status) -> u32 {

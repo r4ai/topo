@@ -256,37 +256,58 @@ impl TopoApp {
             .gap_4()
             .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(rgb(theme::FAINT)).child(hint))
             .child(stop_click(
-                pill().child(
-                    div()
-                        .id("priority-filter")
-                        .debug_selector(|| "priority-filter".to_owned())
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .h(px(24.))
-                        .px_2()
-                        .rounded_md()
-                        .whitespace_nowrap()
-                        .text_xs()
-                        .cursor_pointer()
-                        .text_color(rgb(if self.priority_filter.is_some() { theme::TEXT } else { theme::MUTED }))
-                        .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
-                        .child(match self.priority_filter {
-                            None => "Priority: all".to_owned(),
-                            Some(Priority::Urgent) => "Priority: urgent".to_owned(),
-                            Some(Priority::Low) => "Priority: any set".to_owned(),
-                            Some(least) => format!("Priority: {least} and up"),
-                        })
-                        .when(!self.compact, |d| d.child(kbd("⇧P")))
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.cycle_priority_filter();
-                            cx.notify();
-                        })),
-                ),
+                pill()
+                    .child(
+                        self.view_toggle("hide-completed", ("Hide done", "Hide"), "⇧H", self.view.hide_completed)
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.toggle_hide_completed();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        self.view_toggle("group-by-tag", ("Group by tag", "Group"), "⇧G", self.view.group_by_tag)
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.toggle_group_by_tag();
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().w(px(1.)).h(px(14.)).mx_0p5().bg(rgb(theme::BORDER)))
+                    .child(
+                        div()
+                            .id("priority-filter")
+                            .debug_selector(|| "priority-filter".to_owned())
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .h(px(24.))
+                            .px_2()
+                            .rounded_md()
+                            .whitespace_nowrap()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(rgb(if self.priority_filter.is_some() { theme::TEXT } else { theme::MUTED }))
+                            .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
+                            .child(match (self.priority_filter, self.compact) {
+                                (None, true) => "Priority".to_owned(),
+                                (None, false) => "Priority: all".to_owned(),
+                                (Some(Priority::Urgent), true) => "Urgent".to_owned(),
+                                (Some(Priority::Urgent), false) => "Priority: urgent".to_owned(),
+                                (Some(Priority::Low), true) => "Any set".to_owned(),
+                                (Some(Priority::Low), false) => "Priority: any set".to_owned(),
+                                (Some(least), true) => format!("{least}+"),
+                                (Some(least), false) => format!("Priority: {least} and up"),
+                            })
+                            .when(!self.compact, |d| d.child(kbd("⇧P")))
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.cycle_priority_filter();
+                                cx.notify();
+                            })),
+                    ),
             ))
             .child(stop_click(
                 pill()
                     .id("zoom")
+                    .debug_selector(|| "zoom".to_owned())
                     .child(icon_button("zoom-out", "−").on_click(cx.listener(|app, _, _, cx| {
                         app.zoom_by(0.8, app.canvas_center(), true);
                         cx.notify();
@@ -317,6 +338,33 @@ impl TopoApp {
                         cx.notify();
                     }))),
             ))
+    }
+
+    /// A switch in the bottom bar; lit while `on`. `label` is the full text and the compact one.
+    fn view_toggle(
+        &self,
+        id: &'static str,
+        label: (&'static str, &'static str),
+        key: &'static str,
+        on: bool,
+    ) -> Stateful<Div> {
+        div()
+            .id(id)
+            .debug_selector(|| id.to_owned())
+            .flex()
+            .items_center()
+            .gap_1()
+            .h(px(24.))
+            .px_2()
+            .rounded_md()
+            .whitespace_nowrap()
+            .text_xs()
+            .cursor_pointer()
+            .text_color(rgb(if on { theme::TEXT } else { theme::MUTED }))
+            .when(on, |d| d.bg(rgb(theme::RAISED)))
+            .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
+            .child(if self.compact { label.1 } else { label.0 })
+            .when(!self.compact, |d| d.child(kbd(key)))
     }
 
     fn node_chip(&self, prefix: &str, id: &NodeId) -> Div {
@@ -477,8 +525,28 @@ impl TopoApp {
         ))
     }
 
+    /// What the canvas says when the nodes exist but all of them are hidden.
+    pub(crate) fn all_hidden_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().absolute().size_full().flex().items_center().justify_center().child(stop_click(
+            div()
+                .id("all-hidden")
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_3()
+                .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Everything is done"))
+                .child(div().text_sm().text_color(rgb(theme::MUTED)).child("Done and dropped nodes are hidden."))
+                .child(button("show-completed", "Show them").child(kbd("⇧H")).on_click(cx.listener(
+                    |app, _, _, cx| {
+                        app.toggle_hide_completed();
+                        cx.notify();
+                    },
+                ))),
+        ))
+    }
+
     pub(crate) fn help_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let groups: [(&'static str, &'static [(&'static str, &'static str)]); 7] = [
+        let groups: [(&'static str, &'static [(&'static str, &'static str)]); 8] = [
             (
                 "Create",
                 &[
@@ -498,7 +566,7 @@ impl TopoApp {
                     ("P  A", "Priority / assignee, in the inspector"),
                     ("D  T", "Due date / tags, in the inspector"),
                     ("G", "Link a pull request"),
-                    ("E", "Edit the notes (⌘↵ saves, Esc discards)"),
+                    ("E", "Edit the notes (⌘↵ saves, Esc closes)"),
                     ("O", "Open the notes file in an editor"),
                     ("⌫", "Delete selected nodes"),
                 ],
@@ -521,7 +589,30 @@ impl TopoApp {
                     ("Esc", "Clear selection"),
                 ],
             ),
-            ("View", &[("F", "Fit graph"), ("+ −", "Zoom"), ("0", "Actual size"), ("⇧P", "Dim below a priority")]),
+            (
+                "View",
+                &[
+                    ("F", "Fit graph"),
+                    ("+ −", "Zoom"),
+                    ("0", "Actual size"),
+                    ("⇧P", "Dim below a priority"),
+                    ("⇧H", "Hide done and dropped nodes"),
+                    ("⇧G", "Group nodes by tag"),
+                ],
+            ),
+            (
+                "Notes editor",
+                &[
+                    ("⌘↵", "Save and close"),
+                    ("Esc", "Close; with changes, ask to save or discard"),
+                    ("Home  End", "Start / end of the line (⌘← ⌘→, ⌃A ⌃E)"),
+                    ("⌘↑  ⌘↓", "Start / end of the notes"),
+                    ("⌥←  ⌥→", "Previous / next word"),
+                    ("⇧ + any move", "Extend the selection"),
+                    ("Tab  ⇧Tab", "Indent / outdent the lines selected"),
+                    ("↵  ⇧↵", "New line, continuing a list / not"),
+                ],
+            ),
             (
                 "Standard shortcuts",
                 &[
@@ -565,7 +656,7 @@ impl TopoApp {
                 }),
             )
         };
-        let [create, edit, connect, nav, view, standard, mouse] = groups;
+        let [create, edit, connect, nav, view, notes, standard, mouse] = groups;
         div()
             .id("help")
             .absolute()
@@ -637,6 +728,7 @@ impl TopoApp {
                                     .gap_4()
                                     .child(group(nav))
                                     .child(group(view))
+                                    .child(group(notes))
                                     .child(group(mouse)),
                             ),
                     ),
