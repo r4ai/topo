@@ -12,7 +12,8 @@ use topo_core::{Graph, Kind, Node, NodeId, Status};
 
 use crate::inline::Field;
 use crate::layout::Band;
-use crate::theme::Theme;
+use crate::theme::{Theme, metrics};
+use crate::ui;
 use crate::{Drag, NODE_H, NODE_W, TopoApp, dates, layout, theme};
 
 /// How a card is emphasized in the current frame.
@@ -663,12 +664,11 @@ impl TopoApp {
             let on_focus = focus.as_ref().is_some_and(|f| f.contains(from) && f.contains(to));
             let on_critical = self.graph_cache.critical_edges.get(from).is_some_and(|targets| targets.contains(to));
             let (color, width) = match () {
-                _ if !emphasized(from) || !emphasized(to) => (theme::alpha(t.border_strong, 0.25), 1.),
-                _ if on_critical => (t.warn.into(), 2.5),
-                _ if on_focus && *membership => (theme::alpha(t.warn, 0.9), 2.),
-                _ if on_focus => (t.accent.into(), 2.),
-                _ if closed => (theme::alpha(t.border_strong, 0.7), 1.25),
-                _ if *membership => (theme::alpha(t.warn, 0.45), 1.25),
+                _ if !emphasized(from) || !emphasized(to) => (t.edge_dim.into(), 1.),
+                _ if on_critical => (t.emphasis.into(), 2.5),
+                _ if on_focus => (t.fg.into(), 2.),
+                _ if closed => (t.edge_closed.into(), 1.25),
+                _ if *membership => (t.edge.into(), 1.25),
                 _ => (t.edge.into(), 1.5),
             };
             EdgePaint {
@@ -693,7 +693,7 @@ impl TopoApp {
             let color = match &drop {
                 Some((_, _, false)) => t.danger,
                 Some(_) => t.success,
-                None => t.accent,
+                None => t.fg,
             };
             Some((anchor(*cells.get(source)?, true), *mouse, color))
         });
@@ -773,7 +773,7 @@ impl TopoApp {
                 (Some((_, label, true)), _) => (format!("↳ {label}"), t.success),
                 (Some((_, label, false)), _) => (format!("✕ {label}"), t.danger),
                 (None, Some(_)) => ("Drop on a node to connect, or on empty space".to_owned(), t.fg_muted),
-                (None, None) => ("+ New follow-up task".to_owned(), t.accent),
+                (None, None) => ("+ New follow-up task".to_owned(), t.fg),
             };
             div()
                 .absolute()
@@ -781,14 +781,14 @@ impl TopoApp {
                 .top(mouse.y + px(14.))
                 .px_2()
                 .py_1()
-                .rounded_md()
-                .bg(t.raised)
+                .rounded(px(metrics::R_SM))
+                .bg(t.overlay)
                 .border_1()
-                .border_color(theme::alpha(color, 0.6))
+                .border_color(t.hairline)
                 .text_color(color)
-                .text_xs()
+                .text_size(px(metrics::T_SMALL))
                 .whitespace_nowrap()
-                .shadow(theme::shadow())
+                .shadow(metrics::e2())
                 .child(text)
         });
 
@@ -882,18 +882,18 @@ impl TopoApp {
             .flex()
             .items_center()
             .gap(px(6. * z))
-            .rounded(px(6. * z))
-            .bg(t.surface)
+            .rounded(px(metrics::R_MD * z))
+            .bg(t.chrome)
             .border_1()
-            .border_color(t.border)
+            .border_color(t.hairline)
             .text_size(px(12. * z))
-            .text_color(t.fg_muted)
+            .text_color(t.fg_faint)
             .whitespace_nowrap()
             .cursor_pointer()
-            .hover(|s| s.text_color(t.fg).border_color(t.border_strong))
+            .hover(|s| s.border_color(t.border_strong))
             .child(if collapsed { "▸" } else { "▾" })
             .child(div().text_color(t.fg).child(group.label()))
-            .child(div().text_color(t.fg_faint).child(count.to_string()))
+            .child(div().text_color(t.fg_muted).child(count.to_string()))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.toggle_group(&toggled);
@@ -919,11 +919,10 @@ impl TopoApp {
         let border: Hsla = match (state.drop, state.selected || state.cursor) {
             (Some(true), _) => t.success.into(),
             (Some(false), _) => t.danger.into(),
-            (None, true) => t.accent.into(),
-            _ if state.critical => theme::alpha(t.warn, 0.8),
-            _ if milestone => theme::alpha(t.warn, 0.45),
-            _ if state.hovered => t.border_strong.into(),
-            _ => t.border.into(),
+            (None, true) => t.emphasis.into(),
+            _ if state.critical => t.fg_muted.into(),
+            _ if milestone || state.hovered => t.border_strong.into(),
+            _ => t.hairline.into(),
         };
         let bg = match (milestone, state.hovered) {
             (true, false) => t.card_milestone,
@@ -951,7 +950,7 @@ impl TopoApp {
                 .text_size(px(13. * z))
                 .child(icon)
                 .when(!milestone, |d| {
-                    d.hover(|s| s.bg(t.raised)).on_mouse_down(
+                    d.hover(|s| s.bg(t.control_hover)).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |app, _, _, cx| {
                             cx.stop_propagation();
@@ -964,26 +963,31 @@ impl TopoApp {
             .flex_1()
             .min_w(px(0.))
             .truncate()
+            .text_color(t.fg)
             .when(milestone, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
             .when(node.status == Status::Done, |d| d.line_through().text_color(t.fg_muted))
             .when(node.status == Status::Dropped, |d| d.line_through().text_color(t.fg_faint))
             .child(node.title.clone());
 
-        let mini = |label: String, color: Rgba| {
-            div()
-                .flex_shrink_0()
-                .px(px(5. * z))
-                .rounded(px(3. * z))
-                .bg(theme::alpha(color, 0.15))
-                .text_color(color)
-                .child(label)
+        let mini = |label: String, color: Rgba, fill: Hsla| {
+            div().flex_shrink_0().px(px(5. * z)).rounded(px(3. * z)).bg(fill).text_color(color).child(label)
         };
+        let neutral: Hsla = t.control.into();
         let due = node.due.map(|d| {
             let color = if closed { t.fg_faint } else { dates::urgency_color(d, today) };
-            div().flex_shrink_0().text_color(color).child(format!("⏱ {}", dates::short(d, today)))
+            let label = format!("⏱ {}", dates::short(d, today));
+            match color == t.danger || color == t.warn {
+                true => mini(label, color, theme::alpha(color, 0.14)),
+                false => div().flex_shrink_0().text_color(color).child(label),
+            }
         });
         // Named with a glyph as well as colored. Tags give way to it and to the assignee.
-        let priority = node.priority.map(|p| mini(theme::priority_text(p), theme::priority_color(p)));
+        let priority = node.priority.map(|p| {
+            let color = theme::priority_color(p);
+            let fill = if color == t.danger { theme::alpha(color, 0.14) } else { neutral };
+            mini(theme::priority_text(p), color, fill)
+                .when(p == topo_core::Priority::High, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+        });
         let assignee = node.assignee.as_ref().map(|a| div().min_w(px(0.)).truncate().child(format!("@{a}")));
         let tags = 2usize.saturating_sub(usize::from(priority.is_some()) + usize::from(assignee.is_some()));
         let meta = div()
@@ -998,19 +1002,24 @@ impl TopoApp {
             Kind::Milestone => {
                 let (done, total) = self.graph_cache.progress[&node.id];
                 let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
-                let color = if closed || (total > 0 && done == total) { t.success } else { t.warn };
-                meta.child(theme::progress_bar(fraction, color, 4. * z))
-                    .child(div().flex_shrink_0().text_color(t.fg_muted).child(format!("{done}/{total}")))
+                let complete = closed || (total > 0 && done == total);
+                meta.child(ui::progress_bar(fraction, complete, 4. * z))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(if complete { t.fg } else { t.fg_muted })
+                            .child(format!("{done}/{total}")),
+                    )
                     .children(priority)
                     .children(due)
             }
             Kind::Task => {
                 let open_reqs = self.graph_cache.open_requirements[&node.id];
                 let status = match node.status {
-                    Status::Doing => mini("In progress".into(), t.accent),
-                    Status::Done => mini("Done".into(), t.success),
-                    Status::Dropped => mini("Dropped".into(), t.fg_faint),
-                    Status::Todo if open_reqs == 0 => mini("Ready".into(), t.success),
+                    Status::Doing => mini("In progress".into(), t.on_emphasis, t.emphasis.into()),
+                    Status::Done => mini("Done".into(), t.fg_faint, neutral),
+                    Status::Dropped => mini("Dropped".into(), t.fg_faint, neutral),
+                    Status::Todo if open_reqs == 0 => mini("Ready".into(), t.fg, neutral),
                     Status::Todo => div().flex_shrink_0().child(format!("Blocked by {open_reqs}")),
                 };
                 meta.child(status)
@@ -1030,11 +1039,11 @@ impl TopoApp {
                 .top(px((NODE_H / 2. - 7.) * z))
                 .size(px(14. * z))
                 .rounded_full()
-                .bg(t.bg)
+                .bg(t.card)
                 .border_2()
-                .border_color(t.accent)
+                .border_color(t.emphasis)
                 .cursor(CursorStyle::Crosshair)
-                .hover(|s| s.bg(t.accent))
+                .hover(|s| s.bg(t.emphasis))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |app, ev: &MouseDownEvent, _, cx| {
@@ -1055,11 +1064,11 @@ impl TopoApp {
             .gap(px(6. * z))
             .pl(px(10. * z))
             .pr(px(12. * z))
-            .rounded(px(if milestone { 14. } else { 8. } * z))
+            .rounded(px(if milestone { 16. } else { 10. } * z))
             .border_2()
             .border_color(border)
             .bg(bg)
-            .when(state.selected, |d| d.shadow(theme::shadow()))
+            .when(state.selected, |d| d.shadow(metrics::e1()))
             .text_size(px(13. * z))
             .cursor_pointer()
             .child(div().flex().items_center().gap(px(6. * z)).child(check).child(title))
