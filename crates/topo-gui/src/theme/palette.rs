@@ -13,51 +13,123 @@ const fn hex(rgb: u32, a: f32) -> Rgba {
 }
 
 pub static DARK: Theme = Theme {
-    bg: hex(0x111216, 1.0),
-    surface: hex(0x17181d, 1.0),
-    card: hex(0x1e1f26, 1.0),
-    card_hover: hex(0x25262f, 1.0),
-    card_milestone: hex(0x221f1b, 1.0),
-    card_milestone_hover: hex(0x2a2620, 1.0),
-    raised: hex(0x2a2c36, 1.0),
-    border: hex(0x2b2d37, 1.0),
-    border_strong: hex(0x3b3e4a, 1.0),
-    fg: hex(0xe8e9ee, 1.0),
-    fg_muted: hex(0x9b9dab, 1.0),
-    fg_faint: hex(0x626574, 1.0),
-    accent: hex(0x6ea8fe, 1.0),
-    success: hex(0x4cc38a, 1.0),
-    warn: hex(0xf5b949, 1.0),
-    danger: hex(0xf2555a, 1.0),
-    grid_dot: hex(0x24262e, 1.0),
-    link: hex(0x5ad1e6, 1.0),
-    edge: hex(0x565a68, 1.0),
-    scrim: hex(0x000000, 0.55),
-    selection: hex(0x6ea8fe, 0x44 as f32 / 255.0),
-    shadow: hex(0x000000, 0.45),
+    bg: hex(0x0f0f11, 1.0),
+    glass_alpha: 0.78,
+    chrome: hex(0xffffff, 0.035),
+    card: hex(0x1a1a1d, 1.0),
+    card_hover: hex(0x212125, 1.0),
+    card_milestone: hex(0x222226, 1.0),
+    card_milestone_hover: hex(0x2a2a2f, 1.0),
+    overlay: hex(0x1e1e22, 0.97),
+    control: hex(0xffffff, 0.06),
+    control_hover: hex(0xffffff, 0.1),
+    control_active: hex(0xffffff, 0.16),
+    field: hex(0x000000, 0.25),
+    hairline: hex(0xffffff, 0.08),
+    border_strong: hex(0xffffff, 0.16),
+    highlight: hex(0xffffff, 0.1),
+    fg: hex(0xf2f2f3, 1.0),
+    fg_muted: hex(0xa0a0a8, 1.0),
+    fg_faint: hex(0x6a6a73, 1.0),
+    emphasis: hex(0xffffff, 1.0),
+    on_emphasis: hex(0x0f0f11, 1.0),
+    selection: hex(0xffffff, 0.22),
+    danger: hex(0xff6b6b, 1.0),
+    warn: hex(0xf0b445, 1.0),
+    success: hex(0x5fd39a, 1.0),
+    edge: hex(0xffffff, 0.28),
+    edge_closed: hex(0xffffff, 0.14),
+    edge_dim: hex(0xffffff, 0.07),
+    grid_dot: hex(0xffffff, 0.055),
+    scrim: hex(0x000000, 0.5),
+    shadow: hex(0x000000, 0.5),
+    // Legacy names, removed once every view is migrated.
+    surface: hex(0xffffff, 0.035),
+    raised: hex(0xffffff, 0.1),
+    border: hex(0xffffff, 0.08),
+    accent: hex(0xffffff, 1.0),
+    link: hex(0xf2f2f3, 1.0),
 };
 
 pub static LIGHT: Theme = Theme {
     bg: hex(0xf2f2f4, 1.0),
-    surface: hex(0xf7f7f8, 1.0),
+    glass_alpha: 0.72,
+    chrome: hex(0xffffff, 0.55),
     card: hex(0xffffff, 1.0),
     card_hover: hex(0xfafafb, 1.0),
     card_milestone: hex(0xececef, 1.0),
     card_milestone_hover: hex(0xe4e4e8, 1.0),
-    raised: hex(0xe6e6ea, 1.0),
-    border: hex(0xe0e0e4, 1.0),
-    border_strong: hex(0xc8c8ce, 1.0),
+    overlay: hex(0xffffff, 0.97),
+    control: hex(0x000000, 0.04),
+    control_hover: hex(0x000000, 0.07),
+    control_active: hex(0x000000, 0.12),
+    field: hex(0xffffff, 0.9),
+    hairline: hex(0x000000, 0.08),
+    border_strong: hex(0x000000, 0.16),
+    highlight: hex(0xffffff, 0.9),
     fg: hex(0x18181b, 1.0),
     fg_muted: hex(0x5c5c66, 1.0),
     fg_faint: hex(0x8a8a93, 1.0),
-    accent: hex(0x111113, 1.0),
-    success: hex(0x1a8f59, 1.0),
-    warn: hex(0xb7791f, 1.0),
-    danger: hex(0xd92d2d, 1.0),
-    grid_dot: hex(0xdcdce0, 1.0),
-    link: hex(0x18181b, 1.0),
-    edge: hex(0xb0b0b8, 1.0),
-    scrim: hex(0x000000, 0.25),
+    emphasis: hex(0x111113, 1.0),
+    on_emphasis: hex(0xffffff, 1.0),
     selection: hex(0x000000, 0.16),
+    danger: hex(0xd92d2d, 1.0),
+    warn: hex(0xb7791f, 1.0),
+    success: hex(0x1a8f59, 1.0),
+    edge: hex(0x000000, 0.3),
+    edge_closed: hex(0x000000, 0.14),
+    edge_dim: hex(0x000000, 0.07),
+    grid_dot: hex(0x000000, 0.08),
+    scrim: hex(0x000000, 0.25),
     shadow: hex(0x000000, 0.14),
+    // Legacy names, removed once every view is migrated.
+    surface: hex(0xffffff, 0.55),
+    raised: hex(0x000000, 0.07),
+    border: hex(0x000000, 0.08),
+    accent: hex(0x111113, 1.0),
+    link: hex(0x18181b, 1.0),
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn linear(c: f32) -> f32 {
+        if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    }
+
+    fn luminance(c: Rgba) -> f32 {
+        0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b)
+    }
+
+    /// `top` composited over the opaque `under`.
+    fn over(top: Rgba, under: Rgba) -> Rgba {
+        let mix = |t: f32, u: f32| t * top.a + u * (1. - top.a);
+        Rgba { r: mix(top.r, under.r), g: mix(top.g, under.g), b: mix(top.b, under.b), a: 1. }
+    }
+
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn text_and_alarm_colors_meet_their_contrast_floors() {
+        for (name, t) in [("dark", &DARK), ("light", &LIGHT)] {
+            for (surface, bg) in [("bg", t.bg), ("card", t.card), ("overlay", over(t.overlay, t.bg))] {
+                let floors = [
+                    ("fg", t.fg, 7.),
+                    ("fg_muted", t.fg_muted, 4.5),
+                    ("fg_faint", t.fg_faint, 3.),
+                    ("danger", t.danger, 3.),
+                    ("warn", t.warn, 3.),
+                    ("success", t.success, 3.),
+                ];
+                for (role, color, floor) in floors {
+                    let ratio = contrast(color, bg);
+                    assert!(ratio >= floor, "{name} {role} on {surface}: {ratio:.2} < {floor}");
+                }
+            }
+        }
+    }
+}

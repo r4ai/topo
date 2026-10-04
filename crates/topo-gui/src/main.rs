@@ -30,6 +30,7 @@ mod repository;
 mod screenshot;
 mod text_input;
 mod theme;
+mod ui;
 
 use futures::channel::mpsc;
 use std::cell::Cell;

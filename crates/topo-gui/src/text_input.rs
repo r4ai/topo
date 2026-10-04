@@ -1145,7 +1145,7 @@ mod tests {
         let runs: Vec<TextRun> = markdown::highlight(text).iter().map(|span| styled(&run(0), *span)).collect();
         assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
         assert_eq!(runs[0].font.weight, FontWeight::SEMIBOLD);
-        assert_eq!(runs[0].color, theme::accent().into());
+        assert_eq!(runs[0].color, theme::current().emphasis.into());
         assert!(runs.iter().any(|run| run.font.style == FontStyle::Italic));
         assert!(runs.iter().all(|run| run.underline.is_none()));
     }

@@ -2,11 +2,13 @@
 
 use std::cell::Cell;
 
-use gpui::{BoxShadow, Div, Hsla, Rgba, SharedString, Stateful, Styled, div, point, prelude::*, px};
+use gpui::{BoxShadow, Div, Hsla, Rgba, SharedString, Stateful, Styled, div, prelude::*, px};
 use topo_core::{Kind, Node, Priority, Status};
 
 use crate::markdown::Style;
+use crate::ui;
 
+pub mod metrics;
 mod mode;
 mod palette;
 #[cfg(test)]
@@ -18,27 +20,41 @@ pub use mode::{ThemeDark, ThemeLight, ThemeMode, ThemeSystem, apply, init, mode,
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
     pub bg: Rgba,
-    pub surface: Rgba,
+    pub glass_alpha: f32,
+    pub chrome: Rgba,
     pub card: Rgba,
     pub card_hover: Rgba,
     pub card_milestone: Rgba,
     pub card_milestone_hover: Rgba,
-    pub raised: Rgba,
-    pub border: Rgba,
+    pub overlay: Rgba,
+    pub control: Rgba,
+    pub control_hover: Rgba,
+    pub control_active: Rgba,
+    pub field: Rgba,
+    pub hairline: Rgba,
     pub border_strong: Rgba,
+    pub highlight: Rgba,
     pub fg: Rgba,
     pub fg_muted: Rgba,
     pub fg_faint: Rgba,
-    pub accent: Rgba,
-    pub success: Rgba,
-    pub warn: Rgba,
-    pub danger: Rgba,
-    pub grid_dot: Rgba,
-    pub link: Rgba,
-    pub edge: Rgba,
-    pub scrim: Rgba,
+    pub emphasis: Rgba,
+    pub on_emphasis: Rgba,
     pub selection: Rgba,
+    pub danger: Rgba,
+    pub warn: Rgba,
+    pub success: Rgba,
+    pub edge: Rgba,
+    pub edge_closed: Rgba,
+    pub edge_dim: Rgba,
+    pub grid_dot: Rgba,
+    pub scrim: Rgba,
     pub shadow: Rgba,
+    // Legacy names, removed once every view is migrated.
+    pub surface: Rgba,
+    pub raised: Rgba,
+    pub border: Rgba,
+    pub accent: Rgba,
+    pub link: Rgba,
 }
 
 thread_local! {
@@ -54,7 +70,7 @@ pub fn faint() -> Rgba {
 }
 
 pub fn accent() -> Rgba {
-    current().accent
+    current().emphasis
 }
 
 pub fn selection() -> Rgba {
@@ -73,10 +89,10 @@ pub fn markdown_color(style: Style) -> Option<Rgba> {
     let t = current();
     match style {
         Style::Plain | Style::Emphasis | Style::Strong => None,
-        Style::Heading => Some(t.accent),
-        Style::Code => Some(t.success),
-        Style::Link => Some(t.link),
-        Style::Marker => Some(t.warn),
+        Style::Heading => Some(t.emphasis),
+        Style::Code => Some(t.fg_muted),
+        Style::Link => Some(t.fg),
+        Style::Marker => Some(t.fg_faint),
         Style::Quote => Some(t.fg_muted),
     }
 }
@@ -85,8 +101,8 @@ pub fn status_color(status: Status) -> Rgba {
     let t = current();
     match status {
         Status::Todo => t.fg_muted,
-        Status::Doing => t.accent,
-        Status::Done => t.success,
+        Status::Doing => t.emphasis,
+        Status::Done => t.fg_faint,
         Status::Dropped => t.fg_faint,
     }
 }
@@ -113,9 +129,9 @@ pub fn priority_color(priority: Priority) -> Rgba {
     let t = current();
     match priority {
         Priority::Urgent => t.danger,
-        Priority::High => t.warn,
-        Priority::Medium => t.accent,
-        Priority::Low => t.fg_muted,
+        Priority::High => t.fg,
+        Priority::Medium => t.fg_muted,
+        Priority::Low => t.fg_faint,
     }
 }
 
@@ -143,133 +159,62 @@ pub fn priority_text(priority: Priority) -> String {
 pub fn node_icon(node: &Node) -> (&'static str, Rgba) {
     let t = current();
     match node.kind {
-        Kind::Milestone if node.status.is_closed() => ("◆", t.success),
-        Kind::Milestone => ("◆", t.warn),
+        Kind::Milestone if node.status.is_closed() => ("◆", t.fg_faint),
+        Kind::Milestone => ("◆", t.fg),
         Kind::Task => (status_icon(node.status), status_color(node.status)),
     }
 }
 
+/// The shadow of a selected card; an alias of `metrics::e1`.
 pub fn shadow() -> Vec<BoxShadow> {
-    vec![BoxShadow {
-        color: current().shadow.into(),
-        offset: point(px(0.), px(8.)),
-        blur_radius: px(24.),
-        spread_radius: px(0.),
-        inset: false,
-    }]
+    metrics::e1()
 }
 
 /// A small text button.
 pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
-    let t = current();
-    styled_button(id, label, t.fg.into(), t.raised.into(), t.border_strong.into())
+    ui::button(id, label)
 }
 
 /// A small text button tinted with `color`, e.g. for destructive actions.
 pub fn tinted_button(id: impl Into<SharedString>, label: impl Into<SharedString>, color: Rgba) -> Stateful<Div> {
-    styled_button(id, label, color.into(), alpha(color, 0.15), alpha(color, 0.5))
-}
-
-fn styled_button(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    text: Hsla,
-    hover_bg: Hsla,
-    hover_border: Hsla,
-) -> Stateful<Div> {
-    let id = id.into();
-    let t = current();
-    div()
-        .id(id.clone())
-        .debug_selector(|| id.to_string())
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .gap_1p5()
-        .whitespace_nowrap()
-        .h(px(26.))
-        .px_2p5()
-        .rounded_md()
-        .border_1()
-        .border_color(t.border)
-        .bg(t.card)
-        .text_color(text)
-        .text_xs()
-        .hover(move |s| s.bg(hover_bg).border_color(hover_border))
-        .active(move |s| s.bg(t.border_strong))
-        .cursor_pointer()
-        .child(label.into())
+    match color == current().danger {
+        true => ui::button_danger(id, label),
+        false => ui::button(id, label).text_color(color),
+    }
 }
 
 /// A borderless square button showing a single glyph.
 pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) -> Stateful<Div> {
-    let id = id.into();
-    let t = current();
-    div()
-        .id(id.clone())
-        .debug_selector(|| id.to_string())
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .size(px(22.))
-        .rounded_md()
-        .text_color(t.fg_muted)
-        .text_sm()
-        .hover(move |s| s.bg(t.raised).text_color(t.fg))
-        .cursor_pointer()
-        .child(glyph.into())
+    ui::icon_button(id, glyph)
 }
 
 /// A keyboard shortcut hint such as `⌘Z`.
 pub fn kbd(keys: impl Into<SharedString>) -> Div {
-    let t = current();
-    div()
-        .flex_shrink_0()
-        .px_1()
-        .min_w(px(16.))
-        .flex()
-        .justify_center()
-        .rounded_sm()
-        .border_1()
-        .border_color(t.border_strong)
-        .bg(t.surface)
-        .text_color(t.fg_muted)
-        .text_size(px(10.))
-        .child(keys.into())
+    ui::kbd(keys)
 }
 
 /// Small uppercase heading above a group of rows.
 pub fn section_label(label: impl Into<SharedString>) -> Div {
-    div()
-        .pt_3()
-        .pb_1()
-        .text_size(px(10.))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(current().fg_faint)
-        .child(label.into())
+    ui::section_label(label)
 }
 
-/// A rounded tinted label.
+/// A rounded label; alarm colors tint it, the emphasis color fills it, any other color only sets the text.
 pub fn chip(label: impl Into<SharedString>, color: Rgba) -> Div {
-    div()
-        .flex_shrink_0()
-        .px_1p5()
-        .rounded_sm()
-        .bg(alpha(color, 0.14))
-        .text_color(color)
-        .text_size(px(10.))
-        .child(label.into())
+    let t = current();
+    match color {
+        c if c == t.danger || c == t.warn || c == t.success => ui::chip_tinted(label, c),
+        c if c == t.emphasis => ui::chip_emphasis(label),
+        c => ui::chip(label).text_color(c),
+    }
 }
 
 /// Horizontal progress bar filled to `fraction` (0..=1).
 pub fn progress_bar(fraction: f32, color: Rgba, height: f32) -> Div {
-    let t = current();
     div()
         .flex_1()
         .h(px(height))
         .rounded_full()
-        .bg(t.border)
+        .bg(current().control)
         .overflow_hidden()
         .child(div().h_full().w(gpui::relative(fraction.clamp(0., 1.))).rounded_full().bg(color))
 }
