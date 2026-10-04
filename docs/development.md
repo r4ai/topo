@@ -142,6 +142,7 @@ Key options:
 - `--edit-notes`: Open notes editor; requires `--select` and cannot be combined with `--edit`
 - `--search <query>`: Open search bar with query
 - `--help-overlay`: Open keyboard shortcut cheatsheet
+- `--theme <dark|light>`: Render with this theme (default: dark)
 
 ## Release Process
 

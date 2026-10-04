@@ -105,6 +105,14 @@ impl RepositoryWindow {
             load_task: None,
             subscription: None,
         };
+        // `System` follows the OS: redraw when its appearance flips.
+        cx.observe_window_appearance(window, |_, window, cx| {
+            if theme::mode() == theme::ThemeMode::System {
+                theme::apply(theme::ThemeMode::System, window.appearance());
+                cx.refresh_windows();
+            }
+        })
+        .detach();
         app.open_selection(start.into(), false, window, cx);
         app
     }
@@ -279,6 +287,8 @@ impl RepositoryWindow {
         self.editor = Some(new);
         self.config.inspector_width = width;
         (self.config.hide_completed, self.config.group_by_tag) = (view.hide_completed, view.group_by_tag);
+        // Another window may have changed the mode since this copy was loaded.
+        self.config.theme = theme::mode();
         self.config.remember(dir);
         #[cfg(not(test))]
         if let Err(e) = self.config.save() {
@@ -571,6 +581,23 @@ mod tests {
         });
         assert_eq!(new.read_with(cx, |app, _| app.graph().get(&NodeId("same".into())).unwrap().title.clone()), "local");
     }
+
+    #[gpui::test]
+    fn installing_a_workspace_keeps_the_chosen_theme_in_the_config(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        workspace(dir.path(), "first");
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            RepositoryWindow::new(dir.path().to_owned(), UserConfig::default(), window, cx)
+        });
+        cx.run_until_parked();
+        // The window's copy still says `System` when the user picks another mode.
+        theme::apply(theme::ThemeMode::Light, gpui::WindowAppearance::Dark);
+        let next = tempfile::tempdir().unwrap();
+        let ws = workspace(next.path(), "next");
+        shell.update_in(cx, |app, window, cx| app.install(ws, window, cx).unwrap());
+        assert_eq!(shell.read_with(cx, |app, _| app.config.theme), theme::ThemeMode::Light);
+    }
+
     #[gpui::test]
     fn view_toggles_come_from_the_config_and_follow_the_user_to_the_next_workspace(cx: &mut TestAppContext) {
         let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());

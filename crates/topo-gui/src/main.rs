@@ -1484,6 +1484,46 @@ fn main() -> Result<()> {
     run(start, config)
 }
 
+/// The native menu bar, with a check mark on the chosen theme mode.
+fn menus(mode: theme::ThemeMode) -> Vec<Menu> {
+    use theme::ThemeMode;
+    vec![
+        Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)], disabled: false },
+        Menu {
+            name: "File".into(),
+            items: vec![MenuItem::action("Open Repository…", repository::OpenRepository)],
+            disabled: false,
+        },
+        // Each item acts on the text of a focused field, and on the graph otherwise.
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", text_input::Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", text_input::Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", text_input::Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", text_input::Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", text_input::Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", text_input::SelectAll, OsAction::SelectAll),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![MenuItem::submenu(Menu {
+                name: "Appearance".into(),
+                items: vec![
+                    MenuItem::action("System", theme::ThemeSystem).checked(mode == ThemeMode::System),
+                    MenuItem::action("Light", theme::ThemeLight).checked(mode == ThemeMode::Light),
+                    MenuItem::action("Dark", theme::ThemeDark).checked(mode == ThemeMode::Dark),
+                ],
+                disabled: false,
+            })],
+            disabled: false,
+        },
+    ]
+}
+
 fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
     let title: SharedString = "topo — Open repository".into();
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx: &mut App| {
@@ -1496,28 +1536,9 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
             KeyBinding::new("cmd-o", repository::OpenRepository, None),
             KeyBinding::new("ctrl-o", repository::OpenRepository, None),
         ]);
-        cx.set_menus(vec![
-            Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)], disabled: false },
-            Menu {
-                name: "File".into(),
-                items: vec![MenuItem::action("Open Repository…", repository::OpenRepository)],
-                disabled: false,
-            },
-            // Each item acts on the text of a focused field, and on the graph otherwise.
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::os_action("Undo", text_input::Undo, OsAction::Undo),
-                    MenuItem::os_action("Redo", text_input::Redo, OsAction::Redo),
-                    MenuItem::separator(),
-                    MenuItem::os_action("Cut", text_input::Cut, OsAction::Cut),
-                    MenuItem::os_action("Copy", text_input::Copy, OsAction::Copy),
-                    MenuItem::os_action("Paste", text_input::Paste, OsAction::Paste),
-                    MenuItem::os_action("Select All", text_input::SelectAll, OsAction::SelectAll),
-                ],
-                disabled: false,
-            },
-        ]);
+        theme::init(cx);
+        theme::apply(config.theme, cx.window_appearance());
+        cx.set_menus(menus(config.theme));
         let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         let options = WindowOptions {
             app_id: Some("dev.r4ai.topo".into()),

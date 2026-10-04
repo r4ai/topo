@@ -7,7 +7,12 @@ use topo_core::{Kind, Node, Priority, Status};
 
 use crate::markdown::Style;
 
+mod mode;
 mod palette;
+#[cfg(test)]
+pub(crate) use palette::{DARK, LIGHT};
+
+pub use mode::{ThemeDark, ThemeLight, ThemeMode, ThemeSystem, apply, init, mode, set_mode};
 
 /// Every color the UI draws with.
 #[derive(Debug, Clone, Copy, PartialEq)]

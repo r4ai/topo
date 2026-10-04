@@ -80,6 +80,17 @@ pub struct Args {
     /// Tags (or `untagged`) whose groups are collapsed in the capture
     #[arg(long, requires = "group_by_tag", value_name = "TAG", value_delimiter = ',', value_parser = node_id)]
     pub collapse: Vec<String>,
+
+    /// Capture with this theme; never read from the saved preference
+    #[arg(long, requires = "screenshot", value_enum, default_value_t = CaptureTheme::Dark)]
+    pub theme: CaptureTheme,
+}
+
+/// The themes a capture can be rendered with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CaptureTheme {
+    Dark,
+    Light,
 }
 
 /// A length in whole points that the renderer can allocate a texture for.
@@ -130,6 +141,14 @@ mod tests {
         assert!(parse(&["--width", "800"]).is_err());
         assert!(parse(&["--help-overlay"]).is_err());
         assert!(parse(&["--screenshot", "o.png", "--select", "a,,b"]).is_err());
+    }
+
+    #[test]
+    fn the_capture_theme_defaults_to_dark_and_needs_a_capture() {
+        assert_eq!(parse(&["--screenshot", "o.png"]).unwrap().theme, CaptureTheme::Dark);
+        assert_eq!(parse(&["--screenshot", "o.png", "--theme", "light"]).unwrap().theme, CaptureTheme::Light);
+        assert!(parse(&["--screenshot", "o.png", "--theme", "bogus"]).is_err());
+        assert!(parse(&["--theme", "light"]).is_err());
     }
 
     #[test]

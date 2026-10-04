@@ -11,13 +11,20 @@ use anyhow::{Context as _, Result};
 use gpui::{AppContext as _, Entity, VisualTestAppContext, px, size};
 use topo_core::Workspace;
 
-use crate::args::Args;
+use crate::args::{Args, CaptureTheme};
+use crate::theme::{self, ThemeMode};
 use crate::{TopoApp, text_input};
 
 /// Renders one frame of the editor for `ws` to `path`, as `options` steers it.
 ///
 /// Must run on the macOS main thread, like every AppKit interaction.
 pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
+    // A capture is reproducible: it takes the theme from the flag, never from the saved preference.
+    let mode = match options.theme {
+        CaptureTheme::Dark => ThemeMode::Dark,
+        CaptureTheme::Light => ThemeMode::Light,
+    };
+    theme::apply(mode, gpui::WindowAppearance::default());
     let platform = gpui_platform::current_platform(false);
     let mut cx = VisualTestAppContext::new(platform);
     cx.update(text_input::bind_keys);

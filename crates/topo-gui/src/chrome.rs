@@ -189,6 +189,11 @@ impl TopoApp {
             .child(div().w(px(1.)).h(px(20.)).bg(t.border))
             .child(history("undo", "↩\u{fe0e}", true, !self.undo.is_empty(), cx))
             .child(history("redo", "↪\u{fe0e}", false, !self.redo.is_empty(), cx))
+            .child(icon_button("theme", theme_glyph(theme::mode())).on_click(cx.listener(|app, _, _, cx| {
+                let mode = theme::mode().next();
+                theme::set_mode(mode, cx);
+                app.toast(format!("Theme: {}", mode.label()), false, cx);
+            })))
             .child(icon_button("help", "?").on_click(cx.listener(|app, _, _, cx| {
                 app.show_help = !app.show_help;
                 cx.notify();
@@ -737,5 +742,14 @@ impl TopoApp {
                             ),
                     ),
             )
+    }
+}
+
+/// The toolbar glyph that shows `mode`.
+fn theme_glyph(mode: theme::ThemeMode) -> &'static str {
+    match mode {
+        theme::ThemeMode::System => "◐",
+        theme::ThemeMode::Light => "☀",
+        theme::ThemeMode::Dark => "☾",
     }
 }

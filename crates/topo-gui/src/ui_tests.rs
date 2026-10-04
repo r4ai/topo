@@ -8,7 +8,7 @@ use topo_core::{Edit, Graph, Kind, Node, NodeId, Priority, Status, Workspace};
 
 use crate::gesture::Gesture;
 use crate::inline::Field;
-use crate::{NODE_H, NODE_W, Prompt, TopoApp, layout::Group, text_input};
+use crate::{NODE_H, NODE_W, Prompt, TopoApp, layout::Group, text_input, theme};
 
 fn id(s: &str) -> NodeId {
     NodeId(s.into())
@@ -32,7 +32,10 @@ fn open<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])]
     });
     ws.graph = Graph::from_nodes(nodes).unwrap();
     ws.save().unwrap();
-    cx.update(text_input::bind_keys);
+    cx.update(|cx| {
+        text_input::bind_keys(cx);
+        theme::init(cx);
+    });
     let (app, cx) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
     let mut ui = Ui { app, cx, _dir: dir };
     ui.resize(1360., 860.);
@@ -2065,4 +2068,17 @@ fn quitting_with_unsaved_notes_asks_and_then_quits(cx: &mut TestAppContext) {
     ui.keys("enter");
     assert_eq!(ui.node("a").body, "x\n");
     assert_eq!(ui.read(|app| app.notes.clone()), None);
+}
+
+#[gpui::test]
+fn the_toolbar_button_cycles_the_theme_mode(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    // The test platform reports a light appearance, so `System` resolves to the light theme.
+    assert_eq!(theme::mode(), theme::ThemeMode::Dark);
+    ui.click_on("theme");
+    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::System, &theme::LIGHT));
+    ui.click_on("theme");
+    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Light, &theme::LIGHT));
+    ui.click_on("theme");
+    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Dark, &theme::DARK));
 }
