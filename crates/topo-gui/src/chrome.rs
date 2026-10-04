@@ -3,7 +3,11 @@
 use gpui::{AnyElement, App, Context, Div, MouseButton, Rgba, SharedString, Stateful, div, prelude::*, px};
 use topo_core::{Kind, NodeId, Priority};
 
-use crate::theme::{self, button, icon_button, kbd};
+use crate::theme::{
+    self,
+    metrics::{H_ICON, R_LG, R_SM, R_XL, T_BODY_LG, T_HEADING, T_SMALL, T_TITLE},
+};
+use crate::ui::{self, Elevation};
 use crate::{NewNode, OrganizeKind, Prompt, TopoApp};
 
 /// Swallows clicks so they do not reach the canvas underneath.
@@ -33,14 +37,14 @@ impl TopoApp {
             .whitespace_nowrap()
             .h(px(24.))
             .px_2()
-            .rounded_md()
-            .text_xs()
-            .text_color(t.fg_muted)
+            .rounded(px(R_SM))
+            .text_size(px(T_SMALL))
+            .text_color(if color == t.danger { t.danger } else { t.fg_muted })
             .child(div().text_color(color).child(icon))
             .child(text)
             .when(clickable, |d| {
                 d.cursor_pointer()
-                    .hover(|s| s.bg(t.raised).text_color(t.fg))
+                    .hover(|s| s.bg(t.control_hover).text_color(if color == t.danger { t.danger } else { t.fg }))
                     .on_click(cx.listener(move |app, _, _, cx| app.select_nodes(&ids, cx)))
             })
     }
@@ -68,26 +72,37 @@ impl TopoApp {
             .map_or("workspace".into(), |n| n.to_string_lossy().into_owned());
 
         let organize = |id: &'static str, label: &'static str, what: OrganizeKind, cx: &mut Context<Self>| {
-            button(id, if self.busy { "✦ Thinking…" } else { label })
+            ui::button_ghost(id, if self.busy { "✦ Thinking…" } else { label })
                 .when(self.busy, |b| b.opacity(0.6).cursor_default())
                 .on_click(cx.listener(move |app, _, _, cx| app.run_organize(what, cx)))
         };
         let history = |id: &'static str, glyph: &'static str, undo: bool, enabled: bool, cx: &mut Context<Self>| {
-            icon_button(id, glyph)
-                .when(!enabled, |b| b.opacity(0.35).cursor_default())
-                .on_click(cx.listener(move |app, _, _, cx| app.restore(undo, cx)))
+            match enabled {
+                true => ui::icon_button(id, glyph),
+                false => div()
+                    .id(id)
+                    .debug_selector(|| id.to_owned())
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .size(px(H_ICON))
+                    .text_sm()
+                    .text_color(t.fg_faint)
+                    .child(glyph),
+            }
+            .on_click(cx.listener(move |app, _, _, cx| app.restore(undo, cx)))
         };
 
-        div()
+        ui::panel()
             .flex()
             .flex_shrink_0()
             .items_center()
             .when_else(self.compact, |d| d.gap_2(), |d| d.gap_3())
             .h(px(46.))
             .px_3()
-            .bg(t.surface)
             .border_b_1()
-            .border_color(t.border)
+            .border_color(t.hairline)
             .child(
                 div()
                     .flex()
@@ -101,34 +116,37 @@ impl TopoApp {
                             .flex_shrink_0()
                             .items_center()
                             .gap_2()
-                            .child(div().text_color(t.warn).child("◆"))
+                            .child(div().text_color(t.fg).child("◆"))
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_sm().child("topo")),
                     )
                     // The workspace name is the first thing to give way in a narrow window.
                     .child(div().text_color(t.fg_faint).text_sm().child("/"))
                     .child(
                         stop_click(
-                            button("repository", "").child(div().min_w(px(0.)).truncate().child(name)).child("▾"),
+                            ui::button_ghost("repository", "")
+                                .text_color(t.fg)
+                                .child(div().min_w(px(0.)).truncate().child(name))
+                                .child("▾"),
                         )
                         .max_w(px(if self.compact { 110. } else { 220. }))
                         .overflow_hidden()
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::repository::OpenRepository))),
                     ),
             )
-            .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.border))
+            .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline))
             .child(
                 div()
                     .flex()
                     .flex_shrink_0()
                     .items_center()
                     .gap_1()
-                    .child(self.stat("stat-ready", "●", self.stat_text(ready.len(), "ready"), t.success, ready, cx))
+                    .child(self.stat("stat-ready", "●", self.stat_text(ready.len(), "ready"), t.fg, ready, cx))
                     .when(!doing.is_empty(), |d| {
                         d.child(self.stat(
                             "stat-doing",
                             "◐",
                             self.stat_text(doing.len(), "in progress"),
-                            t.accent,
+                            t.fg_muted,
                             doing,
                             cx,
                         ))
@@ -150,30 +168,34 @@ impl TopoApp {
                                 .items_center()
                                 .gap_2()
                                 .px_2()
-                                .text_xs()
+                                .text_size(px(T_SMALL))
                                 .text_color(t.fg_muted)
-                                .child(div().w(px(64.)).flex().child(theme::progress_bar(fraction, t.success, 4.)))
+                                .child(div().w(px(64.)).flex().child(ui::progress_bar(
+                                    fraction,
+                                    closed == tasks && tasks > 0,
+                                    4.,
+                                )))
                                 .child(format!("{closed}/{} done", tasks)),
                         )
                     }),
             )
             .child(div().flex_1())
             .child(
-                button("search", "Search")
-                    .when(!self.compact, |b| b.child(kbd("⌘K")))
+                ui::button("search", "Search")
+                    .when(!self.compact, |b| b.child(ui::kbd("⌘K")))
                     .on_click(cx.listener(|app, _, window, cx| app.open_prompt(Prompt::Search, window, cx))),
             )
             .child(
-                button("new-task", "+ Task")
-                    .when(!self.compact, |b| b.child(kbd("N")))
+                ui::button("new-task", "+ Task")
+                    .when(!self.compact, |b| b.child(ui::kbd("N")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Task, None, window, cx))),
             )
             .child(
-                button("new-milestone", "+ Milestone")
-                    .when(!self.compact, |b| b.child(kbd("M")))
+                ui::button("new-milestone", "+ Milestone")
+                    .when(!self.compact, |b| b.child(ui::kbd("M")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx))),
             )
-            .child(div().w(px(1.)).h(px(20.)).bg(t.border))
+            .child(div().w(px(1.)).h(px(20.)).bg(t.hairline))
             .child(organize(
                 "org-deps",
                 if self.compact { "✦ Links" } else { "✦ Suggest links" },
@@ -186,15 +208,15 @@ impl TopoApp {
                 OrganizeKind::Place,
                 cx,
             ))
-            .child(div().w(px(1.)).h(px(20.)).bg(t.border))
+            .child(div().w(px(1.)).h(px(20.)).bg(t.hairline))
             .child(history("undo", "↩\u{fe0e}", true, !self.undo.is_empty(), cx))
             .child(history("redo", "↪\u{fe0e}", false, !self.redo.is_empty(), cx))
-            .child(icon_button("theme", theme_glyph(theme::mode())).on_click(cx.listener(|app, _, _, cx| {
+            .child(ui::icon_button("theme", theme_glyph(theme::mode())).on_click(cx.listener(|app, _, _, cx| {
                 let mode = theme::mode().next();
                 theme::set_mode(mode, cx);
                 app.toast(format!("Theme: {}", mode.label()), false, cx);
             })))
-            .child(icon_button("help", "?").on_click(cx.listener(|app, _, _, cx| {
+            .child(ui::icon_button("help", "?").on_click(cx.listener(|app, _, _, cx| {
                 app.show_help = !app.show_help;
                 cx.notify();
             })))
@@ -203,7 +225,7 @@ impl TopoApp {
     pub(crate) fn persistence_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         let failed = self.persistence.error.is_some();
-        div()
+        ui::panel()
             .debug_selector(|| "save-status".into())
             .flex()
             .flex_shrink_0()
@@ -211,19 +233,20 @@ impl TopoApp {
             .gap_2()
             .h(px(30.))
             .px_3()
-            .bg(t.surface)
-            .text_xs()
-            .text_color(t.warn)
+            .border_b_1()
+            .border_color(t.hairline)
+            .text_size(px(T_SMALL))
+            .text_color(if failed { t.danger } else { t.warn })
             .child(if failed { "Changes need confirmation" } else { "Saving changes…" })
             .child(div().flex_1())
             .when(failed, |d| {
                 d.child(
-                    button("retry-save", "Retry")
+                    ui::button("retry-save", "Retry")
                         .debug_selector(|| "retry-save".into())
                         .on_click(cx.listener(|app, _, _, cx| app.retry_save(cx))),
                 )
                 .child(
-                    button("discard-save", "Discard drafts")
+                    ui::button("discard-save", "Discard drafts")
                         .debug_selector(|| "discard-save".into())
                         .on_click(cx.listener(|app, _, _, cx| app.discard_pending(cx))),
                 )
@@ -242,18 +265,7 @@ impl TopoApp {
             (None, Some(_)) => "Tab follow-up · ⇧Tab prerequisite · L link · Space status · ⌫ delete · ←→↑↓ move",
             (None, None) => "N task · M milestone · / search · F fit · drag to pan · ? shortcuts",
         };
-        let pill = || {
-            div()
-                .flex()
-                .items_center()
-                .gap_0p5()
-                .p_0p5()
-                .rounded_lg()
-                .bg(t.surface)
-                .border_1()
-                .border_color(t.border)
-                .shadow(theme::shadow())
-        };
+        let pill = || ui::glass(Elevation::Popover).rounded(px(R_LG)).flex().items_center().gap_0p5().p_0p5();
         div()
             .absolute()
             .bottom(px(14.))
@@ -263,7 +275,7 @@ impl TopoApp {
             .items_end()
             .justify_between()
             .gap_4()
-            .child(div().flex_1().min_w(px(0.)).truncate().text_xs().text_color(t.fg_faint).child(hint))
+            .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(T_SMALL)).text_color(t.fg_faint).child(hint))
             .child(stop_click(
                 pill()
                     .child(
@@ -280,7 +292,7 @@ impl TopoApp {
                                 cx.notify();
                             })),
                     )
-                    .child(div().w(px(1.)).h(px(14.)).mx_0p5().bg(t.border))
+                    .child(div().w(px(1.)).h(px(14.)).mx_0p5().bg(t.hairline))
                     .child(
                         div()
                             .id("priority-filter")
@@ -290,12 +302,14 @@ impl TopoApp {
                             .gap_1()
                             .h(px(24.))
                             .px_2()
-                            .rounded_md()
+                            .rounded(px(R_SM))
                             .whitespace_nowrap()
-                            .text_xs()
+                            .text_size(px(T_SMALL))
                             .cursor_pointer()
-                            .text_color(if self.priority_filter.is_some() { t.fg } else { t.fg_muted })
-                            .hover(|s| s.bg(t.raised).text_color(t.fg))
+                            .map(|d| match self.priority_filter.is_some() {
+                                true => d.bg(t.control_active).text_color(t.fg),
+                                false => d.text_color(t.fg_muted).hover(|s| s.bg(t.control_hover)),
+                            })
                             .child(match (self.priority_filter, self.compact) {
                                 (None, true) => "Priority".to_owned(),
                                 (None, false) => "Priority: all".to_owned(),
@@ -306,7 +320,7 @@ impl TopoApp {
                                 (Some(least), true) => format!("{least}+"),
                                 (Some(least), false) => format!("Priority: {least} and up"),
                             })
-                            .when(!self.compact, |d| d.child(kbd("⇧P")))
+                            .when(!self.compact, |d| d.child(ui::kbd("⇧P")))
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.cycle_priority_filter();
                                 cx.notify();
@@ -317,7 +331,7 @@ impl TopoApp {
                 pill()
                     .id("zoom")
                     .debug_selector(|| "zoom".to_owned())
-                    .child(icon_button("zoom-out", "−").on_click(cx.listener(|app, _, _, cx| {
+                    .child(ui::icon_button("zoom-out", "−").on_click(cx.listener(|app, _, _, cx| {
                         app.zoom_by(0.8, app.canvas_center(), true);
                         cx.notify();
                     })))
@@ -327,7 +341,7 @@ impl TopoApp {
                             .w(px(44.))
                             .flex()
                             .justify_center()
-                            .text_xs()
+                            .text_size(px(T_SMALL))
                             .text_color(t.fg_muted)
                             .cursor_pointer()
                             .hover(|s| s.text_color(t.fg))
@@ -337,12 +351,12 @@ impl TopoApp {
                                 cx.notify();
                             })),
                     )
-                    .child(icon_button("zoom-in", "+").on_click(cx.listener(|app, _, _, cx| {
+                    .child(ui::icon_button("zoom-in", "+").on_click(cx.listener(|app, _, _, cx| {
                         app.zoom_by(1.25, app.canvas_center(), true);
                         cx.notify();
                     })))
-                    .child(div().w(px(1.)).h(px(14.)).mx_0p5().bg(t.border))
-                    .child(icon_button("fit", "⤢").on_click(cx.listener(|app, _, _, cx| {
+                    .child(div().w(px(1.)).h(px(14.)).mx_0p5().bg(t.hairline))
+                    .child(ui::icon_button("fit", "⤢").on_click(cx.listener(|app, _, _, cx| {
                         app.fit(false);
                         cx.notify();
                     }))),
@@ -366,15 +380,16 @@ impl TopoApp {
             .gap_1()
             .h(px(24.))
             .px_2()
-            .rounded_md()
+            .rounded(px(R_SM))
             .whitespace_nowrap()
-            .text_xs()
+            .text_size(px(T_SMALL))
             .cursor_pointer()
-            .text_color(if on { t.fg } else { t.fg_muted })
-            .when(on, |d| d.bg(t.raised))
-            .hover(|s| s.bg(t.raised).text_color(t.fg))
+            .map(|d| match on {
+                true => d.bg(t.control_active).text_color(t.fg),
+                false => d.text_color(t.fg_muted).hover(|s| s.bg(t.control_hover)),
+            })
             .child(if self.compact { label.1 } else { label.0 })
-            .when(!self.compact, |d| d.child(kbd(key)))
+            .when(!self.compact, |d| d.child(ui::kbd(key)))
     }
 
     fn node_chip(&self, prefix: &str, id: &NodeId) -> Div {
@@ -388,11 +403,9 @@ impl TopoApp {
             .max_w(px(200.))
             .px_1p5()
             .py_0p5()
-            .rounded_md()
-            .bg(t.card)
-            .border_1()
-            .border_color(t.border)
-            .text_xs()
+            .rounded(px(R_SM))
+            .bg(t.control)
+            .text_size(px(T_SMALL))
             .text_color(t.fg_muted)
             .child(prefix.to_owned())
             .child(div().text_color(color).child(icon))
@@ -418,16 +431,12 @@ impl TopoApp {
             Prompt::Create(_) => vec![("↵", "create"), ("esc", "cancel")],
         };
 
-        let card = div()
+        let card = ui::glass(Elevation::Dialog)
             .id("prompt")
             .w(px(560.))
             .flex()
             .flex_col()
-            .rounded_xl()
-            .bg(t.surface)
-            .border_1()
-            .border_color(t.border_strong)
-            .shadow(theme::shadow())
+            .rounded(px(R_XL))
             .overflow_hidden()
             .child(
                 div()
@@ -439,7 +448,7 @@ impl TopoApp {
                     .pt_3()
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(T_SMALL))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(t.fg_muted)
                             .child(prompt.title()),
@@ -447,22 +456,21 @@ impl TopoApp {
                     .children(context),
             )
             // The field and, under it, the nodes that match.
-            .child(div().text_size(px(16.)).child(self.palette.clone()))
+            .child(div().text_size(px(T_TITLE)).child(self.palette.clone()))
             .child(
                 div()
                     .flex()
                     .gap_3()
                     .px_4()
                     .py_2()
-                    .bg(t.bg)
                     .border_t_1()
-                    .border_color(t.border)
-                    .text_xs()
+                    .border_color(t.hairline)
+                    .text_size(px(T_SMALL))
                     .text_color(t.fg_faint)
                     .children(
                         footer
                             .into_iter()
-                            .map(|(k, what)| div().flex().items_center().gap_1().child(kbd(k)).child(what)),
+                            .map(|(k, what)| div().flex().items_center().gap_1().child(ui::kbd(k)).child(what)),
                     ),
             );
         Some(
@@ -484,19 +492,13 @@ impl TopoApp {
         let (icon, color) = if toast.error { ("⚠", t.danger) } else { ("✓", t.success) };
         Some(
             div().absolute().bottom(px(58.)).left_0().right_0().flex().justify_center().child(
-                div()
+                ui::toast_frame()
                     .flex()
                     .items_center()
                     .gap_2()
                     .max_w(px(640.))
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(if toast.error { theme::alpha(t.danger, 0.6) } else { t.border_strong.into() })
-                    .shadow(theme::shadow())
-                    .text_sm()
+                    .text_size(px(T_BODY_LG))
+                    .text_color(t.fg)
                     .child(div().text_color(color).child(icon))
                     .child(toast.text.clone()),
             ),
@@ -512,8 +514,14 @@ impl TopoApp {
                 .flex_col()
                 .items_center()
                 .gap_3()
-                .child(div().text_size(px(40.)).text_color(t.border_strong).child("◇"))
-                .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Nothing planned yet"))
+                .child(div().text_size(px(40.)).text_color(t.fg_faint).child("◇"))
+                .child(
+                    div()
+                        .text_size(px(T_HEADING))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(t.fg)
+                        .child("Nothing planned yet"),
+                )
                 .child(
                     div()
                         .text_sm()
@@ -525,10 +533,12 @@ impl TopoApp {
                         .flex()
                         .gap_2()
                         .pt_2()
-                        .child(button("empty-milestone", "+ Milestone").child(kbd("M")).on_click(
-                            cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx)),
-                        ))
-                        .child(button("empty-task", "+ Task").child(kbd("N")).on_click(
+                        .child(
+                            ui::button_primary("empty-milestone", "+ Milestone").child(on_primary_kbd("M")).on_click(
+                                cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx)),
+                            ),
+                        )
+                        .child(ui::button("empty-task", "+ Task").child(ui::kbd("N")).on_click(
                             cx.listener(|app, _, window, cx| app.prompt_create(Kind::Task, None, window, cx)),
                         )),
                 ),
@@ -545,14 +555,20 @@ impl TopoApp {
                 .flex_col()
                 .items_center()
                 .gap_3()
-                .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Everything is done"))
+                .child(
+                    div()
+                        .text_size(px(T_HEADING))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(t.fg)
+                        .child("Everything is done"),
+                )
                 .child(div().text_sm().text_color(t.fg_muted).child("Done and dropped nodes are hidden."))
-                .child(button("show-completed", "Show them").child(kbd("⇧H")).on_click(cx.listener(
-                    |app, _, _, cx| {
+                .child(ui::button_primary("show-completed", "Show them").child(on_primary_kbd("⇧H")).on_click(
+                    cx.listener(|app, _, _, cx| {
                         app.toggle_hide_completed();
                         cx.notify();
-                    },
-                ))),
+                    }),
+                )),
         ))
     }
 
@@ -656,28 +672,21 @@ impl TopoApp {
             ),
         ];
         let group = |(title, rows): (&'static str, &'static [(&'static str, &'static str)])| {
-            div().flex().flex_col().gap_1p5().child(theme::section_label(title.to_uppercase()).pt_0()).children(
+            div().flex().flex_col().gap_1p5().child(ui::section_label(title.to_uppercase()).pt_0()).children(
                 rows.iter().map(|(keys, what)| {
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
-                        .text_xs()
-                        .child(div().w(px(132.)).flex_shrink_0().flex().child(kbd(*keys)))
+                        .text_size(px(T_SMALL))
+                        .child(div().w(px(132.)).flex_shrink_0().flex().child(ui::kbd(*keys)))
                         .child(div().flex_1().min_w(px(0.)).text_color(t.fg_muted).child(*what))
                 }),
             )
         };
         let [create, edit, connect, nav, view, notes, standard, mouse] = groups;
-        div()
+        ui::scrim()
             .id("help")
-            .absolute()
-            .size_full()
-            .occlude()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(t.scrim)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, _, _, cx| {
@@ -687,7 +696,7 @@ impl TopoApp {
                 }),
             )
             .child(
-                div()
+                ui::dialog()
                     .id("help-card")
                     .debug_selector(|| "help-card".to_owned())
                     .w(px(760.))
@@ -698,18 +707,21 @@ impl TopoApp {
                     .flex_col()
                     .gap_4()
                     .p_6()
-                    .rounded_xl()
-                    .bg(t.surface)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(theme::shadow())
                     .child(
                         div()
                             .flex()
                             .justify_between()
-                            .child(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Keyboard shortcuts"))
                             .child(
-                                div().text_xs().text_color(t.fg_faint).child(SharedString::from("? or Esc to close")),
+                                div()
+                                    .text_size(px(T_HEADING))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child("Keyboard shortcuts"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(T_SMALL))
+                                    .text_color(t.fg_faint)
+                                    .child(SharedString::from("? or Esc to close")),
                             ),
                     )
                     .child(
@@ -743,6 +755,12 @@ impl TopoApp {
                     ),
             )
     }
+}
+
+/// A shortcut hint that stays legible on the primary fill.
+fn on_primary_kbd(keys: &'static str) -> Div {
+    let t = theme::current();
+    ui::kbd(keys).text_color(t.on_emphasis).border_color(theme::alpha(t.on_emphasis, 0.3))
 }
 
 /// The toolbar glyph that shows `mode`.
