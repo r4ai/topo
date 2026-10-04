@@ -11,6 +11,34 @@ The window hosts a single `TopoApp` entity at any given time:
 - **Explicit Editor Retirement**: Once a target successfully initializes and loads, the previous editor is explicitly retired, dismantling its file watchers, periodic schedulers, and gesture monitors
 - **State Cleanup**: A successful switch clears unsubmitted drafts, resets selection, and frames the new graph (large graphs are anchored at their start rather than shrunk to fit). Failed loads, cancellations, and re-selecting the current workspace preserve the current state
 
+## Repository Switcher
+
+The window shows the switcher whenever it has no editor or the user asks to change repository (toolbar repository name, `File > Open Repository…`, `Cmd+O`). It is a palette-style card (`ui::glass(Dialog)`, radius `R_XL`, up to 560px wide, 16px window margin, in the upper third). Over an editor it sits on `ui::scrim()`, with the canvas dimmed beneath; with no editor it sits on the plain window background. On macOS a drag strip stays above the scrim so the titlebar moves the window.
+
+### Structure
+
+- **Filter field**: frameless, focused on open. Typing filters the rows by a case-insensitive substring of the folder name and of the displayed path (home written as `~`). A text that is an absolute path or starts with `~` and names an existing folder adds a first row "Open <path>", highlighted
+- **Status banner**: between the field and the list, one of: *loading* ("Opening <name>…", rows dimmed and inert), *error* (`danger` glyph, "Couldn't open repository" and up to three lines of detail), or *pending* (the folder has no workspace yet, with an "Initialize workspace" button)
+- **List**: a `CURRENT` section with the workspace in the editor (a `✓`; Enter closes the switcher) and a `RECENT` section with `recent_workspaces` other than the current one. A row shows the folder name and its path, the middle of a long path cut to fit. A workspace whose `.topo/config.toml` has a `[cloud]` link carries a `cloud` chip. A folder that no longer exists is faint, carries a `missing` chip and a visible remove button, and opens nothing. The remove button (`✕`) shows on hover and on the highlighted row. No match shows "No matching repository"
+- **First launch**: with no editor and no recents, a welcome block with the "Open folder…" primary button replaces the list
+- **Footer**: "Open folder…" with its shortcut, the note that unsubmitted edits are discarded only on a switch, and the key hints
+
+Whether a recent folder exists and whether it is cloud-linked are read once when the switcher opens, never per frame.
+
+### Keyboard and Mouse
+
+| Input | Action |
+| :--- | :--- |
+| `↑` / `↓`, `Ctrl+P` / `Ctrl+N` | Move the highlight, wrapping at the ends |
+| `Enter` | Initialize the pending folder while its banner shows and the filter is empty; otherwise open the highlighted row |
+| `Cmd+O` | Open the system folder picker (`Ctrl+O` off macOS) |
+| `Cmd+Backspace` | Forget the highlighted recent (`Ctrl+Backspace` off macOS); on another row it edits the filter text |
+| `Esc` | Clear a non-empty filter; otherwise close the switcher and return to the editor, restoring its drafts |
+| Click a row | Open it |
+| Click the scrim | Close the switcher (only over an editor) |
+
+Forgetting writes the history at once and keeps the highlight on a row. While the switcher covers the editor, the editor's drafts are not synchronized with the focus, so closing the switcher restores them as they were.
+
 ## Startup and Discovery Precedence
 
 Workspace discovery resolves in the following order:

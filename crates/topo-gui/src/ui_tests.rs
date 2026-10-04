@@ -2,13 +2,15 @@
 
 use std::ops::Range;
 
-use gpui::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, point, px, size};
+use gpui::{
+    Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, WindowAppearance, point, px, size,
+};
 use tempfile::TempDir;
 use topo_core::{Edit, Graph, Kind, Node, NodeId, Priority, Status, Workspace};
 
 use crate::gesture::Gesture;
 use crate::inline::Field;
-use crate::{NODE_H, NODE_W, Prompt, TopoApp, layout::Group, text_input};
+use crate::{NODE_H, NODE_W, Prompt, TopoApp, layout::Group, text_input, theme};
 
 fn id(s: &str) -> NodeId {
     NodeId(s.into())
@@ -22,8 +24,21 @@ struct Ui<'a> {
 
 /// Opens a window on a workspace with the given `(id, kind, depends_on, milestones)` nodes.
 fn open<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])]) -> Ui<'a> {
+    open_named(cx, nodes, "")
+}
+
+/// Like [`open`], in a repository directory called `name` (a random one when empty).
+fn open_named<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])], name: &str) -> Ui<'a> {
     let dir = tempfile::tempdir().unwrap();
-    let mut ws = Workspace::init(dir.path()).unwrap();
+    let root = match name {
+        "" => dir.path().to_owned(),
+        name => {
+            let root = dir.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            root
+        }
+    };
+    let mut ws = Workspace::init(&root).unwrap();
     let nodes = nodes.iter().map(|(name, kind, deps, milestones)| {
         let mut node = Node::new(id(name), *kind, (*name).into());
         node.depends_on = deps.iter().map(|d| id(d)).collect();
@@ -32,7 +47,10 @@ fn open<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])]
     });
     ws.graph = Graph::from_nodes(nodes).unwrap();
     ws.save().unwrap();
-    cx.update(text_input::bind_keys);
+    cx.update(|cx| {
+        text_input::bind_keys(cx);
+        theme::init(cx);
+    });
     let (app, cx) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
     let mut ui = Ui { app, cx, _dir: dir };
     ui.resize(1360., 860.);
@@ -2065,4 +2083,177 @@ fn quitting_with_unsaved_notes_asks_and_then_quits(cx: &mut TestAppContext) {
     ui.keys("enter");
     assert_eq!(ui.node("a").body, "x\n");
     assert_eq!(ui.read(|app| app.notes.clone()), None);
+}
+
+#[gpui::test]
+fn the_toolbar_button_opens_a_menu_that_sets_the_mode_and_monotone(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    // The test platform reports a light appearance, so `System` resolves to the light theme.
+    assert_eq!((theme::mode(), theme::monotone()), (theme::ThemeMode::Dark, false));
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+    ui.click_on("theme");
+    assert!(ui.cx.debug_bounds("theme-menu").is_some());
+    ui.click_on("theme-light");
+    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Light, &theme::LIGHT));
+    assert!(ui.cx.debug_bounds("theme-menu").is_some(), "choosing a mode keeps the menu open");
+    ui.click_on("theme-system");
+    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::System, &theme::LIGHT));
+    ui.click_on("theme-monotone");
+    assert!(theme::monotone());
+    assert_eq!(theme::current(), &theme::LIGHT_MONO);
+    ui.click_on("theme-dark");
+    assert_eq!(theme::current(), &theme::DARK_MONO);
+    ui.click_on("theme-monotone");
+    assert!(!theme::monotone());
+    assert_eq!(theme::current(), &theme::DARK);
+    ui.keys("escape");
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+    // The button toggles it, and a click elsewhere closes it without acting on what is under it.
+    ui.click_on("theme");
+    ui.click_on("theme");
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+    ui.click_on("theme");
+    ui.click_on("help");
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+    assert!(!ui.read(|app| app.show_help));
+}
+
+/// Drives the app through its main states and returns each state's name with a selector that must be drawn.
+fn drive_states(ui: &mut Ui) -> Vec<(&'static str, &'static str)> {
+    let mut seen = Vec::new();
+    let mut check = |ui: &mut Ui, state: &'static str, selector: &'static str| {
+        ui.redraw();
+        assert!(ui.cx.debug_bounds(selector).is_some(), "{state}: {selector} is drawn");
+        seen.push((state, selector));
+    };
+    check(ui, "overview", "brand");
+    ui.select("a");
+    check(ui, "task", "title-text");
+    ui.select("m");
+    check(ui, "milestone", "title-text");
+    ui.keys("shift-g");
+    check(ui, "grouped", "group-untagged");
+    ui.keys("shift-g");
+    ui.keys("?");
+    check(ui, "help", "help-card");
+    ui.keys("escape");
+    ui.keys("/");
+    check(ui, "search", "prompt-card");
+    ui.keys("escape");
+    ui.select("a");
+    ui.keys("t");
+    check(ui, "inline edit", "inline-edit");
+    ui.keys("escape");
+    ui.keys("e");
+    check(ui, "notes", "notes-editor");
+    ui.type_text("draft");
+    ui.keys("escape");
+    check(ui, "unsaved dialog", "notes-dialog");
+    ui.keys("d");
+    ui.app.update(ui.cx, |app, cx| app.toast("Saved", false, cx));
+    check(ui, "toast", "toast");
+    seen
+}
+
+#[gpui::test]
+fn every_main_state_draws_in_every_palette(cx: &mut TestAppContext) {
+    let palettes = [
+        (theme::ThemeMode::Dark, false, &theme::DARK),
+        (theme::ThemeMode::Light, false, &theme::LIGHT),
+        (theme::ThemeMode::Dark, true, &theme::DARK_MONO),
+        (theme::ThemeMode::Light, true, &theme::LIGHT_MONO),
+    ];
+    for (mode, monotone, expected) in palettes {
+        theme::apply(mode, monotone, WindowAppearance::Light);
+        let mut ui = open(cx, SAMPLE);
+        theme::apply(mode, monotone, WindowAppearance::Light);
+        ui.redraw();
+        assert!(std::ptr::eq(theme::current(), expected));
+        assert_eq!(drive_states(&mut ui).len(), 10);
+    }
+    theme::apply(theme::ThemeMode::Dark, false, WindowAppearance::Light);
+}
+
+#[gpui::test]
+fn switching_the_theme_is_purely_visual(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    theme::apply(theme::ThemeMode::Dark, false, WindowAppearance::Light);
+    ui.select("b");
+    ui.keys("t");
+    let selectors = ["brand", "title-text", "inline-edit", "node-a", "node-b", "node-m", "zoom"];
+    let state = |ui: &mut Ui| {
+        let bounds: Vec<_> = selectors.iter().map(|s| ui.cx.debug_bounds(s)).collect();
+        (ui.selection(), ui.inline(), bounds)
+    };
+    ui.redraw();
+    let before = state(&mut ui);
+    assert!(before.2.iter().all(Option::is_some));
+    theme::apply(theme::ThemeMode::Light, false, WindowAppearance::Light);
+    ui.redraw();
+    assert!(std::ptr::eq(theme::current(), &theme::LIGHT));
+    assert_eq!(state(&mut ui), before);
+    theme::apply(theme::ThemeMode::Dark, false, WindowAppearance::Light);
+}
+
+#[gpui::test]
+fn nothing_in_the_toolbar_overlaps_at_any_width(cx: &mut TestAppContext) {
+    // Task and milestone statuses give the toolbar every stat there is.
+    let mut doing = Node::new(id("d"), Kind::Task, "d".into());
+    doing.status = Status::Doing;
+    let mut overdue = Node::new(id("o"), Kind::Task, "o".into());
+    overdue.due = Some("2000-01-01".parse().unwrap());
+    let mut ui = open_named(cx, SAMPLE, "a-repository-with-a-really-very-long-name-indeed");
+    ui.app.update(ui.cx, |app, cx| {
+        app.mutate(cx, |graph| {
+            graph.insert(doing)?;
+            graph.insert(overdue)
+        });
+    });
+    // Parts that always show, and the parts of a group that clips whole items it has no room for.
+    let fixed = ["brand", "repository", "search", "new-task", "new-milestone", "undo", "redo", "theme", "help"];
+    let clipped = [
+        ("toolbar-stats", ["stat-ready", "stat-doing", "stat-overdue"].as_slice()),
+        ("toolbar-organize", ["org-deps", "org-place"].as_slice()),
+    ];
+    for inset in [0., crate::chrome::TEST_TRAFFIC_LIGHTS] {
+        crate::chrome::test_inset::set(inset);
+        for width in [720., 900., 1100., 1179., 1180., 1360., 1900.] {
+            ui.resize(width, 500.);
+            let toolbar = ui.cx.debug_bounds("toolbar").expect("the toolbar is rendered");
+            let bounds = |ui: &mut Ui, name: &'static str| {
+                ui.cx.debug_bounds(name).unwrap_or_else(|| panic!("{name} is rendered at {width} (inset {inset})"))
+            };
+            let mut boxes: Vec<_> = fixed.iter().map(|n| (n.to_string(), bounds(&mut ui, n))).collect();
+            for (group, items) in clipped {
+                let group_box = bounds(&mut ui, group);
+                boxes.push((group.to_string(), group_box));
+                for item in items {
+                    let b = bounds(&mut ui, item);
+                    let shown = b.left() >= group_box.left()
+                        && b.right() <= group_box.right()
+                        && b.top() >= group_box.top()
+                        && b.bottom() <= group_box.bottom();
+                    // An item is whole inside its group or wrapped out of sight; only the first one, which a
+                    // wrapping row cannot move, may be clipped by the group's edge.
+                    assert!(
+                        shown || b.top() >= group_box.bottom() || b.left() == group_box.left(),
+                        "{item} is cut by {group} at {width} (inset {inset}): {b:?} {group_box:?}"
+                    );
+                }
+            }
+            for (name, b) in &boxes {
+                assert!(
+                    b.left() >= toolbar.left() + px(inset) && b.right() <= toolbar.right(),
+                    "{name} leaves the toolbar at {width} (inset {inset}): {b:?} in {toolbar:?}"
+                );
+            }
+            for (i, (a, ab)) in boxes.iter().enumerate() {
+                for (b, bb) in &boxes[i + 1..] {
+                    assert!(!ab.intersects(bb), "{a} overlaps {b} at {width} (inset {inset}): {ab:?} {bb:?}");
+                }
+            }
+        }
+    }
+    crate::chrome::test_inset::set(0.);
 }

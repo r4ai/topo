@@ -142,6 +142,12 @@ cargo run -p topo-gui --features screenshot -- \
 - `--edit-notes`: ノートを編集中の状態で表示。`--select` が必要で、`--edit` とは併用不可
 - `--search <query>`: 検索バーを開いた状態で表示
 - `--help-overlay`: キーボードショートカット一覧を表示
+- `--theme <dark|light>`: 指定したテーマで描画（既定: dark）
+- `--monotone`: 色相のシグナルをすべて無彩色にして描画
+- `--chooser`: ワークスペースの上にリポジトリ切り替えを開いた状態で表示。`.topo` のないフォルダを指定すると、初回起動と同じく切り替えだけを表示（`--chooser` なしでは「ワークスペースがまだない」バナーを表示）
+- `--recent <path>`: この `.topo` ディレクトリを最近のワークスペースとして一覧に載せる（繰り返し指定可能。存在しないものは missing と表示）。保存済みの履歴は読み書きしない
+
+テーマごとに撮影する状態の一覧は [docs/gui/design-system.md](gui/design-system.md#visual-qa) を参照。
 
 ## リリースプロセス
 

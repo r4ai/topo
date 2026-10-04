@@ -9,12 +9,17 @@
 
 use std::collections::BTreeSet;
 
-use gpui::{AnyElement, App, Context, Entity, Focusable, KeyDownEvent, MouseButton, Window, div, prelude::*, px, rgb};
+use gpui::{
+    AnyElement, App, Context, Div, Entity, Focusable, FontWeight, KeyDownEvent, MouseButton, Window, div, prelude::*,
+    px,
+};
 use topo_core::{Edit, NodeId};
 
 use crate::TopoApp;
 use crate::text_input::{InputEvent, TextInput};
-use crate::theme::{self, button, kbd, tinted_button};
+use crate::theme::metrics::{T_BODY_LG, T_TITLE};
+use crate::theme::{self, alpha};
+use crate::ui::{self, kbd};
 
 /// What happens once unsaved notes are settled.
 #[derive(Clone, Debug, PartialEq)]
@@ -167,43 +172,33 @@ impl TopoApp {
 
     /// The question over the whole window, which holds the click and the keys until it is answered.
     pub(crate) fn notes_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
         let title =
             self.notes.as_ref().and_then(|id| self.graph().get(id)).map_or_else(String::new, |n| n.title.clone());
-        let choice = |button: gpui::Stateful<gpui::Div>, key: &'static str, save: Option<bool>| -> AnyElement {
+        let choice = |button: gpui::Stateful<Div>, key: Div, save: Option<bool>| -> AnyElement {
             button
-                .child(kbd(key))
+                .child(key)
                 .on_click(cx.listener(move |app, _, window, cx| app.answer_notes(save, window, cx)))
                 .into_any_element()
         };
-        div()
+        let on_primary = kbd("↵").text_color(t.on_emphasis).border_color(alpha(t.on_emphasis, 0.3));
+        ui::scrim()
             .id("notes-ask")
-            .absolute()
-            .size_full()
-            .occlude()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(gpui::hsla(0., 0., 0., 0.55))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(
-                div()
+                ui::dialog()
                     .debug_selector(|| "notes-dialog".to_owned())
                     .w(px(380.))
                     .max_w(gpui::relative(0.92))
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .p_5()
-                    .rounded_xl()
-                    .bg(rgb(theme::SURFACE))
-                    .border_1()
-                    .border_color(rgb(theme::BORDER_STRONG))
-                    .shadow(theme::shadow())
-                    .child(div().text_base().font_weight(gpui::FontWeight::SEMIBOLD).child("Save the notes?"))
+                    .text_color(t.fg)
+                    .child(div().text_size(px(T_TITLE)).font_weight(FontWeight::SEMIBOLD).child("Save the notes?"))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(theme::MUTED))
+                            .text_size(px(T_BODY_LG))
+                            .text_color(t.fg_muted)
                             .child(format!("The notes of “{title}” have changes that are not saved.")),
                     )
                     .child(
@@ -212,9 +207,9 @@ impl TopoApp {
                             .justify_end()
                             .gap_2()
                             .pt_1()
-                            .child(choice(tinted_button("notes-discard", "Discard", theme::RED), "D", Some(false)))
-                            .child(choice(button("notes-keep", "Keep editing"), "Esc", None))
-                            .child(choice(tinted_button("notes-save", "Save", theme::ACCENT), "↵", Some(true))),
+                            .child(choice(ui::button_danger("notes-discard", "Discard"), kbd("D"), Some(false)))
+                            .child(choice(ui::button_ghost("notes-keep", "Keep editing"), kbd("Esc"), None))
+                            .child(choice(ui::button_primary("notes-save", "Save"), on_primary, Some(true))),
                     ),
             )
     }

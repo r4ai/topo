@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::theme::ThemeMode;
+
 /// Inspector width limits, shared by the field default and the resize drag.
 pub const INSPECTOR_DEFAULT_FRACTION: f32 = 0.26;
 pub const INSPECTOR_MIN_WIDTH: f32 = 240.;
@@ -29,6 +31,16 @@ pub struct UserConfig {
     /// Show the canvas as one band per tag.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub group_by_tag: bool,
+    /// The chosen theme mode; `System` follows the OS appearance.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub theme: ThemeMode,
+    /// Draw every signal hue as a neutral.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub monotone: bool,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// `topo-gui/config.toml` under the platform configuration directory.
@@ -58,7 +70,6 @@ impl UserConfig {
 
     /// Writes the settings, creating the directory when needed. Best effort:
     /// a failure to persist a window size must not break the app.
-    #[cfg_attr(test, allow(dead_code))]
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = path() else { return Ok(()) };
         if let Some(parent) = path.parent() {
@@ -141,5 +152,33 @@ mod history_tests {
         assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), config);
         // Off is the default and stays out of the file.
         assert!(!toml::to_string_pretty(&UserConfig::default()).unwrap().contains("hide_completed"));
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn theme_loads_from_the_file_defaults_to_system_and_is_not_written_by_default() {
+        let light: UserConfig = toml::from_str("theme = \"light\"").unwrap();
+        assert_eq!(light.theme, ThemeMode::Light);
+        let old: UserConfig = toml::from_str("inspector_width = 412").unwrap();
+        assert_eq!(old.theme, ThemeMode::System);
+        assert!(!toml::to_string_pretty(&UserConfig::default()).unwrap().contains("theme"));
+        let text = toml::to_string_pretty(&light).unwrap();
+        assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), light);
+    }
+
+    #[test]
+    fn monotone_is_off_when_absent_round_trips_and_is_not_written_when_off() {
+        let old: UserConfig = toml::from_str("inspector_width = 412").unwrap();
+        assert!(!old.monotone);
+        assert!(!toml::to_string_pretty(&UserConfig::default()).unwrap().contains("monotone"));
+        let on: UserConfig = toml::from_str("monotone = true").unwrap();
+        assert!(on.monotone);
+        let text = toml::to_string_pretty(&on).unwrap();
+        assert!(text.contains("monotone = true"));
+        assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), on);
     }
 }

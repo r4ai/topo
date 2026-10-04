@@ -11,13 +11,17 @@ use anyhow::{Context as _, Result};
 use gpui::{AppContext as _, Entity, VisualTestAppContext, px, size};
 use topo_core::Workspace;
 
-use crate::args::Args;
+use crate::args::{Args, CaptureTheme};
+use crate::config::UserConfig;
+use crate::repository::{self, RepositoryWindow};
+use crate::theme::{self, ThemeMode};
 use crate::{TopoApp, text_input};
 
 /// Renders one frame of the editor for `ws` to `path`, as `options` steers it.
 ///
 /// Must run on the macOS main thread, like every AppKit interaction.
 pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
+    apply_theme(options);
     let platform = gpui_platform::current_platform(false);
     let mut cx = VisualTestAppContext::new(platform);
     cx.update(text_input::bind_keys);
@@ -130,6 +134,50 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
     let image = cx.capture_screenshot(handle.into())?;
     write_png(&image, path)?;
     Ok(())
+}
+
+/// Renders the window shell, which shows the repository switcher or a folder that needs a workspace.
+///
+/// The start is found as at launch from `TOPO_DIR`, the argument and the current directory, never from the saved
+/// history; the recents are the ones given.
+pub fn render_shell(path: &Path, options: &Args) -> Result<()> {
+    apply_theme(options);
+    let platform = gpui_platform::current_platform(false);
+    let mut cx = VisualTestAppContext::new(platform);
+    cx.update(text_input::bind_keys);
+
+    let config = UserConfig { recent_workspaces: options.recent.clone(), ..Default::default() };
+    let start = repository::startup_target(
+        std::env::var_os("TOPO_DIR").map(Into::into),
+        options.workspace.clone(),
+        &UserConfig::default(),
+        std::env::current_dir()?,
+    );
+    let requested = size(px(options.width as f32), px(options.height as f32));
+    let handle = cx.open_offscreen_window(requested, |window, cx| {
+        cx.new(|cx| RepositoryWindow::capture(start, config, window, cx))
+    })?;
+    let shell: Entity<RepositoryWindow> = handle.entity(&cx)?;
+    // The target loads in the background; the switcher opens once it is there.
+    cx.run_until_parked();
+    if options.chooser {
+        cx.update_window(handle.into(), |_, window, cx| shell.update(cx, |app, cx| app.present(window, cx)))?;
+    }
+    for _ in 0..4 {
+        cx.run_until_parked();
+        cx.update(|app| app.notify(shell.entity_id()));
+    }
+    cx.run_until_parked();
+    write_png(&cx.capture_screenshot(handle.into())?, path)
+}
+
+/// A capture takes the theme from the flags, never from the saved preference.
+fn apply_theme(options: &Args) {
+    let mode = match options.theme {
+        CaptureTheme::Dark => ThemeMode::Dark,
+        CaptureTheme::Light => ThemeMode::Light,
+    };
+    theme::apply(mode, options.monotone, gpui::WindowAppearance::default());
 }
 
 fn write_png(image: &image::RgbaImage, path: &Path) -> Result<()> {

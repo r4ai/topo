@@ -3,17 +3,19 @@
 use std::cmp::Reverse;
 
 use gpui::{
-    AnyElement, Context, CursorStyle, Div, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div,
-    prelude::*, px, rgb,
+    AnyElement, Context, CursorStyle, Div, ElementId, FontWeight, MouseButton, MouseDownEvent, SharedString, Stateful,
+    div, prelude::*, px,
 };
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use topo_core::model::pr_label;
-use topo_core::{Graph, Kind, Node, NodeId, Status};
+use topo_core::{Graph, Kind, Node, NodeId, Priority, Status};
 use topo_jev::organize::Proposal;
 
 use crate::inline::Field;
-use crate::theme::{self, button, chip, icon_button, kbd, section_label};
+use crate::theme::metrics::{R_LG, R_MD, R_SM, R_XS, T_BODY, T_BODY_LG, T_HEADING, T_SMALL};
+use crate::theme::{self, metrics};
+use crate::ui::{self, button, icon_button, kbd, section_label};
 use crate::{Drag, Relation, TopoApp, dates};
 
 type Remove = fn(&mut Graph, &NodeId, &NodeId) -> Result<(), topo_core::Error>;
@@ -22,6 +24,7 @@ type Removal = Option<(NodeId, NodeId, Remove)>;
 
 impl TopoApp {
     pub(crate) fn inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
         let content: Vec<AnyElement> = match self.selected_nodes.len() {
             n if n > 1 => self.selection_details(cx),
             _ => match self.selected_node() {
@@ -30,16 +33,16 @@ impl TopoApp {
             },
         };
         div().relative().flex_shrink_0().h_full().w(px(self.inspector_width())).child(self.resize_handle(cx)).child(
-            div()
+            ui::panel()
                 .id("inspector")
                 .track_scroll(&self.inspector_scroll)
                 .size_full()
                 .flex()
                 .flex_col()
-                .bg(rgb(theme::SURFACE))
                 .border_l_1()
-                .border_color(rgb(theme::BORDER))
-                .text_sm()
+                .border_color(t.hairline)
+                .text_size(px(T_BODY_LG))
+                .text_color(t.fg)
                 .overflow_y_scroll()
                 .children(self.proposals_view(cx))
                 .child(div().flex().flex_col().p_4().children(content)),
@@ -48,6 +51,7 @@ impl TopoApp {
 
     /// A strip on the inspector's left border that drags its width.
     fn resize_handle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
         div()
             .id("inspector-resize")
             .debug_selector(|| "inspector-resize".to_owned())
@@ -57,7 +61,7 @@ impl TopoApp {
             .h_full()
             .w(px(7.))
             .cursor(CursorStyle::ResizeLeftRight)
-            .hover(|s| s.bg(theme::alpha(theme::ACCENT, 0.5)))
+            .hover(move |s| s.bg(t.border_strong))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, _: &MouseDownEvent, _, cx| {
@@ -69,6 +73,7 @@ impl TopoApp {
     }
 
     fn selection_details(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = theme::current();
         let nodes: Vec<_> = self.selected_nodes.iter().filter_map(|id| self.graph().get(id)).collect();
         let common_status = nodes.first().map(|n| n.status).filter(|s| nodes.iter().all(|n| n.status == *s));
         let mut out = vec![
@@ -79,8 +84,8 @@ impl TopoApp {
                 .child(
                     div()
                         .flex_1()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_size(px(T_HEADING))
+                        .font_weight(FontWeight::SEMIBOLD)
                         .child(format!("{} nodes selected", nodes.len())),
                 )
                 .child(icon_button("deselect", "×").on_click(cx.listener(|app, _, _, cx| {
@@ -90,8 +95,8 @@ impl TopoApp {
                 .into_any_element(),
             div()
                 .mt_1()
-                .text_xs()
-                .text_color(rgb(theme::FAINT))
+                .text_size(px(T_BODY))
+                .text_color(t.fg_faint)
                 .child("Change status for all selected nodes, or click a row to edit one.")
                 .into_any_element(),
             self.status_control(common_status, cx).into_any_element(),
@@ -105,38 +110,18 @@ impl TopoApp {
 
     /// Every segment reserves its border, keeping labels still as the active status changes.
     fn status_control(&self, current: Option<Status>, cx: &mut Context<Self>) -> Div {
-        let mut segments = div()
-            .flex()
-            .mt_3()
-            .p_0p5()
-            .gap_0p5()
-            .rounded_lg()
-            .bg(rgb(theme::CANVAS))
-            .border_1()
-            .border_color(rgb(theme::BORDER));
+        let mut segments = ui::segmented().mt_3();
         for (i, status) in [Status::Todo, Status::Doing, Status::Done, Status::Dropped].into_iter().enumerate() {
-            let active = current == Some(status);
-            let c = theme::status_color(status);
+            let label = div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(div().text_color(theme::status_color(status)).child(theme::status_icon(status)))
+                .child(theme::status_label(status));
             segments = segments.child(
-                div()
-                    .id(ElementId::Name(format!("status-{i}").into()))
-                    .debug_selector(|| format!("status-{i}"))
+                ui::segment(format!("status-{i}"), label, current == Some(status))
                     .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap_1()
-                    .h(px(28.))
-                    .rounded_md()
-                    .border_1()
-                    .border_color(theme::alpha(c, if active { 0.5 } else { 0. }))
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(rgb(if active { theme::TEXT } else { theme::MUTED }))
-                    .when(active, |d| d.bg(theme::alpha(c, 0.18)))
-                    .when(!active, |d| d.hover(|s| s.bg(rgb(theme::CARD)).text_color(rgb(theme::TEXT))))
-                    .child(div().text_color(rgb(c)).child(theme::status_icon(status)))
-                    .child(theme::status_label(status))
+                    .h(px(metrics::H_BUTTON))
                     .on_click(cx.listener(move |app, _, _, cx| app.set_selected_status(status, cx))),
             );
         }
@@ -153,6 +138,7 @@ impl TopoApp {
         remove: Removal,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        let t = theme::current();
         let (icon, color) = theme::node_icon(node);
         let group = SharedString::from(format!("row-{key}-{}", node.id));
         let id = node.id.clone();
@@ -166,38 +152,33 @@ impl TopoApp {
             .flex_shrink_0()
             .items_center()
             .justify_center()
-            .rounded_sm()
-            .text_color(rgb(color))
+            .rounded(px(R_XS))
+            .text_color(color)
             .child(icon)
             .when(node.kind == Kind::Task, |d| {
-                d.hover(|s| s.bg(rgb(theme::RAISED))).on_click(cx.listener(move |app, _, _, cx| {
+                d.hover(move |s| s.bg(t.control_active)).on_click(cx.listener(move |app, _, _, cx| {
                     cx.stop_propagation();
                     app.toggle_done(toggle_id.clone(), cx);
                 }))
             });
-        div()
-            .id(ElementId::Name(group.clone()))
+        ui::list_row(group.clone(), false)
             .debug_selector(|| group.to_string())
             .group(group.clone())
             .flex()
             .items_center()
             .gap_2()
             .min_h(px(30.))
-            .px_2()
             .mx_neg_2()
-            .rounded_md()
-            .cursor_pointer()
-            .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
             .child(icon)
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .truncate()
-                    .when(node.status.is_closed(), |d| d.text_color(rgb(theme::FAINT)).line_through())
+                    .when(node.status.is_closed(), |d| d.text_color(t.fg_faint).line_through())
                     .child(node.title.clone()),
             )
-            .children(detail.map(|d| div().flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(d)))
+            .children(detail.map(|d| div().flex_shrink_0().text_size(px(T_BODY)).text_color(t.fg_faint).child(d)))
             .children(remove.map(|(a, b, remove)| {
                 icon_button(ElementId::Name(format!("{group}-remove").into()).to_string(), "×")
                     .opacity(0.)
@@ -215,14 +196,15 @@ impl TopoApp {
     }
 
     fn overview(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = theme::current();
         let graph = self.graph();
         let today = dates::today();
         let mut out: Vec<AnyElement> = Vec::new();
-        out.push(div().text_lg().font_weight(gpui::FontWeight::SEMIBOLD).child("Overview").into_any_element());
+        out.push(div().text_size(px(T_HEADING)).font_weight(FontWeight::SEMIBOLD).child("Overview").into_any_element());
         out.push(
             div()
-                .text_xs()
-                .text_color(rgb(theme::FAINT))
+                .text_size(px(T_BODY))
+                .text_color(t.fg_muted)
                 .child("Select a node to edit it. Edits from the CLI or agents appear live.")
                 .into_any_element(),
         );
@@ -248,8 +230,8 @@ impl TopoApp {
         if ready.is_empty() {
             out.push(
                 div()
-                    .text_xs()
-                    .text_color(rgb(theme::FAINT))
+                    .text_size(px(T_BODY))
+                    .text_color(t.fg_faint)
                     .child("Nothing is unblocked right now.")
                     .into_any_element(),
             );
@@ -266,15 +248,12 @@ impl TopoApp {
             let (done, total) = self.graph_cache.progress[&m.id];
             let left = self.graph_cache.critical_lengths[&m.id];
             let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
-            let color = if m.status.is_closed() || (total > 0 && done == total) { theme::GREEN } else { theme::AMBER };
+            let complete = m.status.is_closed() || (total > 0 && done == total);
             let id = m.id.clone();
+            let (glyph, glyph_color) = theme::node_icon(m);
             let due = m.due.map(|d| {
-                let color = if m.status.is_closed() { theme::FAINT } else { dates::urgency_color(d, today) };
-                div().text_color(rgb(color)).child(format!(
-                    "due {} · {}",
-                    dates::short(d, today),
-                    dates::relative(d, today)
-                ))
+                let color = if m.status.is_closed() { t.fg_faint } else { dates::urgency_color(d, today) };
+                div().text_color(color).child(format!("due {} · {}", dates::short(d, today), dates::relative(d, today)))
             });
             out.push(
                 div()
@@ -284,35 +263,35 @@ impl TopoApp {
                     .gap_1p5()
                     .p_2p5()
                     .mb_2()
-                    .rounded_lg()
-                    .bg(rgb(theme::CARD))
+                    .rounded(px(R_LG))
+                    .bg(t.card)
                     .border_1()
-                    .border_color(rgb(theme::BORDER))
+                    .border_color(t.hairline)
                     .cursor_pointer()
-                    .hover(|s| s.border_color(rgb(theme::BORDER_STRONG)))
+                    .hover(|s| s.border_color(t.border_strong))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_color(rgb(color)).child("◆"))
+                            .child(div().text_color(glyph_color).child(glyph))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w(px(0.))
                                     .truncate()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .font_weight(FontWeight::MEDIUM)
                                     .child(m.title.clone()),
                             )
-                            .child(div().text_xs().text_color(rgb(theme::MUTED)).child(format!("{done}/{total}"))),
+                            .child(div().text_size(px(T_BODY)).text_color(t.fg_muted).child(format!("{done}/{total}"))),
                     )
-                    .child(div().flex().child(theme::progress_bar(fraction, color, 4.)))
+                    .child(div().flex().child(ui::progress_bar(fraction, complete, 4.)))
                     .child(
                         div()
                             .flex()
                             .justify_between()
-                            .text_xs()
-                            .text_color(rgb(theme::FAINT))
+                            .text_size(px(T_BODY))
+                            .text_color(t.fg_muted)
                             .child(match left {
                                 0 => "all requirements closed".to_owned(),
                                 1 => "1 step left".to_owned(),
@@ -331,6 +310,7 @@ impl TopoApp {
     }
 
     fn node_details(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = theme::current();
         let graph = self.graph();
         let today = dates::today();
         let id = node.id.clone();
@@ -344,12 +324,9 @@ impl TopoApp {
                 .flex()
                 .items_center()
                 .gap_2()
-                .text_xs()
-                .text_color(rgb(theme::FAINT))
-                .child(chip(
-                    if milestone { "MILESTONE" } else { "TASK" },
-                    if milestone { theme::AMBER } else { theme::MUTED },
-                ))
+                .text_size(px(T_BODY))
+                .text_color(t.fg_faint)
+                .child(ui::chip_outline(if milestone { "MILESTONE" } else { "TASK" }))
                 .child(id.to_string())
                 .child(div().flex_1())
                 .child(icon_button("deselect", "×").on_click(cx.listener(|app, _, _, cx| {
@@ -358,8 +335,8 @@ impl TopoApp {
                 })))
                 .into_any_element(),
         );
-        let title = div().flex().items_start().gap_2().mt_2().p_1().mx_neg_1().rounded_md();
-        let glyph = div().pt_0p5().text_color(rgb(color)).text_lg().child(icon);
+        let title = div().flex().items_start().gap_2().mt_2().p_1().mx_neg_1().rounded(px(R_SM));
+        let glyph = div().pt_0p5().text_color(color).text_size(px(T_HEADING)).child(icon);
         out.push(match self.editing(&id, Field::Title) {
             // Edited where it stands, at its own size.
             true => title
@@ -368,8 +345,8 @@ impl TopoApp {
                     div()
                         .flex_1()
                         .min_w(px(0.))
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_size(px(T_HEADING))
+                        .font_weight(FontWeight::SEMIBOLD)
                         .child(self.combo().clone()),
                 )
                 .into_any_element(),
@@ -377,7 +354,7 @@ impl TopoApp {
                 .id("title")
                 .debug_selector(|| "title".to_owned())
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(theme::CARD)))
+                .hover(move |s| s.bg(t.control_hover))
                 .child(glyph)
                 .child(title_text(node.title.clone()))
                 .on_click(cx.listener(|app, _, window, cx| app.start_inline(Field::Title, window, cx)))
@@ -392,23 +369,21 @@ impl TopoApp {
             .filter(|n| !n.status.is_closed())
             .collect();
         let (state, state_color) = match (node.status, open_reqs.len()) {
-            (Status::Done, _) => ("Done".to_owned(), theme::GREEN),
-            (Status::Dropped, _) => ("Dropped".to_owned(), theme::FAINT),
-            (_, 0) if milestone => ("Reached — every requirement is closed".to_owned(), theme::GREEN),
-            (Status::Doing, _) => ("In progress".to_owned(), theme::ACCENT),
-            (_, 0) => ("Ready to start".to_owned(), theme::GREEN),
-            (_, n) if milestone => {
-                (format!("{n} requirement{} still open", if n == 1 { "" } else { "s" }), theme::AMBER)
-            }
-            (_, n) => (format!("Blocked by {n} open requirement{}", if n == 1 { "" } else { "s" }), theme::AMBER),
+            (Status::Done, _) => ("Done".to_owned(), t.fg_faint),
+            (Status::Dropped, _) => ("Dropped".to_owned(), t.fg_faint),
+            (_, 0) if milestone => ("Reached — every requirement is closed".to_owned(), t.ready),
+            (Status::Doing, _) => ("In progress".to_owned(), t.accent),
+            (_, 0) => ("Ready to start".to_owned(), t.ready),
+            (_, n) if milestone => (format!("{n} requirement{} still open", if n == 1 { "" } else { "s" }), t.fg_muted),
+            (_, n) => (format!("Blocked by {n} open requirement{}", if n == 1 { "" } else { "s" }), t.fg_muted),
         };
         out.push(
             div()
                 .mt_1()
                 .min_w(px(0.))
                 .truncate()
-                .text_xs()
-                .text_color(rgb(state_color))
+                .text_size(px(T_BODY))
+                .text_color(state_color)
                 .child(state)
                 .into_any_element(),
         );
@@ -417,19 +392,23 @@ impl TopoApp {
         out.push(self.status_control(Some(node.status), cx).into_any_element());
 
         // Properties, each edited in place.
-        let none = || div().text_color(rgb(theme::FAINT)).child("None");
+        let none = || div().text_color(t.fg_faint).child("None");
         let priority = match node.priority {
-            Some(p) => div().truncate().text_color(rgb(theme::priority_color(p))).child(theme::priority_text(p)),
+            Some(p) => div()
+                .truncate()
+                .text_color(theme::priority_color(p))
+                .when(p == Priority::High, |d| d.font_weight(FontWeight::SEMIBOLD))
+                .child(theme::priority_text(p)),
             None => none(),
         };
         let assignee = match &node.assignee {
             Some(name) => div().truncate().child(format!("@{name}")),
-            None => div().text_color(rgb(theme::FAINT)).child("Unassigned"),
+            None => div().text_color(t.fg_faint).child("Unassigned"),
         };
         let due = match node.due {
             Some(d) => {
-                let c = if node.status.is_closed() { theme::MUTED } else { dates::urgency_color(d, today) };
-                div().truncate().text_color(rgb(c)).child(format!(
+                let c = if node.status.is_closed() { t.fg_muted } else { dates::urgency_color(d, today) };
+                div().truncate().text_color(c).child(format!(
                     "{} · {}",
                     dates::short(d, today),
                     dates::relative(d, today)
@@ -439,11 +418,7 @@ impl TopoApp {
         };
         let tags = match node.tags.is_empty() {
             true => none(),
-            false => div()
-                .flex()
-                .flex_wrap()
-                .gap_1()
-                .children(node.tags.iter().map(|t| chip(format!("#{t}"), theme::ACCENT))),
+            false => div().flex().flex_wrap().gap_1().children(node.tags.iter().map(|tag| ui::chip(format!("#{tag}")))),
         };
         out.push(section_label("DETAILS").into_any_element());
         out.push(self.property(node, Field::Priority, "Priority", "P", priority, cx));
@@ -468,11 +443,11 @@ impl TopoApp {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(theme::progress_bar(fraction, theme::GREEN, 6.))
+                    .child(ui::progress_bar(fraction, total > 0 && done == total, 6.))
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(rgb(theme::MUTED))
+                            .text_size(px(T_BODY))
+                            .text_color(t.fg_muted)
                             .child(format!("{done}/{total} · {:.0}%", fraction * 100.)),
                     )
                     .into_any_element(),
@@ -526,15 +501,13 @@ impl TopoApp {
 
         // Actions.
         let (follow_id, convert_id, delete_id) = (id.clone(), id.clone(), id.clone());
+        out.push(ui::divider().mt_5().into_any_element());
         out.push(
             div()
                 .flex()
                 .flex_wrap()
                 .gap_2()
-                .mt_5()
                 .pt_4()
-                .border_t_1()
-                .border_color(rgb(theme::BORDER))
                 .when(!milestone, |d| {
                     d.child(button("add-follow", "+ Follow-up").child(kbd("Tab")).on_click(cx.listener(
                         move |app, _, window, cx| {
@@ -562,7 +535,7 @@ impl TopoApp {
                     )
                 })
                 .child(
-                    theme::tinted_button("delete", "Delete", theme::RED)
+                    ui::button_danger("delete", "Delete")
                         .ml_auto()
                         .child(kbd("⌫"))
                         .on_click(cx.listener(move |app, _, _, cx| app.delete(delete_id.clone(), cx))),
@@ -582,24 +555,20 @@ impl TopoApp {
         value: Div,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let t = theme::current();
         let key = format!("prop-{}", label.to_lowercase());
         if self.editing(&node.id, field) {
             return self.inline_field(Some(label));
         }
-        div()
-            .id(ElementId::Name(key.clone().into()))
+        ui::list_row(key.clone(), false)
             .debug_selector(move || key)
             .flex()
             .items_center()
             .gap_2()
             .min_h(px(30.))
-            .px_2()
             .mx_neg_2()
-            .rounded_md()
-            .cursor_pointer()
-            .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
             .child(property_label(label))
-            .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_xs().child(value))
+            .child(div().flex_1().min_w(px(0.)).overflow_hidden().text_size(px(T_BODY)).text_color(t.fg).child(value))
             .child(kbd(shortcut))
             .on_click(cx.listener(move |app, _, window, cx| app.start_inline(field, window, cx)))
             .into_any_element()
@@ -616,30 +585,17 @@ impl TopoApp {
             .gap_2()
             .min_h(px(30.))
             .children(label.map(property_label))
-            .child(div().flex_1().min_w(px(0.)).text_xs().child(self.combo().clone()))
+            .child(div().flex_1().min_w(px(0.)).text_size(px(T_BODY)).child(self.combo().clone()))
             .into_any_element()
     }
 
     /// The notes: shown as text, and edited in place. A workspace of files can
     /// also open the file; a cloud workspace has none.
     fn notes_section(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = theme::current();
         let editing = self.notes.as_ref() == Some(&node.id);
         let action = |id: &'static str, label: &'static str, key: &'static str| {
-            div()
-                .id(id)
-                .debug_selector(move || id.to_owned())
-                .flex()
-                .items_center()
-                .gap_1()
-                .px_1()
-                .mb_0p5()
-                .rounded_sm()
-                .text_xs()
-                .text_color(rgb(theme::MUTED))
-                .cursor_pointer()
-                .hover(|s| s.bg(rgb(theme::RAISED)).text_color(rgb(theme::TEXT)))
-                .child(label)
-                .child(kbd(key))
+            ui::button_ghost(id, label).h(px(metrics::H_ICON)).px_1().mb_0p5().child(kbd(key))
         };
         let file_id = node.id.clone();
         let actions = div()
@@ -658,8 +614,10 @@ impl TopoApp {
                 )
             });
         let state = match (editing, self.notes_dirty(cx)) {
-            (true, true) => Some(chip("● Unsaved changes", theme::AMBER).debug_selector(|| "notes-unsaved".to_owned())),
-            (true, false) => Some(chip("Saved", theme::GREEN).debug_selector(|| "notes-saved".to_owned())),
+            (true, true) => {
+                Some(ui::chip_tinted("● Unsaved changes", t.warn).debug_selector(|| "notes-unsaved".to_owned()))
+            }
+            (true, false) => Some(ui::chip_tinted("Saved", t.success).debug_selector(|| "notes-saved".to_owned())),
             (false, _) => None,
         };
         let header = div()
@@ -668,8 +626,9 @@ impl TopoApp {
             .justify_between()
             .child(div().flex().items_end().gap_2().child(section_label("NOTES")).children(state.map(|s| s.mb_1())))
             .child(actions);
-        let text =
-            div().min_w(px(0.)).p_3().rounded_lg().bg(rgb(theme::CANVAS)).border_1().text_xs().line_height(px(18.));
+        let text = |focused: bool| {
+            ui::input_frame(focused, false).min_w(px(0.)).p_3().text_size(px(T_BODY)).line_height(px(18.))
+        };
         let body = match (editing, node.body.trim().is_empty()) {
             (true, _) => div()
                 .flex()
@@ -677,19 +636,15 @@ impl TopoApp {
                 .gap_1()
                 // The editor keeps its own clicks: a click anywhere else saves and closes it.
                 .on_mouse_down(MouseButton::Left, |_, _, cx: &mut gpui::App| cx.stop_propagation())
-                .child(
-                    text.debug_selector(|| "notes-editor".to_owned())
-                        .border_color(rgb(theme::ACCENT))
-                        .child(self.notes_input().clone()),
-                )
+                .child(text(true).debug_selector(|| "notes-editor".to_owned()).child(self.notes_input().clone()))
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap_x_3()
                         .gap_y_1()
-                        .text_xs()
-                        .text_color(rgb(theme::FAINT))
+                        .text_size(px(T_SMALL))
+                        .text_color(t.fg_faint)
                         .children(
                             [("⌘↵", "save"), ("esc", "close"), ("tab", "indent")]
                                 .map(|(key, what)| div().flex().items_center().gap_1().child(kbd(key)).child(what)),
@@ -697,13 +652,12 @@ impl TopoApp {
                         .child("unsaved changes ask first"),
                 )
                 .into_any_element(),
-            (false, empty) => text
+            (false, empty) => text(false)
                 .id("notes")
                 .debug_selector(|| "notes".to_owned())
-                .border_color(rgb(theme::BORDER))
                 .cursor_pointer()
-                .hover(|s| s.border_color(rgb(theme::BORDER_STRONG)))
-                .text_color(rgb(if empty { theme::FAINT } else { theme::MUTED }))
+                .hover(move |s| s.border_color(t.border_strong))
+                .text_color(if empty { t.fg_faint } else { t.fg })
                 .child(if empty { "No notes — click to write".to_owned() } else { node.body.trim_end().to_owned() })
                 .on_click(cx.listener(|app, _, window, cx| app.start_notes(window, cx)))
                 .into_any_element(),
@@ -713,6 +667,7 @@ impl TopoApp {
 
     /// The related pull requests: each opens in the browser and can be unlinked.
     fn pull_requests(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let t = theme::current();
         let heading = match node.prs.len() {
             0 => "PULL REQUESTS".to_owned(),
             n => format!("PULL REQUESTS · {n}"),
@@ -729,21 +684,24 @@ impl TopoApp {
             let group = SharedString::from(format!("pr-{index}"));
             let (id, open, unlink) = (node.id.clone(), url.clone(), url.clone());
             out.push(
-                div()
-                    .id(ElementId::Name(group.clone()))
+                ui::list_row(group.clone(), false)
                     .debug_selector(|| group.to_string())
                     .group(group.clone())
                     .flex()
                     .items_center()
                     .gap_2()
                     .min_h(px(30.))
-                    .px_2()
                     .mx_neg_2()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(theme::CARD_HOVER)))
-                    .child(div().flex_shrink_0().text_color(rgb(theme::ACCENT)).child("↗"))
-                    .child(div().flex_1().min_w(px(0.)).truncate().text_xs().child(pr_label(url)))
+                    .child(div().flex_shrink_0().text_color(t.fg_muted).child("↗"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(px(T_BODY))
+                            .text_color(t.md_link)
+                            .child(pr_label(url)),
+                    )
                     .child(
                         icon_button(format!("{group}-remove"), "×")
                             .opacity(0.)
@@ -760,35 +718,36 @@ impl TopoApp {
         if self.editing(&node.id, Field::Pr) {
             out.push(self.inline_field(None));
         } else if node.prs.is_empty() {
-            out.push(div().text_xs().text_color(rgb(theme::FAINT)).child("None linked").into_any_element());
+            out.push(div().text_size(px(T_BODY)).text_color(t.fg_faint).child("None linked").into_any_element());
         }
         out
     }
 
     fn proposals_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let t = theme::current();
         if self.proposals.is_empty() {
             return None;
         }
         let actionable: Vec<usize> =
             (0..self.proposals.len()).filter(|&i| !matches!(self.proposals[i], Proposal::Duplicate { .. })).collect();
         let cards = self.proposals.iter().enumerate().map(|(index, proposal)| {
-            let t = |id: &NodeId| self.title_of(id);
+            let title = |id: &NodeId| self.title_of(id);
             let (kind, text, p) = match proposal {
                 Proposal::Link { from, to, probability } => {
-                    ("Dependency", format!("“{}” requires “{}”", t(from), t(to)), probability)
+                    ("Dependency", format!("“{}” requires “{}”", title(from), title(to)), probability)
                 }
                 Proposal::Join { task, milestone, probability } => {
-                    ("Milestone", format!("Add “{}” to ◆ {}", t(task), t(milestone)), probability)
+                    ("Milestone", format!("Add “{}” to ◆ {}", title(task), title(milestone)), probability)
                 }
                 Proposal::SetKind { id, kind, probability } => {
                     let kind = match kind {
                         Kind::Task => "task",
                         Kind::Milestone => "milestone",
                     };
-                    ("Kind", format!("Make “{}” a {kind}", t(id)), probability)
+                    ("Kind", format!("Make “{}” a {kind}", title(id)), probability)
                 }
                 Proposal::Duplicate { a, b, probability } => {
-                    ("Possible duplicate", format!("“{}” ≈ “{}”", t(a), t(b)), probability)
+                    ("Possible duplicate", format!("“{}” ≈ “{}”", title(a), title(b)), probability)
                 }
             };
             let duplicate = matches!(proposal, Proposal::Duplicate { .. });
@@ -797,71 +756,74 @@ impl TopoApp {
                 .flex_col()
                 .gap_1p5()
                 .p_2p5()
-                .rounded_lg()
-                .bg(rgb(theme::CARD))
+                .rounded(px(R_MD))
+                .bg(t.control)
                 .border_1()
-                .border_color(rgb(theme::BORDER))
+                .border_color(t.hairline)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
-                        .text_xs()
-                        .child(div().text_color(rgb(theme::FAINT)).child(kind))
-                        .child(div().w(px(40.)).flex().child(theme::progress_bar(*p as f32, theme::ACCENT, 3.)))
-                        .child(div().text_color(rgb(theme::MUTED)).child(format!("{:.0}%", p * 100.)))
+                        .text_size(px(T_BODY))
+                        .child(div().text_color(if duplicate { t.warn } else { t.fg_faint }).child(kind))
+                        .child(div().w(px(40.)).flex().child(ui::progress_bar(*p as f32, false, 3.)))
+                        .child(div().text_color(t.fg_muted).child(format!("{:.0}%", p * 100.)))
                         .child(div().flex_1())
                         .when(!duplicate, |d| {
                             d.child(
-                                icon_button(format!("accept-{index}"), "✓")
-                                    .text_color(rgb(theme::GREEN))
+                                ui::button_primary(format!("accept-{index}"), "✓")
                                     .on_click(cx.listener(move |app, _, _, cx| app.accept(vec![index], cx))),
                             )
                         })
-                        .child(icon_button(format!("reject-{index}"), "×").on_click(cx.listener(
+                        .child(ui::button_ghost(format!("reject-{index}"), "×").on_click(cx.listener(
                             move |app, _, _, cx| {
                                 app.proposals.remove(index);
                                 cx.notify();
                             },
                         ))),
                 )
-                .child(div().min_w(px(0.)).truncate().text_xs().child(text))
+                .child(div().min_w(px(0.)).truncate().text_size(px(T_BODY)).text_color(t.fg).child(text))
         });
         Some(
             div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_4()
-                .border_b_1()
-                .border_color(rgb(theme::BORDER))
-                .bg(theme::alpha(theme::ACCENT, 0.05))
                 .child(
                     div()
                         .flex()
-                        .items_center()
+                        .flex_col()
                         .gap_2()
-                        .child(div().text_color(rgb(theme::ACCENT)).child("✦"))
+                        .p_4()
                         .child(
                             div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .truncate()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(format!("Suggestions · {}", self.proposals.len())),
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().text_color(t.fg_muted).child("✦"))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .truncate()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(format!("Suggestions · {}", self.proposals.len())),
+                                )
+                                .when(!actionable.is_empty(), |d| {
+                                    d.child(
+                                        ui::button_primary("accept-all", "Accept all").on_click(
+                                            cx.listener(move |app, _, _, cx| app.accept(actionable.clone(), cx)),
+                                        ),
+                                    )
+                                })
+                                .child(ui::button_ghost("dismiss-all", "Dismiss").on_click(cx.listener(
+                                    |app, _, _, cx| {
+                                        app.proposals.clear();
+                                        cx.notify();
+                                    },
+                                ))),
                         )
-                        .when(!actionable.is_empty(), |d| {
-                            d.child(
-                                button("accept-all", "Accept all")
-                                    .on_click(cx.listener(move |app, _, _, cx| app.accept(actionable.clone(), cx))),
-                            )
-                        })
-                        .child(button("dismiss-all", "Dismiss").on_click(cx.listener(|app, _, _, cx| {
-                            app.proposals.clear();
-                            cx.notify();
-                        }))),
+                        .children(cards),
                 )
-                .children(cards),
+                .child(ui::divider()),
         )
     }
 }
@@ -870,7 +832,8 @@ impl TopoApp {
 const PROPERTY_LABEL_W: f32 = 64.;
 
 fn property_label(label: &'static str) -> Div {
-    div().w(px(PROPERTY_LABEL_W)).flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(label)
+    let t = theme::current();
+    div().w(px(PROPERTY_LABEL_W)).flex_shrink_0().text_size(px(T_BODY)).text_color(t.fg_muted).child(label)
 }
 
 /// A read-only row of DETAILS showing a recorded moment in the time zone `tz`,
@@ -883,9 +846,10 @@ fn moment_row(
     absent: &'static str,
     tz: &TimeZone,
 ) -> AnyElement {
+    let t = theme::current();
     let value = match at {
-        Some(at) => div().truncate().text_color(rgb(theme::MUTED)).child(dates::moment(at, tz.clone())),
-        None => div().truncate().text_color(rgb(theme::FAINT)).child(absent),
+        Some(at) => div().truncate().text_color(t.fg).child(dates::moment(at, tz.clone())),
+        None => div().truncate().text_color(t.fg_faint).child(absent),
     };
     div()
         .debug_selector(move || format!("prop-{key}"))
@@ -894,13 +858,14 @@ fn moment_row(
         .gap_2()
         .min_h(px(24.))
         .child(property_label(label))
-        .child(div().flex_1().min_w(px(0.)).text_xs().child(value))
+        .child(div().flex_1().min_w(px(0.)).text_size(px(T_BODY)).child(value))
         .into_any_element()
 }
 
 /// The node title, clamped to three lines that end in `…`. `line_clamp` alone
 /// limits the lines but clips the last one mid-character.
 fn title_text(title: impl Into<SharedString>) -> Stateful<Div> {
+    let t = theme::current();
     div()
         .id("title-text")
         .debug_selector(|| "title-text".to_owned())
@@ -911,11 +876,12 @@ fn title_text(title: impl Into<SharedString>) -> Stateful<Div> {
         .px_1p5()
         .py_0p5()
         .border_1()
-        .border_color(theme::alpha(theme::ACCENT, 0.))
+        .border_color(theme::alpha(t.fg, 0.))
         .line_clamp(3)
         .text_ellipsis()
-        .text_lg()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_size(px(T_HEADING))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.fg)
         .child(title.into())
 }
 

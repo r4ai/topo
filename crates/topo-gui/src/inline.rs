@@ -8,7 +8,7 @@
 //! This module says what each field offers and how its text becomes an edit;
 //! how the field and its list behave is the combobox's business.
 
-use gpui::{Context, Entity, Focusable, Window};
+use gpui::{Context, Entity, Focusable, Rgba, Window};
 use jiff::civil::Date;
 use topo_core::model::{normalize_assignee, normalize_pr, pr_label};
 use topo_core::{Edit, Graph, Node, NodeId, Priority};
@@ -91,14 +91,15 @@ impl Field {
     }
 
     /// What Enter would save, shown under the field while typing, and its color.
-    pub(crate) fn preview(self, text: &str, node: &Node, today: Date) -> (String, u32) {
+    pub(crate) fn preview(self, text: &str, node: &Node, today: Date) -> (String, Rgba) {
+        let t = theme::current();
         let edit = match self.parse(text, node, today) {
             // The title is what is typed; there is nothing to interpret.
-            _ if self == Field::Title => return (String::new(), theme::FAINT),
+            _ if self == Field::Title => return (String::new(), t.fg_faint),
             Ok(edit) => edit,
-            Err(_) if self == Field::Due => return ("Not a date yet".into(), theme::FAINT),
-            Err(_) if text.trim().is_empty() => return (self.placeholder().into(), theme::FAINT),
-            Err(e) => return (e, theme::FAINT),
+            Err(_) if self == Field::Due => return ("Not a date yet".into(), t.fg_faint),
+            Err(_) if text.trim().is_empty() => return (self.placeholder().into(), t.fg_faint),
+            Err(e) => return (e, t.fg_faint),
         };
         let saved = match self {
             Field::Title => edit.title,
@@ -111,8 +112,8 @@ impl Field {
             Field::Pr => edit.prs.and_then(|prs| prs.last().map(|url| pr_label(url))),
         };
         match saved {
-            Some(value) => (format!("→ {value}"), theme::GREEN),
-            None => ("→ None".into(), theme::MUTED),
+            Some(value) => (format!("→ {value}"), t.fg),
+            None => ("→ None".into(), t.fg_muted),
         }
     }
 }

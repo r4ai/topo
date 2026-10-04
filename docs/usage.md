@@ -130,10 +130,11 @@ Built on GPUI (the GPU-accelerated UI framework powering the Zed editor), `topo-
 
 ### Workspace Management
 
-- Open Folder: Click the repository name in the toolbar or press `Cmd+O` (`Ctrl+O` on Linux/Windows)
+- Switch Repository: Click the repository name in the toolbar or press `Cmd+O` (`Ctrl+O` on Linux/Windows) to open the switcher over the canvas. Type to filter the recent workspaces, or paste a folder path to open it. `↑` / `↓` select, `Enter` opens, `Cmd+Backspace` forgets a recent workspace, and `Esc` clears the filter and then closes the switcher
+- Open Folder: Press `Cmd+O` again in the switcher, or click "Open folder…", to choose a folder with the system picker
 - Automatic Discovery: Opens the selected folder's own `.topo` workspace without requiring a Git root
-- Uninitialized Folders: Offers an inline "Initialize workspace" button
-- History: Remembers up to 10 recent workspace paths across app restarts
+- Uninitialized Folders: The switcher offers an "Initialize workspace" button (also `Enter`)
+- History: Remembers up to 10 recent workspace paths across app restarts. A folder that no longer exists is marked "missing", and cloud-linked workspaces carry a "cloud" tag
 
 ### Canvas Navigation
 
@@ -152,6 +153,13 @@ Both toggles are in the bottom bar and are remembered across app restarts (user 
 - Hide Completed: `Shift+H` hides every done and dropped node together with its edges (edges are not re-routed through hidden nodes). A hidden node is also dropped from the selection, from Select All and from search
 - Group by Tag: `Shift+G` lays the canvas out as one band per tag, sorted by name, with an `untagged` band last. Tags are sets, so a node with several tags appears in every one of its bands. Edges are drawn inside a band; an edge whose ends share no band is not drawn, except for the selected nodes: each of their dependency and milestone edges that no band shows gets one highlighted line from the selected node's card (the one last clicked) to the nearest card of the other end, so you can trace it. Ends in a folded band or hidden by Hide Completed have no card and get no line. Click a band header to fold or unfold it (folding is not remembered)
 - The modes combine with each other and with the priority filter
+
+### Appearance
+
+- Modes: System (default, follows the OS), Light and Dark
+- Monotone: an option, off by default, that draws every signal hue (blue, amber, green) as a neutral and leaves only the alarm colours; it combines with any mode
+- Switch: `View > Appearance` or the theme button in the toolbar (a menu with the modes and Monotone); the choice is saved per user and applies to every window
+- Details: [gui/design-system.md](gui/design-system.md)
 
 ### Node Operations
 

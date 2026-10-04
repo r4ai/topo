@@ -163,3 +163,23 @@ The full local database read remains dominated by converting 5,000 rows; the ben
 Run `cargo test --release -p topo-server graph_database_load_benchmark -- --ignored --nocapture`. Raw results and request/query counts: [server-load-2026-10-04.json](performance/server-load-2026-10-04.json).
 
 Validation: 188 workspace tests pass; targeted tests count save requests, poll intervals, DB batches/statements and returned node rows, including viewer rejection and permission revocation before full/304 reads. Existing tests cover concurrent commits, membership/token revocation, key retries, conditional writes, stale responses and unsaved drafts. Strict Clippy, formatting and a `wasm32-unknown-unknown` server check pass. Changes remain local; production performance and deployment are not verified by this benchmark.
+
+## Design system migration (2026-10-04)
+
+The theme lookup is resolved once per `graph_view()` call and passed down to the card, edge and grid builders, so a frame reads the thread-local theme once instead of once per element. The migration to the monotone design system leaves frame CPU time unchanged within noise.
+
+Medians in milliseconds on the same machine (Apple M5, macOS arm64, release build), 500 nodes, before → after:
+
+| Operation | Recompute | Before | After |
+| :--- | :--- | :--- | :--- |
+| Pan | true | 2.47 | 2.43 |
+| Zoom | true | 2.41 | 2.29 |
+| Hover | true | 2.33 | 2.31 |
+| Pan | false | 1.43 | 1.43 |
+| Zoom | false | 1.42 | 1.43 |
+| Hover | false | 1.43 | 1.43 |
+
+| Grid minimum spacing | Before | After |
+| :--- | :--- | :--- |
+| 14 px | 1.63 | 1.63 |
+| 28 px | 0.23 | 0.23 |

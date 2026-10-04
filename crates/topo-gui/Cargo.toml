@@ -39,6 +39,8 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b77ec90b
 # Trackpad pinch and smart zoom, which gpui does not report.
 objc = "0.2"
 block = "0.1"
+# Same version gpui uses; reads the AppKit view for the TOPO_GLASS experiment.
+raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 # Already used by GPUI; resource ID 1 is its native window icon.

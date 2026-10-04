@@ -15,6 +15,7 @@ mod combobox;
 mod config;
 mod dates;
 mod gesture;
+mod glass;
 mod graph_view;
 mod inline;
 mod inspector;
@@ -30,6 +31,7 @@ mod repository;
 mod screenshot;
 mod text_input;
 mod theme;
+mod ui;
 
 use futures::channel::mpsc;
 use std::cell::Cell;
@@ -43,8 +45,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, WindowBounds,
-    WindowOptions, actions, div, point, prelude::*, px, rgb, size,
+    MouseButton, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions, actions, div, point, prelude::*, px, size,
 };
 use notify::{RecursiveMode, Watcher};
 use topo_core::wire::Snapshot;
@@ -208,8 +210,12 @@ struct TopoApp {
     /// Which nodes the canvas shows and how it groups them.
     view: layout::View,
     show_help: bool,
+    /// The popover under the toolbar's theme button is open.
+    theme_menu: bool,
     /// Narrow window: the toolbar and inspector drop secondary text.
     compact: bool,
+    /// A left press landed on the toolbar background and may turn into a window drag.
+    toolbar_press: bool,
     /// Width of the inspector in pixels; `None` follows the window proportion.
     inspector_width: Option<f32>,
     /// The window width the inspector width was last clamped against.
@@ -323,7 +329,9 @@ impl TopoApp {
             priority_filter: None,
             view,
             show_help: false,
+            theme_menu: false,
             compact: false,
+            toolbar_press: false,
             inspector_width,
             viewport_width: 0.,
             undo: Vec::new(),
@@ -693,6 +701,7 @@ impl TopoApp {
         });
         self.prompt = Some(prompt);
         self.show_help = false;
+        self.theme_menu = false;
         self.refresh_palette(cx);
         window.focus(&self.palette.focus_handle(cx), cx);
         cx.notify();
@@ -782,9 +791,10 @@ impl TopoApp {
             .collect();
         let listing = matches!(self.prompt, Some(Prompt::Search | Prompt::Pick { .. }));
         let empty = if listing && choices.is_empty() { "No matches" } else { "" };
+        let t = theme::current();
         self.palette.update(cx, |palette, cx| {
             palette.set_choices(choices, cx);
-            palette.set_feedback((empty.to_owned(), theme::FAINT), None, cx);
+            palette.set_feedback((empty.to_owned(), t.fg_faint), None, cx);
         });
     }
 
@@ -1274,6 +1284,7 @@ impl TopoApp {
             ("g", _) if m.shift => self.toggle_group_by_tag(),
             ("escape", _) => match () {
                 _ if self.drag.is_some() => self.drag = None,
+                _ if self.theme_menu => self.theme_menu = false,
                 _ if self.show_help => self.show_help = false,
                 _ => self.clear_selection(),
             },
@@ -1359,27 +1370,31 @@ impl Render for TopoApp {
         }
         // The field belongs to the one selected node and lives while it has the
         // focus. Leaving the window does not move the focus, so it survives that.
-        let focused = self.combo.focus_handle(cx).is_focused(window);
-        match &self.inline {
-            Some(edit) if !focused || self.selected_node().is_none_or(|n| n.id != edit.node) => {
-                self.inline = None;
-                window.focus(&self.focus, cx);
+        // Under the repository switcher the focus is elsewhere and the drafts wait.
+        if self.poll_visible {
+            let focused = self.combo.focus_handle(cx).is_focused(window);
+            match &self.inline {
+                Some(edit) if !focused || self.selected_node().is_none_or(|n| n.id != edit.node) => {
+                    self.inline = None;
+                    window.focus(&self.focus, cx);
+                }
+                None if focused => window.focus(&self.focus, cx),
+                _ => {}
             }
-            None if focused => window.focus(&self.focus, cx),
-            _ => {}
+            self.sync_notes(window, cx);
         }
-        self.sync_notes(window, cx);
         // The canvas takes the standard editing commands only while no text field is
         // open. A command that cannot run has no handler, which disables its menu item.
         let canvas = self.prompt.is_none() && self.inline.is_none() && self.notes.is_none();
         let (has_selection, has_nodes) = (!self.selected_nodes.is_empty(), self.graph().nodes().next().is_some());
         let (can_undo, can_redo) = (!self.undo.is_empty(), !self.redo.is_empty());
+        let t = theme::current();
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::CANVAS))
-            .text_color(rgb(theme::TEXT))
+            .bg(theme::window_bg())
+            .text_color(t.fg)
             .font_family(".SystemUIFont")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
@@ -1425,7 +1440,7 @@ impl Render for TopoApp {
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_drag_end))
-            .child(self.toolbar(cx))
+            .child(self.toolbar(window, cx))
             .when(self.persistence.pending_count() > 0, |d| d.child(self.persistence_bar(cx)))
             .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(cx)).child(self.inspector(cx)))
             .when(self.notes_ask.is_some(), |d| d.child(self.notes_dialog(cx)))
@@ -1470,7 +1485,11 @@ fn main() -> Result<()> {
     }
     #[cfg(feature = "screenshot")]
     if let Some(path) = &args.screenshot {
-        return screenshot::render(open_workspace(args.workspace.as_deref())?, path, &args);
+        // The switcher, or a folder without a workspace, is the shell's to show; anything else is the editor alone.
+        return match open_workspace(args.workspace.as_deref()) {
+            Ok(ws) if !args.chooser => screenshot::render(ws, path, &args),
+            _ => screenshot::render_shell(path, &args),
+        };
     }
     let config = config::UserConfig::load();
     let start = repository::startup_target(
@@ -1482,11 +1501,54 @@ fn main() -> Result<()> {
     run(start, config)
 }
 
+/// The native menu bar, with check marks on the chosen theme mode and on Monotone.
+fn menus(mode: theme::ThemeMode, monotone: bool) -> Vec<Menu> {
+    use theme::ThemeMode;
+    vec![
+        Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)], disabled: false },
+        Menu {
+            name: "File".into(),
+            items: vec![MenuItem::action("Open Repository…", repository::OpenRepository)],
+            disabled: false,
+        },
+        // Each item acts on the text of a focused field, and on the graph otherwise.
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", text_input::Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", text_input::Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", text_input::Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", text_input::Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", text_input::Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", text_input::SelectAll, OsAction::SelectAll),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![MenuItem::submenu(Menu {
+                name: "Appearance".into(),
+                items: vec![
+                    MenuItem::action("System", theme::ThemeSystem).checked(mode == ThemeMode::System),
+                    MenuItem::action("Light", theme::ThemeLight).checked(mode == ThemeMode::Light),
+                    MenuItem::action("Dark", theme::ThemeDark).checked(mode == ThemeMode::Dark),
+                    MenuItem::separator(),
+                    MenuItem::action("Monotone", theme::ToggleMonotone).checked(monotone),
+                ],
+                disabled: false,
+            })],
+            disabled: false,
+        },
+    ]
+}
+
 fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
     let title: SharedString = "topo — Open repository".into();
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx: &mut App| {
         branding::set_app_icon();
         text_input::bind_keys(cx);
+        repository::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
@@ -1494,42 +1556,51 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
             KeyBinding::new("cmd-o", repository::OpenRepository, None),
             KeyBinding::new("ctrl-o", repository::OpenRepository, None),
         ]);
-        cx.set_menus(vec![
-            Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)], disabled: false },
-            Menu {
-                name: "File".into(),
-                items: vec![MenuItem::action("Open Repository…", repository::OpenRepository)],
-                disabled: false,
-            },
-            // Each item acts on the text of a focused field, and on the graph otherwise.
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::os_action("Undo", text_input::Undo, OsAction::Undo),
-                    MenuItem::os_action("Redo", text_input::Redo, OsAction::Redo),
-                    MenuItem::separator(),
-                    MenuItem::os_action("Cut", text_input::Cut, OsAction::Cut),
-                    MenuItem::os_action("Copy", text_input::Copy, OsAction::Copy),
-                    MenuItem::os_action("Paste", text_input::Paste, OsAction::Paste),
-                    MenuItem::os_action("Select All", text_input::SelectAll, OsAction::SelectAll),
-                ],
-                disabled: false,
-            },
-        ]);
+        theme::set_translucent(window_background() != WindowBackgroundAppearance::Opaque);
+        theme::init(cx);
+        theme::apply(config.theme, config.monotone, cx.window_appearance());
+        cx.set_menus(menus(config.theme, config.monotone));
         let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         let options = WindowOptions {
             app_id: Some("dev.r4ai.topo".into()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(gpui::TitlebarOptions { title: Some(title), ..Default::default() }),
+            titlebar: Some(titlebar(title)),
+            window_background: window_background(),
             window_min_size: Some(size(px(720.), px(480.))),
             ..Default::default()
         };
-        cx.open_window(options, |window, cx| cx.new(|cx| repository::RepositoryWindow::new(start, config, window, cx)))
-            .expect("failed to open window");
+        cx.open_window(options, |window, cx| {
+            glass::install(window);
+            cx.new(|cx| repository::RepositoryWindow::new(start, config, window, cx))
+        })
+        .expect("failed to open window");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
     Ok(())
+}
+
+/// The window material: blurred on macOS, Mica on Windows, opaque elsewhere.
+fn window_background() -> WindowBackgroundAppearance {
+    if cfg!(target_os = "macos") && glass::requested() {
+        WindowBackgroundAppearance::Transparent
+    } else if cfg!(target_os = "macos") {
+        WindowBackgroundAppearance::Blurred
+    } else if cfg!(target_os = "windows") {
+        WindowBackgroundAppearance::MicaBackdrop
+    } else {
+        WindowBackgroundAppearance::Opaque
+    }
+}
+
+/// macOS hides the titlebar and insets the traffic lights into the toolbar; other platforms keep the system one.
+fn titlebar(title: SharedString) -> gpui::TitlebarOptions {
+    let mac = cfg!(target_os = "macos");
+    gpui::TitlebarOptions {
+        title: Some(title),
+        appears_transparent: mac,
+        traffic_light_position: mac.then(|| point(px(14.), px(15.))),
+    }
 }
 
 #[cfg(test)]

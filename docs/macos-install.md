@@ -2,8 +2,8 @@
 
 Download the `.pkg` installer from [GitHub Releases](https://github.com/r4ai/topo/releases):
 
-- Apple Silicon (M1 or later): `topo-gui-v0.2.1-aarch64-apple-darwin.pkg`
-- Intel Mac: `topo-gui-v0.2.1-x86_64-apple-darwin.pkg`
+- Apple Silicon (M1 or later): `topo-gui-v0.3.0-aarch64-apple-darwin.pkg`
+- Intel Mac: `topo-gui-v0.3.0-x86_64-apple-darwin.pkg`
 
 Open the installer and follow its steps. It installs `topo.app` in `/Applications`.
 Open topo from Applications, then choose your repository or folder. Installing or
@@ -28,7 +28,7 @@ still trigger Gatekeeper rejection, so the `.pkg` is the recommended GUI install
 Verify downloads against the release's `SHA256SUMS` before installation:
 
 ```sh
-shasum -a 256 topo-gui-v0.2.1-aarch64-apple-darwin.pkg
+shasum -a 256 topo-gui-v0.3.0-aarch64-apple-darwin.pkg
 ```
 
 Compare the hash to the corresponding entry in `SHA256SUMS`. Do not apply a blanket
