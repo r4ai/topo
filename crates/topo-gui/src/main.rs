@@ -15,6 +15,7 @@ mod combobox;
 mod config;
 mod dates;
 mod gesture;
+mod glass;
 mod graph_view;
 mod inline;
 mod inspector;
@@ -1553,8 +1554,11 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
             window_min_size: Some(size(px(720.), px(480.))),
             ..Default::default()
         };
-        cx.open_window(options, |window, cx| cx.new(|cx| repository::RepositoryWindow::new(start, config, window, cx)))
-            .expect("failed to open window");
+        cx.open_window(options, |window, cx| {
+            glass::install(window);
+            cx.new(|cx| repository::RepositoryWindow::new(start, config, window, cx))
+        })
+        .expect("failed to open window");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });
@@ -1563,7 +1567,9 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
 
 /// The window material: blurred on macOS, Mica on Windows, opaque elsewhere.
 fn window_background() -> WindowBackgroundAppearance {
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") && glass::requested() {
+        WindowBackgroundAppearance::Transparent
+    } else if cfg!(target_os = "macos") {
         WindowBackgroundAppearance::Blurred
     } else if cfg!(target_os = "windows") {
         WindowBackgroundAppearance::MicaBackdrop

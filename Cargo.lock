@@ -7262,6 +7262,7 @@ dependencies = [
  "jiff",
  "notify",
  "objc",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "smallvec",
