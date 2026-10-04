@@ -1,6 +1,4 @@
 //! Shared components of the design system; views compose these instead of styling a `div` by hand.
-// Views adopt these as they migrate.
-#![allow(dead_code)]
 
 use gpui::{Div, FontWeight, Rgba, SharedString, Stateful, Styled, div, prelude::*, px, relative};
 
@@ -199,12 +197,6 @@ pub fn chip_outline(label: impl Into<SharedString>) -> Div {
 /// A label tinted with an alarm `color`.
 pub fn chip_tinted(label: impl Into<SharedString>, color: Rgba) -> Div {
     chip_frame(label).bg(alpha(color, 0.14)).text_color(color)
-}
-
-/// A label filled with the emphasis color.
-pub fn chip_emphasis(label: impl Into<SharedString>) -> Div {
-    let t = current();
-    chip_frame(label).bg(t.emphasis).text_color(t.on_emphasis)
 }
 
 fn chip_frame(label: impl Into<SharedString>) -> Div {

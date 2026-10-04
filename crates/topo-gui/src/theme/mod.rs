@@ -2,11 +2,10 @@
 
 use std::cell::Cell;
 
-use gpui::{BoxShadow, Div, Hsla, Rgba, SharedString, Stateful, Styled, div, prelude::*, px};
+use gpui::{Hsla, Rgba};
 use topo_core::{Kind, Node, Priority, Status};
 
 use crate::markdown::Style;
-use crate::ui;
 
 pub mod metrics;
 mod mode;
@@ -49,12 +48,6 @@ pub struct Theme {
     pub grid_dot: Rgba,
     pub scrim: Rgba,
     pub shadow: Rgba,
-    // Legacy names, removed once every view is migrated.
-    pub surface: Rgba,
-    pub raised: Rgba,
-    pub border: Rgba,
-    pub accent: Rgba,
-    pub link: Rgba,
 }
 
 thread_local! {
@@ -63,18 +56,6 @@ thread_local! {
 
 pub fn current() -> &'static Theme {
     CURRENT.with(Cell::get)
-}
-
-pub fn faint() -> Rgba {
-    current().fg_faint
-}
-
-pub fn accent() -> Rgba {
-    current().emphasis
-}
-
-pub fn selection() -> Rgba {
-    current().selection
 }
 
 /// `color` with its alpha replaced by `alpha`.
@@ -163,58 +144,4 @@ pub fn node_icon(node: &Node) -> (&'static str, Rgba) {
         Kind::Milestone => ("◆", t.fg),
         Kind::Task => (status_icon(node.status), status_color(node.status)),
     }
-}
-
-/// The shadow of a selected card; an alias of `metrics::e1`.
-pub fn shadow() -> Vec<BoxShadow> {
-    metrics::e1()
-}
-
-/// A small text button.
-pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
-    ui::button(id, label)
-}
-
-/// A small text button tinted with `color`, e.g. for destructive actions.
-pub fn tinted_button(id: impl Into<SharedString>, label: impl Into<SharedString>, color: Rgba) -> Stateful<Div> {
-    match color == current().danger {
-        true => ui::button_danger(id, label),
-        false => ui::button(id, label).text_color(color),
-    }
-}
-
-/// A borderless square button showing a single glyph.
-pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) -> Stateful<Div> {
-    ui::icon_button(id, glyph)
-}
-
-/// A keyboard shortcut hint such as `⌘Z`.
-pub fn kbd(keys: impl Into<SharedString>) -> Div {
-    ui::kbd(keys)
-}
-
-/// Small uppercase heading above a group of rows.
-pub fn section_label(label: impl Into<SharedString>) -> Div {
-    ui::section_label(label)
-}
-
-/// A rounded label; alarm colors tint it, the emphasis color fills it, any other color only sets the text.
-pub fn chip(label: impl Into<SharedString>, color: Rgba) -> Div {
-    let t = current();
-    match color {
-        c if c == t.danger || c == t.warn || c == t.success => ui::chip_tinted(label, c),
-        c if c == t.emphasis => ui::chip_emphasis(label),
-        c => ui::chip(label).text_color(c),
-    }
-}
-
-/// Horizontal progress bar filled to `fraction` (0..=1).
-pub fn progress_bar(fraction: f32, color: Rgba, height: f32) -> Div {
-    div()
-        .flex_1()
-        .h(px(height))
-        .rounded_full()
-        .bg(current().control)
-        .overflow_hidden()
-        .child(div().h_full().w(gpui::relative(fraction.clamp(0., 1.))).rounded_full().bg(color))
 }

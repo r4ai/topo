@@ -26,7 +26,8 @@ use gpui::{
 };
 
 use crate::text_input::{InputEvent, TextInput};
-use crate::theme::{self, chip};
+use crate::theme::{self, metrics};
+use crate::ui;
 
 /// A value offered in the list, and what tells it apart there.
 #[derive(Clone, Debug, PartialEq)]
@@ -323,7 +324,7 @@ impl Combobox {
         // Lowercasing can move byte offsets in rare scripts; then nothing is set off.
         let range = range.filter(|r| value.is_char_boundary(r.start) && value.is_char_boundary(r.end));
         let style = HighlightStyle {
-            color: Some(t.accent.into()),
+            color: Some(t.fg.into()),
             font_weight: Some(FontWeight::BOLD),
             ..HighlightStyle::default()
         };
@@ -358,17 +359,14 @@ impl Combobox {
                     // The value the field has now.
                     None => div().w(px(10.)).text_color(t.success).when(current, |d| d.child("✓")),
                 };
-                div()
-                    .id(ElementId::Name(format!("choice-{index}").into()))
+                ui::list_row(format!("choice-{index}"), highlighted)
                     .debug_selector(move || format!("choice-{index}"))
                     .flex()
                     .items_center()
                     .gap_2()
-                    .when_else(palette, |d| d.h(px(32.)).px_3().rounded_md(), |d| d.h(px(24.)).px_1p5().rounded_sm())
-                    .cursor_pointer()
+                    .when_else(palette, |d| d.h(px(32.)).px_3().rounded(px(metrics::R_MD)), |d| d.h(px(24.)).px_1p5())
+                    .text_color(t.fg)
                     .whitespace_nowrap()
-                    .when(highlighted, |d| d.bg(theme::alpha(t.accent, 0.22)))
-                    .when(!highlighted, |d| d.hover(|s| s.bg(t.card_hover)))
                     .child(mark.flex_shrink_0())
                     .child(
                         div()
@@ -376,7 +374,7 @@ impl Combobox {
                             .child(self.matched(&choice.value, cx)),
                     )
                     .when(!palette, |d| d.child(div().flex_1()))
-                    .child(div().flex_shrink_0().text_xs().text_color(t.fg_faint).child(choice.detail.clone()))
+                    .child(div().flex_shrink_0().text_xs().text_color(t.fg_muted).child(choice.detail.clone()))
                     .on_click(cx.listener(move |combo, _, _, cx| combo.pick(index, cx)))
             })
             .collect();
@@ -394,23 +392,20 @@ impl Combobox {
         let note = note.map(|(text, color)| {
             faint(text, color)
                 .debug_selector(|| "combo-note".to_owned())
-                .when(separate, |d| d.mt_0p5().border_t_1().border_color(t.border))
+                .when(separate, |d| d.mt_0p5().border_t_1().border_color(t.hairline))
         });
-        let list = div().id("combo-list").flex().flex_col().children(rows).children(more).children(note);
+        let list = div().flex().flex_col().children(rows).children(more).children(note);
         Some(match palette {
             true => list.w_full().p_1().text_sm().into_any_element(),
-            false => list
+            false => ui::glass(ui::Elevation::Popover)
+                .id("combo-list")
                 .debug_selector(|| "combo-list".to_owned())
                 .occlude()
                 .min_w(px(200.))
                 .p_0p5()
-                .rounded_md()
-                .bg(t.raised)
-                .border_1()
-                .border_color(t.border_strong)
-                .shadow(theme::shadow())
                 .text_xs()
                 .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
+                .child(list)
                 .into_any_element(),
         })
     }
@@ -425,25 +420,26 @@ impl Focusable for Combobox {
 impl Render for Combobox {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
-        let list = self.focus_handle(cx).is_focused(window).then(|| self.list(cx)).flatten();
+        let focused = self.focus_handle(cx).is_focused(window);
+        let list = focused.then(|| self.list(cx)).flatten();
         let field = div().flex_1().min_w(px(64.)).child(self.input.clone());
         if self.palette {
             // The owner draws the card around it; the list follows the field in the flow.
-            let lead = div().flex_shrink_0().text_color(t.accent).child(self.lead.clone());
+            let lead = div().flex_shrink_0().text_color(t.emphasis).child(self.lead.clone());
             return div()
                 .id("combobox")
                 .w_full()
                 .flex()
                 .flex_col()
                 .child(div().flex().items_center().gap_3().px_4().py_2p5().child(lead).child(field))
-                .children(list.map(|list| div().border_t_1().border_color(t.border).child(list)));
+                .children(list.map(|list| div().border_t_1().border_color(t.hairline).child(list)));
         }
         let chips: Vec<_> = self
             .chips()
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                chip(format!("#{value}"), t.accent).flex().items_center().gap_1().child(
+                ui::chip(format!("#{value}")).flex().items_center().gap_1().child(
                     div()
                         .id(ElementId::Name(format!("chip-{index}-remove").into()))
                         .debug_selector(move || format!("chip-{index}-remove"))
@@ -454,7 +450,7 @@ impl Render for Combobox {
                 )
             })
             .collect();
-        div()
+        ui::input_frame(focused, self.error.is_some())
             .id("combobox")
             .debug_selector(|| "combobox".to_owned())
             .relative()
@@ -465,10 +461,6 @@ impl Render for Combobox {
             .gap_1()
             .px_1p5()
             .py_0p5()
-            .rounded_md()
-            .bg(t.bg)
-            .border_1()
-            .border_color(if self.error.is_some() { t.danger } else { t.accent })
             // The field keeps its own clicks, so its owner can close it on a click elsewhere.
             .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
             .children(chips)

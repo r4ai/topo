@@ -65,7 +65,7 @@ The mapping functions in `theme/mod.rs` are the single source.
 | Status | Glyph first: `○` todo, `◐` doing, `✓` done, `⊘` dropped. Todo `fg_muted`; doing `emphasis` with a filled chip (`emphasis` fill, `on_emphasis` text); done `fg_faint` with strikethrough and 60% card opacity; dropped `fg_faint` |
 | Priority | Glyph first: `!!`, `↑`, `=`, `↓`. Urgent `danger`; high `fg` semibold; medium `fg_muted`; low `fg_faint` |
 | Selection | Card: 2px `emphasis` border and `e1` shadow. Rows and segments: `control_active` fill with `fg` text |
-| Critical path | Edge `emphasis` at width 2.5; card border `fg_muted` |
+| Critical path | Edge `emphasis` at width 2.5; card border `border_strong` |
 | Focused edge | `fg` at width 2 (dashed when it is a membership edge) |
 | Milestone | `◆` in `fg`, `card_milestone` fill, `border_strong` border, larger radius, dashed membership edges in `edge` |
 | Tag | Neutral chip: `control` fill, `fg_muted` text |

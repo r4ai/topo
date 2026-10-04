@@ -920,7 +920,7 @@ impl TopoApp {
             (Some(true), _) => t.success.into(),
             (Some(false), _) => t.danger.into(),
             (None, true) => t.emphasis.into(),
-            _ if state.critical => t.fg_muted.into(),
+            _ if state.critical => t.border_strong.into(),
             _ if milestone || state.hovered => t.border_strong.into(),
             _ => t.hairline.into(),
         };

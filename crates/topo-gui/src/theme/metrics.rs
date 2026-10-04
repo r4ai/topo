@@ -1,5 +1,5 @@
 //! Radius, space, type and control-size tokens, and the elevation shadows.
-// Views adopt these as they migrate.
+// The full scale is defined even where a step is not used yet.
 #![allow(dead_code)]
 
 use gpui::{BoxShadow, point, px};

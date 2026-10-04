@@ -43,6 +43,12 @@ pub static DARK: Theme = Theme {
     grid_dot: hex(0xffffff, 0.055),
     scrim: hex(0x000000, 0.5),
     shadow: hex(0x000000, 0.5),
+    // Legacy names, removed once every view is migrated.
+    surface: hex(0xffffff, 0.035),
+    raised: hex(0xffffff, 0.1),
+    border: hex(0xffffff, 0.08),
+    accent: hex(0xffffff, 1.0),
+    link: hex(0xf2f2f3, 1.0),
 };
 
 pub static LIGHT: Theme = Theme {
@@ -76,6 +82,12 @@ pub static LIGHT: Theme = Theme {
     grid_dot: hex(0x000000, 0.08),
     scrim: hex(0x000000, 0.25),
     shadow: hex(0x000000, 0.14),
+    // Legacy names, removed once every view is migrated.
+    surface: hex(0xffffff, 0.55),
+    raised: hex(0x000000, 0.07),
+    border: hex(0x000000, 0.08),
+    accent: hex(0x111113, 1.0),
+    link: hex(0x18181b, 1.0),
 };
 
 #[cfg(test)]

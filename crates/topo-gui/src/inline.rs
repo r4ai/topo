@@ -112,7 +112,7 @@ impl Field {
             Field::Pr => edit.prs.and_then(|prs| prs.last().map(|url| pr_label(url))),
         };
         match saved {
-            Some(value) => (format!("→ {value}"), t.success),
+            Some(value) => (format!("→ {value}"), t.fg),
             None => ("→ None".into(), t.fg_muted),
         }
     }

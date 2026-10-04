@@ -1,10 +1,11 @@
 //! Repository chooser presentation. Fixed header/footer and a scrolling body
 //! keep the chooser usable even in a small window.
 
-use gpui::{Context, IntoElement, Window, div, prelude::*, px, rgb};
+use gpui::{Context, IntoElement, Window, div, prelude::*, px};
 
 use super::{RepositoryWindow, Selection};
-use crate::theme;
+use crate::theme::{self, metrics};
+use crate::ui;
 
 impl RepositoryWindow {
     pub(super) fn chooser_view(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -25,9 +26,9 @@ impl RepositoryWindow {
                 .overflow_hidden()
                 .rounded_xl()
                 .border_1()
-                .border_color(t.border)
-                .bg(t.surface)
-                .shadow(theme::shadow())
+                .border_color(t.hairline)
+                .bg(t.card)
+                .shadow(metrics::e2())
                 .child(
                     div()
                         .flex_shrink_0()
@@ -88,7 +89,7 @@ impl RepositoryWindow {
                                     .p_3()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(t.border)
+                                    .border_color(t.hairline)
                                     .flex()
                                     .flex_col()
                                     .gap_1()
@@ -119,14 +120,14 @@ impl RepositoryWindow {
                                 .flex()
                                 .items_center()
                                 .gap_3()
-                                .bg(t.accent)
-                                .text_color(t.bg)
+                                .bg(t.emphasis)
+                                .text_color(t.on_emphasis)
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .when_else(
                                     self.loading,
                                     |d| d.opacity(0.65).cursor_default(),
-                                    |d| d.cursor_pointer().hover(|s| s.bg(rgb(0x8abbff))),
+                                    |d| d.cursor_pointer().hover(|s| s.opacity(0.9)),
                                 )
                                 .child(div().text_lg().child(if self.loading { "◌" } else { "+" }))
                                 .child(if self.loading { "Opening repository…" } else { "Open folder…" })
@@ -210,7 +211,7 @@ impl RepositoryWindow {
                                             .child(path.display().to_string()),
                                     )
                                     .child(
-                                        theme::button("initialize-repository", "Initialize workspace")
+                                        ui::button("initialize-repository", "Initialize workspace")
                                             .when(self.loading, |b| b.opacity(0.5).cursor_default())
                                             .on_click(cx.listener(move |app, _, window, cx| {
                                                 app.open_path(folder.clone(), true, window, cx)
@@ -229,7 +230,7 @@ impl RepositoryWindow {
                                     div()
                                         .px_1p5()
                                         .rounded_md()
-                                        .bg(t.raised)
+                                        .bg(t.control_hover)
                                         .text_xs()
                                         .text_color(t.fg_muted)
                                         .child(recent_count.to_string()),
@@ -252,7 +253,7 @@ impl RepositoryWindow {
                                             .p_4()
                                             .rounded_lg()
                                             .border_1()
-                                            .border_color(t.border)
+                                            .border_color(t.hairline)
                                             .text_sm()
                                             .text_color(t.fg_muted)
                                             .child(if current.is_some() {
@@ -285,14 +286,15 @@ impl RepositoryWindow {
                                                 .p_3()
                                                 .rounded_lg()
                                                 .border_1()
-                                                .border_color(t.border)
+                                                .border_color(t.hairline)
                                                 .bg(t.card)
                                                 .when_else(
                                                     self.loading,
                                                     |d| d.opacity(0.5).cursor_default(),
                                                     |d| {
-                                                        d.cursor_pointer()
-                                                            .hover(|s| s.bg(t.raised).border_color(t.border_strong))
+                                                        d.cursor_pointer().hover(|s| {
+                                                            s.bg(t.control_hover).border_color(t.border_strong)
+                                                        })
                                                     },
                                                 )
                                                 .child(
@@ -334,7 +336,7 @@ impl RepositoryWindow {
                     div()
                         .flex_shrink_0()
                         .border_t_1()
-                        .border_color(t.border)
+                        .border_color(t.hairline)
                         .px_6()
                         .py_3()
                         .flex()
@@ -347,7 +349,7 @@ impl RepositoryWindow {
                         }))
                         .when(current.is_some() || self.loading, |d| {
                             d.child(
-                                theme::button("cancel-repository", "Cancel")
+                                ui::button("cancel-repository", "Cancel")
                                     .on_click(cx.listener(|app, _, window, cx| app.cancel(window, cx))),
                             )
                         }),

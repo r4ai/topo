@@ -837,7 +837,7 @@ impl TextElement {
         let input = self.input.read(cx);
         let style = window.text_style();
         let (text, color) = match input.content.is_empty() {
-            true => (input.placeholder.clone(), theme::faint().into()),
+            true => (input.placeholder.clone(), theme::current().fg_faint.into()),
             false => (input.content.clone(), style.color),
         };
         let typed = text.len();
@@ -856,7 +856,7 @@ impl TextElement {
             underline: None,
             strikethrough: None,
         };
-        let ghost_run = TextRun { len: ghost.len(), color: theme::faint().into(), ..run.clone() };
+        let ghost_run = TextRun { len: ghost.len(), color: theme::current().fg_faint.into(), ..run.clone() };
         let spans = match input.markdown && !input.content.is_empty() {
             true => input.spans(),
             false => Rc::new([Span { len: typed, style: markdown::Style::Plain }]),
@@ -1013,8 +1013,8 @@ impl Element for TextElement {
             self.input.update(cx, |input, _| input.reveal = false);
         }
         PrepaintState {
-            cursor: selected.is_empty().then(|| fill(caret, theme::accent())),
-            selection: selection.into_iter().map(|row| fill(row, theme::selection())).collect(),
+            cursor: selected.is_empty().then(|| fill(caret, theme::current().emphasis)),
+            selection: selection.into_iter().map(|row| fill(row, theme::current().selection)).collect(),
             layout: Some(layout),
         }
     }
