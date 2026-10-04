@@ -798,7 +798,6 @@ impl TopoApp {
             .flex_1()
             .h_full()
             .overflow_hidden()
-            .bg(t.bg)
             .cursor(cursor)
             .child(painter)
             .children(headers)

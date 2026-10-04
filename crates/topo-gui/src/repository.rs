@@ -11,7 +11,7 @@ use gpui::{
 };
 use topo_core::Workspace;
 
-use crate::{CloseWindow, Quit, TopoApp, config::UserConfig, layout, theme};
+use crate::{CloseWindow, Quit, TopoApp, chrome, config::UserConfig, layout, theme};
 
 #[path = "repository_view.rs"]
 mod view;
@@ -317,7 +317,7 @@ impl Render for RepositoryWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(t.bg)
+            .bg(theme::window_bg())
             .text_color(t.fg)
             .font_family(".SystemUIFont")
             .on_action(cx.listener(|app, _: &OpenRepository, window, cx| app.show_chooser(window, cx)))
@@ -332,6 +332,7 @@ impl Render for RepositoryWindow {
                 }
             }))
             .when(!chooser, |d| d.child(self.editor.as_ref().unwrap().clone()))
+            .when(chooser && chrome::titlebar_inset(window) > gpui::px(0.), |d| d.child(chrome::drag_strip()))
             .when(chooser, |d| {
                 d.track_focus(&self.focus).on_key_down(cx.listener(Self::key_down)).child(self.chooser_view(window, cx))
             })

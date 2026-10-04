@@ -52,10 +52,22 @@ pub struct Theme {
 
 thread_local! {
     static CURRENT: Cell<&'static Theme> = const { Cell::new(&palette::DARK) };
+    static TRANSLUCENT: Cell<bool> = const { Cell::new(false) };
 }
 
 pub fn current() -> &'static Theme {
     CURRENT.with(Cell::get)
+}
+
+/// Declares that the OS blurs the window, so the root may paint `bg` translucent.
+pub fn set_translucent(translucent: bool) {
+    TRANSLUCENT.with(|cell| cell.set(translucent));
+}
+
+/// The fill of the window root: `bg` at `glass_alpha` over an OS blur, opaque otherwise.
+pub fn window_bg() -> Hsla {
+    let t = current();
+    alpha(t.bg, if TRANSLUCENT.with(Cell::get) { t.glass_alpha } else { 1. })
 }
 
 /// `color` with its alpha replaced by `alpha`.
@@ -143,5 +155,19 @@ pub fn node_icon(node: &Node) -> (&'static str, Rgba) {
         Kind::Milestone if node.status.is_closed() => ("◆", t.fg_faint),
         Kind::Milestone => ("◆", t.fg),
         Kind::Task => (status_icon(node.status), status_color(node.status)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_bg_is_translucent_only_over_a_blur() {
+        set_translucent(false);
+        assert_eq!(window_bg().a, 1.);
+        set_translucent(true);
+        assert_eq!(window_bg().a, current().glass_alpha);
+        set_translucent(false);
     }
 }

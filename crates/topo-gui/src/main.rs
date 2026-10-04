@@ -44,8 +44,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, WindowBounds,
-    WindowOptions, actions, div, point, prelude::*, px, size,
+    MouseButton, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions, actions, div, point, prelude::*, px, size,
 };
 use notify::{RecursiveMode, Watcher};
 use topo_core::wire::Snapshot;
@@ -211,6 +211,8 @@ struct TopoApp {
     show_help: bool,
     /// Narrow window: the toolbar and inspector drop secondary text.
     compact: bool,
+    /// A left press landed on the toolbar background and may turn into a window drag.
+    toolbar_press: bool,
     /// Width of the inspector in pixels; `None` follows the window proportion.
     inspector_width: Option<f32>,
     /// The window width the inspector width was last clamped against.
@@ -325,6 +327,7 @@ impl TopoApp {
             view,
             show_help: false,
             compact: false,
+            toolbar_press: false,
             inspector_width,
             viewport_width: 0.,
             undo: Vec::new(),
@@ -1381,7 +1384,7 @@ impl Render for TopoApp {
             .size_full()
             .flex()
             .flex_col()
-            .bg(t.bg)
+            .bg(theme::window_bg())
             .text_color(t.fg)
             .font_family(".SystemUIFont")
             .track_focus(&self.focus)
@@ -1428,7 +1431,7 @@ impl Render for TopoApp {
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_drag_end))
-            .child(self.toolbar(cx))
+            .child(self.toolbar(window, cx))
             .when(self.persistence.pending_count() > 0, |d| d.child(self.persistence_bar(cx)))
             .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(cx)).child(self.inspector(cx)))
             .when(self.notes_ask.is_some(), |d| d.child(self.notes_dialog(cx)))
@@ -1537,6 +1540,7 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
             KeyBinding::new("cmd-o", repository::OpenRepository, None),
             KeyBinding::new("ctrl-o", repository::OpenRepository, None),
         ]);
+        theme::set_translucent(window_background() != WindowBackgroundAppearance::Opaque);
         theme::init(cx);
         theme::apply(config.theme, cx.window_appearance());
         cx.set_menus(menus(config.theme));
@@ -1544,7 +1548,8 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
         let options = WindowOptions {
             app_id: Some("dev.r4ai.topo".into()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(gpui::TitlebarOptions { title: Some(title), ..Default::default() }),
+            titlebar: Some(titlebar(title)),
+            window_background: window_background(),
             window_min_size: Some(size(px(720.), px(480.))),
             ..Default::default()
         };
@@ -1554,6 +1559,27 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
         cx.activate(true);
     });
     Ok(())
+}
+
+/// The window material: blurred on macOS, Mica on Windows, opaque elsewhere.
+fn window_background() -> WindowBackgroundAppearance {
+    if cfg!(target_os = "macos") {
+        WindowBackgroundAppearance::Blurred
+    } else if cfg!(target_os = "windows") {
+        WindowBackgroundAppearance::MicaBackdrop
+    } else {
+        WindowBackgroundAppearance::Opaque
+    }
+}
+
+/// macOS hides the titlebar and insets the traffic lights into the toolbar; other platforms keep the system one.
+fn titlebar(title: SharedString) -> gpui::TitlebarOptions {
+    let mac = cfg!(target_os = "macos");
+    gpui::TitlebarOptions {
+        title: Some(title),
+        appears_transparent: mac,
+        traffic_light_position: mac.then(|| point(px(14.), px(15.))),
+    }
 }
 
 #[cfg(test)]

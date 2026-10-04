@@ -1,6 +1,9 @@
 //! Everything around the graph: toolbar, prompt, toasts, zoom controls and help.
 
-use gpui::{AnyElement, App, Context, Div, MouseButton, Rgba, SharedString, Stateful, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, Context, Div, MouseButton, Pixels, Rgba, SharedString, Stateful, Window, WindowControlArea, div,
+    prelude::*, px,
+};
 use topo_core::{Kind, NodeId, Priority};
 
 use crate::theme::{
@@ -15,6 +18,27 @@ fn stop_click<E: InteractiveElement>(element: E) -> E {
     element.on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
 }
 
+const TOOLBAR_H: f32 = 46.;
+/// Room for the macOS traffic lights at the toolbar's left edge.
+const TRAFFIC_LIGHTS: f32 = 78.;
+
+/// Space the toolbar and the repository chooser leave for the macOS traffic lights; zero when there are none
+/// (other platforms, fullscreen) and under test, so layout tests do not depend on the host.
+pub(crate) fn titlebar_inset(window: &Window) -> Pixels {
+    px(if cfg!(target_os = "macos") && !cfg!(test) && !window.is_fullscreen() { TRAFFIC_LIGHTS } else { 0. })
+}
+
+/// An empty strip that moves the window, standing in for the titlebar above the repository chooser.
+pub(crate) fn drag_strip() -> Div {
+    div().flex_shrink_0().w_full().h(px(TOOLBAR_H)).window_control_area(WindowControlArea::Drag).on_mouse_down(
+        MouseButton::Left,
+        |event, window, _| match event.click_count {
+            2 => window.titlebar_double_click(),
+            _ => window.start_window_move(),
+        },
+    )
+}
+
 impl TopoApp {
     fn stat(
         &self,
@@ -27,8 +51,7 @@ impl TopoApp {
     ) -> Stateful<Div> {
         let t = theme::current();
         let clickable = !ids.is_empty();
-        div()
-            .id(id)
+        stop_click(div().id(id))
             .debug_selector(|| id.to_owned())
             .flex()
             .flex_shrink_0()
@@ -56,7 +79,7 @@ impl TopoApp {
         }
     }
 
-    pub(crate) fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         let ready = self.graph_cache.ready.clone();
         let doing = self.graph_cache.doing.clone();
@@ -72,12 +95,12 @@ impl TopoApp {
             .map_or("workspace".into(), |n| n.to_string_lossy().into_owned());
 
         let organize = |id: &'static str, label: &'static str, what: OrganizeKind, cx: &mut Context<Self>| {
-            ui::button_ghost(id, if self.busy { "✦ Thinking…" } else { label })
+            stop_click(ui::button_ghost(id, if self.busy { "✦ Thinking…" } else { label }))
                 .when(self.busy, |b| b.opacity(0.6).cursor_default())
                 .on_click(cx.listener(move |app, _, _, cx| app.run_organize(what, cx)))
         };
         let history = |id: &'static str, glyph: &'static str, undo: bool, enabled: bool, cx: &mut Context<Self>| {
-            match enabled {
+            stop_click(match enabled {
                 true => ui::icon_button(id, glyph),
                 false => div()
                     .id(id)
@@ -90,17 +113,38 @@ impl TopoApp {
                     .text_sm()
                     .text_color(t.fg_faint)
                     .child(glyph),
-            }
+            })
             .on_click(cx.listener(move |app, _, _, cx| app.restore(undo, cx)))
         };
 
+        let inset = titlebar_inset(window);
+        // Only macOS has no system titlebar; the toolbar's empty space moves the window there.
+        let draggable = cfg!(target_os = "macos");
         ui::panel()
             .flex()
             .flex_shrink_0()
             .items_center()
             .when_else(self.compact, |d| d.gap_2(), |d| d.gap_3())
-            .h(px(46.))
+            .h(px(TOOLBAR_H))
             .px_3()
+            .when(inset > px(0.), |d| d.pl(inset))
+            .when(draggable, |d| {
+                d.window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|app, event: &gpui::MouseDownEvent, window, _| match event.click_count {
+                            2 => window.titlebar_double_click(),
+                            _ => app.toolbar_press = true,
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|app, _, window, _| {
+                        if std::mem::take(&mut app.toolbar_press) {
+                            window.start_window_move();
+                        }
+                    }))
+                    .on_mouse_up(MouseButton::Left, cx.listener(|app, _, _, _| app.toolbar_press = false))
+                    .on_mouse_down_out(cx.listener(|app, _, _, _| app.toolbar_press = false))
+            })
             .border_b_1()
             .border_color(t.hairline)
             .child(
@@ -181,17 +225,17 @@ impl TopoApp {
             )
             .child(div().flex_1())
             .child(
-                ui::button("search", "Search")
+                stop_click(ui::button("search", "Search"))
                     .when(!self.compact, |b| b.child(ui::kbd("⌘K")))
                     .on_click(cx.listener(|app, _, window, cx| app.open_prompt(Prompt::Search, window, cx))),
             )
             .child(
-                ui::button("new-task", "+ Task")
+                stop_click(ui::button("new-task", "+ Task"))
                     .when(!self.compact, |b| b.child(ui::kbd("N")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Task, None, window, cx))),
             )
             .child(
-                ui::button("new-milestone", "+ Milestone")
+                stop_click(ui::button("new-milestone", "+ Milestone"))
                     .when(!self.compact, |b| b.child(ui::kbd("M")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx))),
             )
@@ -211,12 +255,14 @@ impl TopoApp {
             .child(div().w(px(1.)).h(px(20.)).bg(t.hairline))
             .child(history("undo", "↩\u{fe0e}", true, !self.undo.is_empty(), cx))
             .child(history("redo", "↪\u{fe0e}", false, !self.redo.is_empty(), cx))
-            .child(ui::icon_button("theme", theme_glyph(theme::mode())).on_click(cx.listener(|app, _, _, cx| {
-                let mode = theme::mode().next();
-                theme::set_mode(mode, cx);
-                app.toast(format!("Theme: {}", mode.label()), false, cx);
-            })))
-            .child(ui::icon_button("help", "?").on_click(cx.listener(|app, _, _, cx| {
+            .child(stop_click(ui::icon_button("theme", theme_glyph(theme::mode()))).on_click(cx.listener(
+                |app, _, _, cx| {
+                    let mode = theme::mode().next();
+                    theme::set_mode(mode, cx);
+                    app.toast(format!("Theme: {}", mode.label()), false, cx);
+                },
+            )))
+            .child(stop_click(ui::icon_button("help", "?")).on_click(cx.listener(|app, _, _, cx| {
                 app.show_help = !app.show_help;
                 cx.notify();
             })))
