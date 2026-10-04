@@ -25,7 +25,13 @@ const TRAFFIC_LIGHTS: f32 = 78.;
 /// Space the toolbar and the repository chooser leave for the macOS traffic lights; zero when there are none
 /// (other platforms, fullscreen) and under test, so layout tests do not depend on the host.
 pub(crate) fn titlebar_inset(window: &Window) -> Pixels {
-    px(if cfg!(target_os = "macos") && !cfg!(test) && !window.is_fullscreen() { TRAFFIC_LIGHTS } else { 0. })
+    #[cfg(test)]
+    let _ = window;
+    #[cfg(test)]
+    let inset = test_inset::get();
+    #[cfg(not(test))]
+    let inset = if cfg!(target_os = "macos") && !window.is_fullscreen() { TRAFFIC_LIGHTS } else { 0. };
+    px(inset)
 }
 
 /// An empty strip that moves the window, standing in for the titlebar above the repository chooser.
@@ -121,6 +127,7 @@ impl TopoApp {
         // Only macOS has no system titlebar; the toolbar's empty space moves the window there.
         let draggable = cfg!(target_os = "macos");
         ui::panel()
+            .debug_selector(|| "toolbar".into())
             .flex()
             .flex_shrink_0()
             .items_center()
@@ -153,6 +160,7 @@ impl TopoApp {
                     .items_center()
                     .gap_2()
                     .min_w(px(0.))
+                    .overflow_hidden()
                     .child(
                         div()
                             .debug_selector(|| "brand".into())
@@ -164,7 +172,7 @@ impl TopoApp {
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_sm().child("topo")),
                     )
                     // The workspace name is the first thing to give way in a narrow window.
-                    .child(div().text_color(t.fg_faint).text_sm().child("/"))
+                    .child(div().flex_shrink_0().text_color(t.fg_faint).text_sm().child("/"))
                     .child(
                         stop_click(
                             ui::button_ghost("repository", "")
@@ -172,6 +180,9 @@ impl TopoApp {
                                 .child(div().min_w(px(0.)).truncate().child(name))
                                 .child("▾"),
                         )
+                        // The button is `flex_shrink_0` by default; this one gives way, down to a stub.
+                        .flex_shrink(1.)
+                        .min_w(px(80.))
                         .max_w(px(if self.compact { 110. } else { 220. }))
                         .overflow_hidden()
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::repository::OpenRepository))),
@@ -179,11 +190,20 @@ impl TopoApp {
             )
             .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline))
             .child(
+                // The first to give way. A single-row wrapping box clips whole items: the ones that do not fit wrap
+                // onto a second row that `overflow_hidden` cuts off. The huge shrink factor makes it yield all its
+                // width before anything else starts to shrink.
                 div()
+                    .debug_selector(|| "toolbar-stats".into())
                     .flex()
-                    .flex_shrink_0()
+                    .flex_wrap()
+                    .content_start()
                     .items_center()
                     .gap_1()
+                    .h(px(H_BUTTON))
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .flex_shrink(1000.)
                     .child(self.stat("stat-ready", "●", self.stat_text(ready.len(), "ready"), t.ready, ready, cx))
                     .when(!doing.is_empty(), |d| {
                         d.child(self.stat(
@@ -209,9 +229,11 @@ impl TopoApp {
                         d.child(
                             div()
                                 .flex()
+                                .flex_shrink_0()
                                 .items_center()
                                 .gap_2()
                                 .px_2()
+                                .whitespace_nowrap()
                                 .text_size(px(T_SMALL))
                                 .text_color(t.fg_muted)
                                 .child(div().w(px(64.)).flex().child(ui::progress_bar(
@@ -239,20 +261,34 @@ impl TopoApp {
                     .when(!self.compact, |b| b.child(ui::kbd("M")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx))),
             )
-            .child(div().w(px(1.)).h(px(20.)).bg(t.hairline))
-            .child(organize(
-                "org-deps",
-                if self.compact { "✦ Links" } else { "✦ Suggest links" },
-                OrganizeKind::Deps,
-                cx,
-            ))
-            .child(organize(
-                "org-place",
-                if self.compact { "✦ Place" } else { "✦ Place tasks" },
-                OrganizeKind::Place,
-                cx,
-            ))
-            .child(div().w(px(1.)).h(px(20.)).bg(t.hairline))
+            .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline))
+            // Next to give way, the same way as the stats but later.
+            .child(
+                div()
+                    .debug_selector(|| "toolbar-organize".into())
+                    .flex()
+                    .flex_wrap()
+                    .content_start()
+                    .items_center()
+                    .gap_2()
+                    .h(px(H_BUTTON))
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .flex_shrink(100.)
+                    .child(organize(
+                        "org-deps",
+                        if self.compact { "✦ Links" } else { "✦ Suggest links" },
+                        OrganizeKind::Deps,
+                        cx,
+                    ))
+                    .child(organize(
+                        "org-place",
+                        if self.compact { "✦ Place" } else { "✦ Place tasks" },
+                        OrganizeKind::Place,
+                        cx,
+                    ))
+                    .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline)),
+            )
             .child(history("undo", "↩\u{fe0e}", true, !self.undo.is_empty(), cx))
             .child(history("redo", "↪\u{fe0e}", false, !self.redo.is_empty(), cx))
             .child(
@@ -878,5 +914,25 @@ fn theme_glyph(mode: theme::ThemeMode) -> &'static str {
         theme::ThemeMode::System => "◐",
         theme::ThemeMode::Light => "☀",
         theme::ThemeMode::Dark => "☾",
+    }
+}
+
+/// The traffic-light inset a test can ask for with [`test_inset::set`].
+#[cfg(test)]
+pub(crate) const TEST_TRAFFIC_LIGHTS: f32 = TRAFFIC_LIGHTS;
+
+/// Lets a test pretend the traffic lights are there; the default stays zero so tests do not depend on the host.
+#[cfg(test)]
+pub(crate) mod test_inset {
+    use std::cell::Cell;
+
+    thread_local!(static INSET: Cell<f32> = const { Cell::new(0.) });
+
+    pub(crate) fn set(inset: f32) {
+        INSET.with(|i| i.set(inset));
+    }
+
+    pub(crate) fn get() -> f32 {
+        INSET.with(Cell::get)
     }
 }

@@ -24,8 +24,21 @@ struct Ui<'a> {
 
 /// Opens a window on a workspace with the given `(id, kind, depends_on, milestones)` nodes.
 fn open<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])]) -> Ui<'a> {
+    open_named(cx, nodes, "")
+}
+
+/// Like [`open`], in a repository directory called `name` (a random one when empty).
+fn open_named<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])], name: &str) -> Ui<'a> {
     let dir = tempfile::tempdir().unwrap();
-    let mut ws = Workspace::init(dir.path()).unwrap();
+    let root = match name {
+        "" => dir.path().to_owned(),
+        name => {
+            let root = dir.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            root
+        }
+    };
+    let mut ws = Workspace::init(&root).unwrap();
     let nodes = nodes.iter().map(|(name, kind, deps, milestones)| {
         let mut node = Node::new(id(name), *kind, (*name).into());
         node.depends_on = deps.iter().map(|d| id(d)).collect();
@@ -2181,4 +2194,66 @@ fn switching_the_theme_is_purely_visual(cx: &mut TestAppContext) {
     assert!(std::ptr::eq(theme::current(), &theme::LIGHT));
     assert_eq!(state(&mut ui), before);
     theme::apply(theme::ThemeMode::Dark, false, WindowAppearance::Light);
+}
+
+#[gpui::test]
+fn nothing_in_the_toolbar_overlaps_at_any_width(cx: &mut TestAppContext) {
+    // Task and milestone statuses give the toolbar every stat there is.
+    let mut doing = Node::new(id("d"), Kind::Task, "d".into());
+    doing.status = Status::Doing;
+    let mut overdue = Node::new(id("o"), Kind::Task, "o".into());
+    overdue.due = Some("2000-01-01".parse().unwrap());
+    let mut ui = open_named(cx, SAMPLE, "a-repository-with-a-really-very-long-name-indeed");
+    ui.app.update(ui.cx, |app, cx| {
+        app.mutate(cx, |graph| {
+            graph.insert(doing)?;
+            graph.insert(overdue)
+        });
+    });
+    // Parts that always show, and the parts of a group that clips whole items it has no room for.
+    let fixed = ["brand", "repository", "search", "new-task", "new-milestone", "undo", "redo", "theme", "help"];
+    let clipped = [
+        ("toolbar-stats", ["stat-ready", "stat-doing", "stat-overdue"].as_slice()),
+        ("toolbar-organize", ["org-deps", "org-place"].as_slice()),
+    ];
+    for inset in [0., crate::chrome::TEST_TRAFFIC_LIGHTS] {
+        crate::chrome::test_inset::set(inset);
+        for width in [720., 900., 1100., 1179., 1180., 1360., 1900.] {
+            ui.resize(width, 500.);
+            let toolbar = ui.cx.debug_bounds("toolbar").expect("the toolbar is rendered");
+            let bounds = |ui: &mut Ui, name: &'static str| {
+                ui.cx.debug_bounds(name).unwrap_or_else(|| panic!("{name} is rendered at {width} (inset {inset})"))
+            };
+            let mut boxes: Vec<_> = fixed.iter().map(|n| (n.to_string(), bounds(&mut ui, n))).collect();
+            for (group, items) in clipped {
+                let group_box = bounds(&mut ui, group);
+                boxes.push((group.to_string(), group_box));
+                for item in items {
+                    let b = bounds(&mut ui, item);
+                    let shown = b.left() >= group_box.left()
+                        && b.right() <= group_box.right()
+                        && b.top() >= group_box.top()
+                        && b.bottom() <= group_box.bottom();
+                    // An item is whole inside its group or wrapped out of sight; only the first one, which a
+                    // wrapping row cannot move, may be clipped by the group's edge.
+                    assert!(
+                        shown || b.top() >= group_box.bottom() || b.left() == group_box.left(),
+                        "{item} is cut by {group} at {width} (inset {inset}): {b:?} {group_box:?}"
+                    );
+                }
+            }
+            for (name, b) in &boxes {
+                assert!(
+                    b.left() >= toolbar.left() + px(inset) && b.right() <= toolbar.right(),
+                    "{name} leaves the toolbar at {width} (inset {inset}): {b:?} in {toolbar:?}"
+                );
+            }
+            for (i, (a, ab)) in boxes.iter().enumerate() {
+                for (b, bb) in &boxes[i + 1..] {
+                    assert!(!ab.intersects(bb), "{a} overlaps {b} at {width} (inset {inset}): {ab:?} {bb:?}");
+                }
+            }
+        }
+    }
+    crate::chrome::test_inset::set(0.);
 }
