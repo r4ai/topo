@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use gpui::{AnyElement, App, Context, Entity, Focusable, KeyDownEvent, MouseButton, Window, div, prelude::*, px, rgb};
+use gpui::{AnyElement, App, Context, Entity, Focusable, KeyDownEvent, MouseButton, Window, div, prelude::*, px};
 use topo_core::{Edit, NodeId};
 
 use crate::TopoApp;
@@ -167,6 +167,7 @@ impl TopoApp {
 
     /// The question over the whole window, which holds the click and the keys until it is answered.
     pub(crate) fn notes_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
         let title =
             self.notes.as_ref().and_then(|id| self.graph().get(id)).map_or_else(String::new, |n| n.title.clone());
         let choice = |button: gpui::Stateful<gpui::Div>, key: &'static str, save: Option<bool>| -> AnyElement {
@@ -183,7 +184,7 @@ impl TopoApp {
             .flex()
             .items_center()
             .justify_center()
-            .bg(gpui::hsla(0., 0., 0., 0.55))
+            .bg(t.scrim)
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(
                 div()
@@ -195,15 +196,15 @@ impl TopoApp {
                     .gap_3()
                     .p_5()
                     .rounded_xl()
-                    .bg(rgb(theme::SURFACE))
+                    .bg(t.surface)
                     .border_1()
-                    .border_color(rgb(theme::BORDER_STRONG))
+                    .border_color(t.border_strong)
                     .shadow(theme::shadow())
                     .child(div().text_base().font_weight(gpui::FontWeight::SEMIBOLD).child("Save the notes?"))
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(theme::MUTED))
+                            .text_color(t.fg_muted)
                             .child(format!("The notes of “{title}” have changes that are not saved.")),
                     )
                     .child(
@@ -212,9 +213,9 @@ impl TopoApp {
                             .justify_end()
                             .gap_2()
                             .pt_1()
-                            .child(choice(tinted_button("notes-discard", "Discard", theme::RED), "D", Some(false)))
+                            .child(choice(tinted_button("notes-discard", "Discard", t.danger), "D", Some(false)))
                             .child(choice(button("notes-keep", "Keep editing"), "Esc", None))
-                            .child(choice(tinted_button("notes-save", "Save", theme::ACCENT), "↵", Some(true))),
+                            .child(choice(tinted_button("notes-save", "Save", t.accent), "↵", Some(true))),
                     ),
             )
     }

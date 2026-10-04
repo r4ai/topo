@@ -1,64 +1,88 @@
 //! Colors, glyphs and small styled building blocks shared by every view.
 
-use gpui::{BoxShadow, Div, Hsla, Rgba, SharedString, Stateful, Styled, div, hsla, point, prelude::*, px, rgb, rgba};
+use std::cell::Cell;
+
+use gpui::{BoxShadow, Div, Hsla, Rgba, SharedString, Stateful, Styled, div, point, prelude::*, px};
 use topo_core::{Kind, Node, Priority, Status};
 
 use crate::markdown::Style;
 
-pub const CANVAS: u32 = 0x111216;
-pub const SURFACE: u32 = 0x17181d;
-pub const CARD: u32 = 0x1e1f26;
-pub const CARD_HOVER: u32 = 0x25262f;
-pub const RAISED: u32 = 0x2a2c36;
-pub const BORDER: u32 = 0x2b2d37;
-pub const BORDER_STRONG: u32 = 0x3b3e4a;
-pub const TEXT: u32 = 0xe8e9ee;
-pub const MUTED: u32 = 0x9b9dab;
-pub const FAINT: u32 = 0x626574;
-pub const ACCENT: u32 = 0x6ea8fe;
-pub const GREEN: u32 = 0x4cc38a;
-pub const AMBER: u32 = 0xf5b949;
-pub const RED: u32 = 0xf2555a;
-pub const GRID_DOT: u32 = 0x24262e;
-const LINK: u32 = 0x5ad1e6;
+mod palette;
+
+/// Every color the UI draws with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Theme {
+    pub bg: Rgba,
+    pub surface: Rgba,
+    pub card: Rgba,
+    pub card_hover: Rgba,
+    pub card_milestone: Rgba,
+    pub card_milestone_hover: Rgba,
+    pub raised: Rgba,
+    pub border: Rgba,
+    pub border_strong: Rgba,
+    pub fg: Rgba,
+    pub fg_muted: Rgba,
+    pub fg_faint: Rgba,
+    pub accent: Rgba,
+    pub success: Rgba,
+    pub warn: Rgba,
+    pub danger: Rgba,
+    pub grid_dot: Rgba,
+    pub link: Rgba,
+    pub edge: Rgba,
+    pub scrim: Rgba,
+    pub selection: Rgba,
+    pub shadow: Rgba,
+}
+
+thread_local! {
+    static CURRENT: Cell<&'static Theme> = const { Cell::new(&palette::DARK) };
+}
+
+pub fn current() -> &'static Theme {
+    CURRENT.with(Cell::get)
+}
 
 pub fn faint() -> Rgba {
-    rgb(FAINT)
+    current().fg_faint
 }
 
 pub fn accent() -> Rgba {
-    rgb(ACCENT)
+    current().accent
 }
 
 pub fn selection() -> Rgba {
-    rgba(0x6ea8fe44)
+    current().selection
 }
 
 /// `color` with its alpha replaced by `alpha`.
-pub fn alpha(color: u32, alpha: f32) -> Hsla {
-    let mut c: Hsla = rgb(color).into();
+pub fn alpha(color: Rgba, alpha: f32) -> Hsla {
+    let mut c: Hsla = color.into();
     c.a = alpha;
     c
 }
 
 /// The color of Markdown text in `style`; plain text keeps the color it inherits.
 pub fn markdown_color(style: Style) -> Option<Rgba> {
+    let t = current();
     match style {
         Style::Plain | Style::Emphasis | Style::Strong => None,
-        Style::Heading => Some(rgb(ACCENT)),
-        Style::Code => Some(rgb(GREEN)),
-        Style::Link => Some(rgb(LINK)),
-        Style::Marker => Some(rgb(AMBER)),
-        Style::Quote => Some(rgb(MUTED)),
+        Style::Heading => Some(t.accent),
+        Style::Code => Some(t.success),
+        Style::Link => Some(t.link),
+        Style::Marker => Some(t.warn),
+        Style::Quote => Some(t.fg_muted),
     }
 }
 
-pub fn status_color(status: Status) -> u32 {
+pub fn status_color(status: Status) -> Rgba {
+    let t = current();
     match status {
-        Status::Todo => MUTED,
-        Status::Doing => ACCENT,
-        Status::Done => GREEN,
-        Status::Dropped => FAINT,
+        Status::Todo => t.fg_muted,
+        Status::Doing => t.accent,
+        Status::Done => t.success,
+        Status::Dropped => t.fg_faint,
     }
 }
 
@@ -80,12 +104,13 @@ pub fn status_label(status: Status) -> &'static str {
     }
 }
 
-pub fn priority_color(priority: Priority) -> u32 {
+pub fn priority_color(priority: Priority) -> Rgba {
+    let t = current();
     match priority {
-        Priority::Urgent => RED,
-        Priority::High => AMBER,
-        Priority::Medium => ACCENT,
-        Priority::Low => MUTED,
+        Priority::Urgent => t.danger,
+        Priority::High => t.warn,
+        Priority::Medium => t.accent,
+        Priority::Low => t.fg_muted,
     }
 }
 
@@ -110,17 +135,18 @@ pub fn priority_text(priority: Priority) -> String {
 }
 
 /// Glyph and color that identify a node at a glance.
-pub fn node_icon(node: &Node) -> (&'static str, u32) {
+pub fn node_icon(node: &Node) -> (&'static str, Rgba) {
+    let t = current();
     match node.kind {
-        Kind::Milestone if node.status.is_closed() => ("◆", GREEN),
-        Kind::Milestone => ("◆", AMBER),
+        Kind::Milestone if node.status.is_closed() => ("◆", t.success),
+        Kind::Milestone => ("◆", t.warn),
         Kind::Task => (status_icon(node.status), status_color(node.status)),
     }
 }
 
 pub fn shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
-        color: hsla(0., 0., 0., 0.45),
+        color: current().shadow.into(),
         offset: point(px(0.), px(8.)),
         blur_radius: px(24.),
         spread_radius: px(0.),
@@ -130,12 +156,13 @@ pub fn shadow() -> Vec<BoxShadow> {
 
 /// A small text button.
 pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
-    styled_button(id, label, rgb(TEXT).into(), rgb(RAISED).into(), rgb(BORDER_STRONG).into())
+    let t = current();
+    styled_button(id, label, t.fg.into(), t.raised.into(), t.border_strong.into())
 }
 
 /// A small text button tinted with `color`, e.g. for destructive actions.
-pub fn tinted_button(id: impl Into<SharedString>, label: impl Into<SharedString>, color: u32) -> Stateful<Div> {
-    styled_button(id, label, rgb(color).into(), alpha(color, 0.15), alpha(color, 0.5))
+pub fn tinted_button(id: impl Into<SharedString>, label: impl Into<SharedString>, color: Rgba) -> Stateful<Div> {
+    styled_button(id, label, color.into(), alpha(color, 0.15), alpha(color, 0.5))
 }
 
 fn styled_button(
@@ -146,6 +173,7 @@ fn styled_button(
     hover_border: Hsla,
 ) -> Stateful<Div> {
     let id = id.into();
+    let t = current();
     div()
         .id(id.clone())
         .debug_selector(|| id.to_string())
@@ -158,12 +186,12 @@ fn styled_button(
         .px_2p5()
         .rounded_md()
         .border_1()
-        .border_color(rgb(BORDER))
-        .bg(rgb(CARD))
+        .border_color(t.border)
+        .bg(t.card)
         .text_color(text)
         .text_xs()
         .hover(move |s| s.bg(hover_bg).border_color(hover_border))
-        .active(|s| s.bg(rgb(BORDER_STRONG)))
+        .active(move |s| s.bg(t.border_strong))
         .cursor_pointer()
         .child(label.into())
 }
@@ -171,6 +199,7 @@ fn styled_button(
 /// A borderless square button showing a single glyph.
 pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) -> Stateful<Div> {
     let id = id.into();
+    let t = current();
     div()
         .id(id.clone())
         .debug_selector(|| id.to_string())
@@ -180,15 +209,16 @@ pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) 
         .justify_center()
         .size(px(22.))
         .rounded_md()
-        .text_color(rgb(MUTED))
+        .text_color(t.fg_muted)
         .text_sm()
-        .hover(|s| s.bg(rgb(RAISED)).text_color(rgb(TEXT)))
+        .hover(move |s| s.bg(t.raised).text_color(t.fg))
         .cursor_pointer()
         .child(glyph.into())
 }
 
 /// A keyboard shortcut hint such as `⌘Z`.
 pub fn kbd(keys: impl Into<SharedString>) -> Div {
+    let t = current();
     div()
         .flex_shrink_0()
         .px_1()
@@ -197,9 +227,9 @@ pub fn kbd(keys: impl Into<SharedString>) -> Div {
         .justify_center()
         .rounded_sm()
         .border_1()
-        .border_color(rgb(BORDER_STRONG))
-        .bg(rgb(SURFACE))
-        .text_color(rgb(MUTED))
+        .border_color(t.border_strong)
+        .bg(t.surface)
+        .text_color(t.fg_muted)
         .text_size(px(10.))
         .child(keys.into())
 }
@@ -211,29 +241,30 @@ pub fn section_label(label: impl Into<SharedString>) -> Div {
         .pb_1()
         .text_size(px(10.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(rgb(FAINT))
+        .text_color(current().fg_faint)
         .child(label.into())
 }
 
 /// A rounded tinted label.
-pub fn chip(label: impl Into<SharedString>, color: u32) -> Div {
+pub fn chip(label: impl Into<SharedString>, color: Rgba) -> Div {
     div()
         .flex_shrink_0()
         .px_1p5()
         .rounded_sm()
         .bg(alpha(color, 0.14))
-        .text_color(rgb(color))
+        .text_color(color)
         .text_size(px(10.))
         .child(label.into())
 }
 
 /// Horizontal progress bar filled to `fraction` (0..=1).
-pub fn progress_bar(fraction: f32, color: u32, height: f32) -> Div {
+pub fn progress_bar(fraction: f32, color: Rgba, height: f32) -> Div {
+    let t = current();
     div()
         .flex_1()
         .h(px(height))
         .rounded_full()
-        .bg(rgb(BORDER))
+        .bg(t.border)
         .overflow_hidden()
-        .child(div().h_full().w(gpui::relative(fraction.clamp(0., 1.))).rounded_full().bg(rgb(color)))
+        .child(div().h_full().w(gpui::relative(fraction.clamp(0., 1.))).rounded_full().bg(color))
 }

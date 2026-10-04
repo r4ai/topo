@@ -1,5 +1,6 @@
 //! Due-date input and display relative to today.
 
+use gpui::Rgba;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan};
@@ -110,11 +111,12 @@ pub fn relative(date: Date, today: Date) -> String {
 }
 
 /// Color for a due date of an open node: red when overdue, amber when close.
-pub fn urgency_color(date: Date, today: Date) -> u32 {
+pub fn urgency_color(date: Date, today: Date) -> Rgba {
+    let t = theme::current();
     match (date - today).get_days() {
-        d if d < 0 => theme::RED,
-        d if d <= 3 => theme::AMBER,
-        _ => theme::MUTED,
+        d if d < 0 => t.danger,
+        d if d <= 3 => t.warn,
+        _ => t.fg_muted,
     }
 }
 

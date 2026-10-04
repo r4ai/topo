@@ -44,7 +44,7 @@ use anyhow::Result;
 use gpui::{
     App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Menu, MenuItem,
     MouseButton, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, WindowBounds,
-    WindowOptions, actions, div, point, prelude::*, px, rgb, size,
+    WindowOptions, actions, div, point, prelude::*, px, size,
 };
 use notify::{RecursiveMode, Watcher};
 use topo_core::wire::Snapshot;
@@ -782,9 +782,10 @@ impl TopoApp {
             .collect();
         let listing = matches!(self.prompt, Some(Prompt::Search | Prompt::Pick { .. }));
         let empty = if listing && choices.is_empty() { "No matches" } else { "" };
+        let t = theme::current();
         self.palette.update(cx, |palette, cx| {
             palette.set_choices(choices, cx);
-            palette.set_feedback((empty.to_owned(), theme::FAINT), None, cx);
+            palette.set_feedback((empty.to_owned(), t.fg_faint), None, cx);
         });
     }
 
@@ -1374,12 +1375,13 @@ impl Render for TopoApp {
         let canvas = self.prompt.is_none() && self.inline.is_none() && self.notes.is_none();
         let (has_selection, has_nodes) = (!self.selected_nodes.is_empty(), self.graph().nodes().next().is_some());
         let (can_undo, can_redo) = (!self.undo.is_empty(), !self.redo.is_empty());
+        let t = theme::current();
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::CANVAS))
-            .text_color(rgb(theme::TEXT))
+            .bg(t.bg)
+            .text_color(t.fg)
             .font_family(".SystemUIFont")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))

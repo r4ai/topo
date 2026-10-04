@@ -22,7 +22,7 @@
 
 use gpui::{
     AnyElement, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle,
-    MouseButton, SharedString, StyledText, Window, anchored, deferred, div, prelude::*, px, rgb,
+    MouseButton, Rgba, SharedString, StyledText, Window, anchored, deferred, div, prelude::*, px,
 };
 
 use crate::text_input::{InputEvent, TextInput};
@@ -36,7 +36,7 @@ pub(crate) struct Choice {
     /// What the choice stands for, when that is not its text: an id.
     pub key: Option<String>,
     /// A glyph before the value, and its color.
-    pub icon: Option<(&'static str, u32)>,
+    pub icon: Option<(&'static str, Rgba)>,
 }
 
 impl Choice {
@@ -82,7 +82,7 @@ pub(crate) struct Combobox {
     /// Escape closed the list; it stays closed until the text changes or Down reopens it.
     dismissed: bool,
     /// What Enter would save for the typed text, and its color.
-    preview: (String, u32),
+    preview: (String, Rgba),
     /// Why the last submission was refused.
     error: Option<String>,
 }
@@ -91,6 +91,7 @@ impl EventEmitter<ComboEvent> for Combobox {}
 
 impl Combobox {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let t = theme::current();
         let input = cx.new(TextInput::new);
         cx.subscribe(&input, Self::on_input_event).detach();
         Self {
@@ -103,7 +104,7 @@ impl Combobox {
             highlight: None,
             picked: None,
             dismissed: false,
-            preview: (String::new(), theme::FAINT),
+            preview: (String::new(), t.fg_faint),
             error: None,
         }
     }
@@ -201,7 +202,7 @@ impl Combobox {
     }
 
     /// Sets what the list says when no choice is highlighted, and the refusal of the last submission.
-    pub fn set_feedback(&mut self, preview: (String, u32), error: Option<String>, cx: &mut Context<Self>) {
+    pub fn set_feedback(&mut self, preview: (String, Rgba), error: Option<String>, cx: &mut Context<Self>) {
         (self.preview, self.error) = (preview, error);
         cx.notify();
     }
@@ -315,13 +316,14 @@ impl Combobox {
 
     /// A choice with the part the typed text matched set off.
     fn matched(&self, value: &str, cx: &App) -> StyledText {
+        let t = theme::current();
         let query = self.query(cx).trim().trim_start_matches('#').to_lowercase();
         let start = value.to_lowercase().find(&query).filter(|_| !query.is_empty());
         let range = start.map(|start| start..start + query.len());
         // Lowercasing can move byte offsets in rare scripts; then nothing is set off.
         let range = range.filter(|r| value.is_char_boundary(r.start) && value.is_char_boundary(r.end));
         let style = HighlightStyle {
-            color: Some(rgb(theme::ACCENT).into()),
+            color: Some(t.accent.into()),
             font_weight: Some(FontWeight::BOLD),
             ..HighlightStyle::default()
         };
@@ -330,8 +332,9 @@ impl Combobox {
 
     /// The list: the choices, then the preview or the error.
     fn list(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let t = theme::current();
         let note = match (&self.error, self.highlight) {
-            (Some(error), _) => Some((error.clone(), theme::RED)),
+            (Some(error), _) => Some((error.clone(), t.danger)),
             (None, None) if !self.preview.0.is_empty() => Some(self.preview.clone()),
             _ => None,
         };
@@ -351,9 +354,9 @@ impl Combobox {
                 let highlighted = self.highlight == Some(index);
                 let current = !self.initial.is_empty() && choice.value == self.initial;
                 let mark = match choice.icon {
-                    Some((glyph, color)) => div().w(px(14.)).text_color(rgb(color)).child(glyph),
+                    Some((glyph, color)) => div().w(px(14.)).text_color(color).child(glyph),
                     // The value the field has now.
-                    None => div().w(px(10.)).text_color(rgb(theme::GREEN)).when(current, |d| d.child("✓")),
+                    None => div().w(px(10.)).text_color(t.success).when(current, |d| d.child("✓")),
                 };
                 div()
                     .id(ElementId::Name(format!("choice-{index}").into()))
@@ -364,8 +367,8 @@ impl Combobox {
                     .when_else(palette, |d| d.h(px(32.)).px_3().rounded_md(), |d| d.h(px(24.)).px_1p5().rounded_sm())
                     .cursor_pointer()
                     .whitespace_nowrap()
-                    .when(highlighted, |d| d.bg(theme::alpha(theme::ACCENT, 0.22)))
-                    .when(!highlighted, |d| d.hover(|s| s.bg(rgb(theme::CARD_HOVER))))
+                    .when(highlighted, |d| d.bg(theme::alpha(t.accent, 0.22)))
+                    .when(!highlighted, |d| d.hover(|s| s.bg(t.card_hover)))
                     .child(mark.flex_shrink_0())
                     .child(
                         div()
@@ -373,25 +376,25 @@ impl Combobox {
                             .child(self.matched(&choice.value, cx)),
                     )
                     .when(!palette, |d| d.child(div().flex_1()))
-                    .child(div().flex_shrink_0().text_xs().text_color(rgb(theme::FAINT)).child(choice.detail.clone()))
+                    .child(div().flex_shrink_0().text_xs().text_color(t.fg_faint).child(choice.detail.clone()))
                     .on_click(cx.listener(move |combo, _, _, cx| combo.pick(index, cx)))
             })
             .collect();
-        let faint = |text: String, color: u32| {
+        let faint = |text: String, color: Rgba| {
             div()
                 .when_else(palette, |d| d.px_3().py_1p5(), |d| d.px_1p5().py_1())
                 .whitespace_nowrap()
                 .text_xs()
-                .text_color(rgb(color))
+                .text_color(color)
                 .child(text)
         };
         let more = (choices.len() > ROWS)
-            .then(|| faint(format!("{}–{} of {}", first + 1, first + rows.len(), choices.len()), theme::FAINT));
+            .then(|| faint(format!("{}–{} of {}", first + 1, first + rows.len(), choices.len()), t.fg_faint));
         let separate = !rows.is_empty() && !palette;
         let note = note.map(|(text, color)| {
             faint(text, color)
                 .debug_selector(|| "combo-note".to_owned())
-                .when(separate, |d| d.mt_0p5().border_t_1().border_color(rgb(theme::BORDER)))
+                .when(separate, |d| d.mt_0p5().border_t_1().border_color(t.border))
         });
         let list = div().id("combo-list").flex().flex_col().children(rows).children(more).children(note);
         Some(match palette {
@@ -402,9 +405,9 @@ impl Combobox {
                 .min_w(px(200.))
                 .p_0p5()
                 .rounded_md()
-                .bg(rgb(theme::RAISED))
+                .bg(t.raised)
                 .border_1()
-                .border_color(rgb(theme::BORDER_STRONG))
+                .border_color(t.border_strong)
                 .shadow(theme::shadow())
                 .text_xs()
                 .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
@@ -421,30 +424,31 @@ impl Focusable for Combobox {
 
 impl Render for Combobox {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
         let list = self.focus_handle(cx).is_focused(window).then(|| self.list(cx)).flatten();
         let field = div().flex_1().min_w(px(64.)).child(self.input.clone());
         if self.palette {
             // The owner draws the card around it; the list follows the field in the flow.
-            let lead = div().flex_shrink_0().text_color(rgb(theme::ACCENT)).child(self.lead.clone());
+            let lead = div().flex_shrink_0().text_color(t.accent).child(self.lead.clone());
             return div()
                 .id("combobox")
                 .w_full()
                 .flex()
                 .flex_col()
                 .child(div().flex().items_center().gap_3().px_4().py_2p5().child(lead).child(field))
-                .children(list.map(|list| div().border_t_1().border_color(rgb(theme::BORDER)).child(list)));
+                .children(list.map(|list| div().border_t_1().border_color(t.border).child(list)));
         }
         let chips: Vec<_> = self
             .chips()
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                chip(format!("#{value}"), theme::ACCENT).flex().items_center().gap_1().child(
+                chip(format!("#{value}"), t.accent).flex().items_center().gap_1().child(
                     div()
                         .id(ElementId::Name(format!("chip-{index}-remove").into()))
                         .debug_selector(move || format!("chip-{index}-remove"))
                         .cursor_pointer()
-                        .hover(|s| s.text_color(rgb(theme::TEXT)))
+                        .hover(|s| s.text_color(t.fg))
                         .child("×")
                         .on_click(cx.listener(move |combo, _, _, cx| combo.remove_chip(index, cx))),
                 )
@@ -462,9 +466,9 @@ impl Render for Combobox {
             .px_1p5()
             .py_0p5()
             .rounded_md()
-            .bg(rgb(theme::CANVAS))
+            .bg(t.bg)
             .border_1()
-            .border_color(rgb(if self.error.is_some() { theme::RED } else { theme::ACCENT }))
+            .border_color(if self.error.is_some() { t.danger } else { t.accent })
             // The field keeps its own clicks, so its owner can close it on a click elsewhere.
             .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
             .children(chips)

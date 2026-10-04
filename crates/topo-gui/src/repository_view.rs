@@ -8,11 +8,12 @@ use crate::theme;
 
 impl RepositoryWindow {
     pub(super) fn chooser_view(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
         let current = self.editor.as_ref().map(|editor| editor.read(cx).ws.dir().to_owned());
         let recent_count = self.config.recent_workspaces.iter().filter(|path| current.as_ref() != Some(*path)).count();
         let height = (f32::from(window.viewport_size().height) - 48.).clamp(300., 680.);
         let caption = |text: &'static str| {
-            div().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(rgb(theme::MUTED)).child(text)
+            div().text_xs().font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.fg_muted).child(text)
         };
         div().size_full().flex().items_center().justify_center().p_6().child(
             div()
@@ -24,8 +25,8 @@ impl RepositoryWindow {
                 .overflow_hidden()
                 .rounded_xl()
                 .border_1()
-                .border_color(rgb(theme::BORDER))
-                .bg(rgb(theme::SURFACE))
+                .border_color(t.border)
+                .bg(t.surface)
                 .shadow(theme::shadow())
                 .child(
                     div()
@@ -42,12 +43,12 @@ impl RepositoryWindow {
                                 .h(px(40.))
                                 .flex_shrink_0()
                                 .rounded_lg()
-                                .bg(rgb(theme::CARD))
+                                .bg(t.card)
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .text_lg()
-                                .text_color(rgb(theme::AMBER))
+                                .text_color(t.warn)
                                 .child("◆"),
                         )
                         .child(
@@ -61,7 +62,7 @@ impl RepositoryWindow {
                                 .child(
                                     div()
                                         .text_sm()
-                                        .text_color(rgb(theme::MUTED))
+                                        .text_color(t.fg_muted)
                                         .child("Choose a folder, or continue in a recent repository."),
                                 ),
                         ),
@@ -87,7 +88,7 @@ impl RepositoryWindow {
                                     .p_3()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(rgb(theme::BORDER))
+                                    .border_color(t.border)
                                     .flex()
                                     .flex_col()
                                     .gap_1()
@@ -102,7 +103,7 @@ impl RepositoryWindow {
                                             .overflow_x_scroll()
                                             .whitespace_nowrap()
                                             .text_xs()
-                                            .text_color(rgb(theme::MUTED))
+                                            .text_color(t.fg_muted)
                                             .child(folder.display().to_string()),
                                     ),
                             )
@@ -118,8 +119,8 @@ impl RepositoryWindow {
                                 .flex()
                                 .items_center()
                                 .gap_3()
-                                .bg(rgb(theme::ACCENT))
-                                .text_color(rgb(theme::CANVAS))
+                                .bg(t.accent)
+                                .text_color(t.bg)
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .when_else(
@@ -140,8 +141,8 @@ impl RepositoryWindow {
                                     .p_3()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(theme::alpha(theme::RED, 0.4))
-                                    .bg(theme::alpha(theme::RED, 0.06))
+                                    .border_color(theme::alpha(t.danger, 0.4))
+                                    .bg(theme::alpha(t.danger, 0.06))
                                     .flex()
                                     .flex_col()
                                     .gap_1()
@@ -149,7 +150,7 @@ impl RepositoryWindow {
                                         div()
                                             .text_sm()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .text_color(rgb(theme::RED))
+                                            .text_color(t.danger)
                                             .child("Couldn't open repository"),
                                     )
                                     .child(
@@ -158,13 +159,13 @@ impl RepositoryWindow {
                                             .overflow_x_scroll()
                                             .whitespace_nowrap()
                                             .text_xs()
-                                            .text_color(rgb(theme::MUTED))
+                                            .text_color(t.fg_muted)
                                             .child(error.clone()),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(rgb(theme::MUTED))
+                                            .text_color(t.fg_muted)
                                             .child("Choose another folder or try a recent repository."),
                                     ),
                             )
@@ -180,8 +181,8 @@ impl RepositoryWindow {
                                     .p_4()
                                     .rounded_lg()
                                     .border_1()
-                                    .border_color(theme::alpha(theme::AMBER, 0.4))
-                                    .bg(theme::alpha(theme::AMBER, 0.05))
+                                    .border_color(theme::alpha(t.warn, 0.4))
+                                    .bg(theme::alpha(t.warn, 0.05))
                                     .flex()
                                     .flex_col()
                                     .items_start()
@@ -195,7 +196,7 @@ impl RepositoryWindow {
                                     .child(
                                         div()
                                             .text_sm()
-                                            .text_color(rgb(theme::MUTED))
+                                            .text_color(t.fg_muted)
                                             .child("This folder doesn't have a topo workspace yet."),
                                     )
                                     .child(
@@ -205,7 +206,7 @@ impl RepositoryWindow {
                                             .overflow_x_scroll()
                                             .whitespace_nowrap()
                                             .text_xs()
-                                            .text_color(rgb(theme::MUTED))
+                                            .text_color(t.fg_muted)
                                             .child(path.display().to_string()),
                                     )
                                     .child(
@@ -228,14 +229,14 @@ impl RepositoryWindow {
                                     div()
                                         .px_1p5()
                                         .rounded_md()
-                                        .bg(rgb(theme::RAISED))
+                                        .bg(t.raised)
                                         .text_xs()
-                                        .text_color(rgb(theme::MUTED))
+                                        .text_color(t.fg_muted)
                                         .child(recent_count.to_string()),
                                 )
                                 .child(div().flex_1())
                                 .when(recent_count > 3, |d| {
-                                    d.child(div().text_xs().text_color(rgb(theme::MUTED)).child("Scroll ↓"))
+                                    d.child(div().text_xs().text_color(t.fg_muted).child("Scroll ↓"))
                                 }),
                         )
                         .child(
@@ -251,9 +252,9 @@ impl RepositoryWindow {
                                             .p_4()
                                             .rounded_lg()
                                             .border_1()
-                                            .border_color(rgb(theme::BORDER))
+                                            .border_color(t.border)
                                             .text_sm()
-                                            .text_color(rgb(theme::MUTED))
+                                            .text_color(t.fg_muted)
                                             .child(if current.is_some() {
                                                 "Open a folder to add another repository."
                                             } else {
@@ -284,16 +285,14 @@ impl RepositoryWindow {
                                                 .p_3()
                                                 .rounded_lg()
                                                 .border_1()
-                                                .border_color(rgb(theme::BORDER))
-                                                .bg(rgb(theme::CARD))
+                                                .border_color(t.border)
+                                                .bg(t.card)
                                                 .when_else(
                                                     self.loading,
                                                     |d| d.opacity(0.5).cursor_default(),
                                                     |d| {
-                                                        d.cursor_pointer().hover(|s| {
-                                                            s.bg(rgb(theme::RAISED))
-                                                                .border_color(rgb(theme::BORDER_STRONG))
-                                                        })
+                                                        d.cursor_pointer()
+                                                            .hover(|s| s.bg(t.raised).border_color(t.border_strong))
                                                     },
                                                 )
                                                 .child(
@@ -313,12 +312,12 @@ impl RepositoryWindow {
                                                         .child(
                                                             div()
                                                                 .text_xs()
-                                                                .text_color(rgb(theme::MUTED))
+                                                                .text_color(t.fg_muted)
                                                                 .truncate()
                                                                 .child(folder.display().to_string()),
                                                         ),
                                                 )
-                                                .child(div().text_sm().text_color(rgb(theme::MUTED)).child("→"))
+                                                .child(div().text_sm().text_color(t.fg_muted).child("→"))
                                                 .on_click(cx.listener(move |app, _, window, cx| {
                                                     app.open_selection(
                                                         Selection { path: path.clone(), exact_workspace: true },
@@ -335,13 +334,13 @@ impl RepositoryWindow {
                     div()
                         .flex_shrink_0()
                         .border_t_1()
-                        .border_color(rgb(theme::BORDER))
+                        .border_color(t.border)
                         .px_6()
                         .py_3()
                         .flex()
                         .items_center()
                         .gap_4()
-                        .child(div().flex_1().text_xs().text_color(rgb(theme::MUTED)).child(if current.is_some() {
+                        .child(div().flex_1().text_xs().text_color(t.fg_muted).child(if current.is_some() {
                             "Unsubmitted edits are discarded only when you switch."
                         } else {
                             "Git repositories and ordinary folders are supported."

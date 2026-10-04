@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, PathPromptOptions, Subscription, Task, Window,
-    actions, div, prelude::*, rgb,
+    actions, div, prelude::*,
 };
 use topo_core::Workspace;
 
@@ -301,13 +301,14 @@ impl RepositoryWindow {
 
 impl Render for RepositoryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
         let chooser = self.chooser || self.editor.is_none();
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::CANVAS))
-            .text_color(rgb(theme::TEXT))
+            .bg(t.bg)
+            .text_color(t.fg)
             .font_family(".SystemUIFont")
             .on_action(cx.listener(|app, _: &OpenRepository, window, cx| app.show_chooser(window, cx)))
             .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
