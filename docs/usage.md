@@ -150,7 +150,7 @@ Both toggles are in the bottom bar and are remembered across app restarts (user 
 
 - Priority Filter: `Shift+P` dims nodes below a priority
 - Hide Completed: `Shift+H` hides every done and dropped node together with its edges (edges are not re-routed through hidden nodes). A hidden node is also dropped from the selection, from Select All and from search
-- Group by Tag: `Shift+G` lays the canvas out as one band per tag, sorted by name, with an `untagged` band last. Tags are sets, so a node with several tags appears in every one of its bands. Edges are drawn inside a band. Click a band header to fold or unfold it (folding is not remembered)
+- Group by Tag: `Shift+G` lays the canvas out as one band per tag, sorted by name, with an `untagged` band last. Tags are sets, so a node with several tags appears in every one of its bands. Edges are drawn inside a band; an edge whose ends share no band is not drawn, except for the selected nodes: each of their dependency and milestone edges that no band shows gets one highlighted line from the selected node's card (the one last clicked) to the nearest card of the other end, so you can trace it. Ends in a folded band or hidden by Hide Completed have no card and get no line. Click a band header to fold or unfold it (folding is not remembered)
 - The modes combine with each other and with the priority filter
 
 ### Node Operations

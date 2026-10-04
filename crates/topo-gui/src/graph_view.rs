@@ -66,6 +66,14 @@ pub(crate) struct GraphCache {
     edge_tiles: BTreeMap<(i32, i32), Vec<usize>>,
     long_edges: Vec<usize>,
     edges: Vec<PlacedEdge>,
+    /// Every card of each node with its band; only kept while grouped.
+    placements: BTreeMap<NodeId, Vec<(usize, layout::Cell)>>,
+    /// Nodes referencing each node, by dependency (`false`) or milestone membership (`true`); only kept while grouped.
+    referrers: BTreeMap<NodeId, Vec<(NodeId, bool)>>,
+    /// The selection's edges whose ends share no band, drawn in addition to `edges`.
+    cross: Vec<PlacedEdge>,
+    /// The card the selection was last clicked or navigated on.
+    active: Option<layout::Cell>,
     view: layout::View,
     bands: Vec<layout::Band>,
     /// Rightmost column and bottom row, group headers included.
@@ -100,6 +108,10 @@ impl Default for GraphCache {
             edge_tiles: BTreeMap::new(),
             long_edges: Vec::new(),
             edges: Vec::new(),
+            placements: BTreeMap::new(),
+            referrers: BTreeMap::new(),
+            cross: Vec::new(),
+            active: None,
             view: layout::View::default(),
             bands: Vec::new(),
             extent: (0, 0),
@@ -193,6 +205,10 @@ impl GraphCache {
                 }
             }
         }
+        self.placements.clear();
+        if self.view.group_by_tag {
+            self.placements = placed.into_iter().map(|(id, cells)| (id.clone(), cells)).collect();
+        }
         self.edge_tiles.clear();
         self.long_edges.clear();
         for (i, PlacedEdge { from_cell: (fc, fr), to_cell: (tc, tr), .. }) in self.edges.iter().enumerate() {
@@ -266,6 +282,56 @@ impl GraphCache {
         self.columns.values().flat_map(|rows| rows.values()).filter(|placed| *placed == id).count()
     }
 
+    /// The cells of every card of `id`, one per band while grouped.
+    #[cfg(test)]
+    pub(crate) fn cards(&self, id: &NodeId) -> Vec<layout::Cell> {
+        self.placements.get(id).into_iter().flatten().map(|(_, cell)| *cell).collect()
+    }
+
+    /// The selection's cross-band edges as `(from, to, from_cell, to_cell)`.
+    #[cfg(test)]
+    pub(crate) fn cross_edges(&self) -> Vec<(&str, &str, bool, layout::Cell, layout::Cell)> {
+        self.cross.iter().map(|e| (e.from.as_str(), e.to.as_str(), e.membership, e.from_cell, e.to_cell)).collect()
+    }
+
+    /// The selection's edges that no band draws because their ends share none, each joined
+    /// between one card per end: the selected end's active card, the other end's nearest.
+    fn cross_band_edges(&self, graph: &Graph) -> Vec<PlacedEdge> {
+        let mut seen = BTreeSet::new();
+        let mut edges = Vec::new();
+        for id in &self.selected {
+            let Some(node) = graph.get(id) else { continue };
+            let referrers = self.referrers.get(id).into_iter().flatten();
+            let links = node
+                .depends_on
+                .iter()
+                .map(|d| (d, id, false))
+                .chain(node.milestones.iter().map(|m| (id, m, true)))
+                .chain(referrers.map(|(n, membership)| if *membership { (n, id, true) } else { (id, n, false) }));
+            for (from, to, membership) in links {
+                let (Some(a), Some(b)) = (self.placements.get(from), self.placements.get(to)) else { continue };
+                if a.iter().any(|(band, _)| b.iter().any(|(other, _)| other == band))
+                    || !seen.insert((from, to, membership))
+                {
+                    continue;
+                }
+                let active = |id: &NodeId, cells: &[(usize, layout::Cell)]| {
+                    self.active.filter(|cell| self.at(*cell) == Some(id)).unwrap_or(cells[0].1)
+                };
+                let nearest = |cells: &[(usize, layout::Cell)], to: layout::Cell| {
+                    cells.iter().map(|(_, cell)| *cell).min_by_key(|cell| cell.1.abs_diff(to.1)).expect("placed")
+                };
+                let (from_cell, to_cell) = match (self.selected.contains(from), self.selected.contains(to)) {
+                    (true, false) => (active(from, a), nearest(b, active(from, a))),
+                    (false, true) => (nearest(a, active(to, b)), active(to, b)),
+                    _ => (active(from, a), active(to, b)),
+                };
+                edges.push(PlacedEdge { from: from.clone(), to: to.clone(), membership, from_cell, to_cell });
+            }
+        }
+        edges
+    }
+
     #[cfg(test)]
     pub(crate) fn edge_count(&self) -> usize {
         self.edges.len()
@@ -300,8 +366,9 @@ impl GraphCache {
         self.extent
     }
 
-    pub(crate) fn refresh(&mut self, graph: &Graph, selected: &BTreeSet<NodeId>) {
+    pub(crate) fn refresh(&mut self, graph: &Graph, selected: &BTreeSet<NodeId>, active: Option<layout::Cell>) {
         let unchanged = !self.dirty;
+        let reselected = self.selected != *selected || self.active != active;
         if !unchanged {
             self.dirty = false;
             if self.layout_dirty {
@@ -339,6 +406,17 @@ impl GraphCache {
             for node in graph.nodes() {
                 for milestone in &node.milestones {
                     self.requirements.get_mut(milestone).expect("graph invariant").push(node.id.clone());
+                }
+            }
+            self.referrers.clear();
+            if self.view.group_by_tag {
+                self.referrers = graph.nodes().map(|n| (n.id.clone(), Vec::new())).collect();
+                for node in graph.nodes() {
+                    let links =
+                        node.depends_on.iter().map(|d| (d, false)).chain(node.milestones.iter().map(|m| (m, true)));
+                    for (target, membership) in links {
+                        self.referrers.get_mut(target).expect("graph invariant").push((node.id.clone(), membership));
+                    }
                 }
             }
             for (id, requirements) in &self.requirements {
@@ -394,8 +472,10 @@ impl GraphCache {
                 .map(|n| n.id.clone())
                 .collect();
         }
-        if !unchanged || self.selected != *selected {
+        if !unchanged || reselected {
             self.selected.clone_from(selected);
+            self.active = active;
+            self.cross = self.cross_band_edges(graph);
             self.focus = (!selected.is_empty()).then(|| {
                 let mut focus = reachable(&self.requirements, selected);
                 focus.extend(reachable(&self.dependents, selected));
@@ -448,7 +528,7 @@ fn edge_visible(from: Point<Pixels>, to: Point<Pixels>, viewport: Bounds<Pixels>
 impl TopoApp {
     pub(crate) fn ensure_graph_cache(&mut self) {
         self.graph_cache.set_view(&self.view);
-        self.graph_cache.refresh(&self.ws.graph, &self.selected_nodes);
+        self.graph_cache.refresh(&self.ws.graph, &self.selected_nodes, self.placed);
         // A selection never points at a node the canvas does not show.
         let cells = self.graph_cache.cells();
         if self.selected_nodes.iter().any(|id| !cells.contains_key(id)) {
@@ -456,7 +536,7 @@ impl TopoApp {
             if self.selected.as_ref().is_none_or(|id| !self.selected_nodes.contains(id)) {
                 self.selected = self.selected_nodes.first().cloned();
             }
-            self.graph_cache.refresh(&self.ws.graph, &self.selected_nodes);
+            self.graph_cache.refresh(&self.ws.graph, &self.selected_nodes, self.placed);
         }
     }
 
@@ -601,7 +681,9 @@ impl TopoApp {
             .graph_cache
             .visible_edges(self.offset, z, viewport)
             .into_iter()
-            .map(|i| edge(&self.graph_cache.edges[i]))
+            .map(|i| &self.graph_cache.edges[i])
+            .chain(&self.graph_cache.cross)
+            .map(edge)
             .filter(|e| edge_visible(e.from, e.to, viewport, z))
             .collect();
         edges.sort_by(|a, b| a.width.total_cmp(&b.width));
@@ -1115,23 +1197,23 @@ mod tests {
         let mut graph = fixture(50);
         let mut cache = GraphCache::default();
         let selected = BTreeSet::from([NodeId("n0025".into()), NodeId("n0001".into())]);
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(cache.open_requirements[&NodeId("n0025".into())], 1);
         assert!(cache.focus.as_ref().unwrap().contains(&NodeId("n0000".into())));
         assert!(cache.focus.as_ref().unwrap().contains(&NodeId("n0026".into())));
         graph.set_status(&NodeId("n0000".into()), Status::Done).unwrap();
         cache.invalidate();
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(cache.open_requirements[&NodeId("n0025".into())], 0);
         let mut extra = Node::new(NodeId("extra".into()), Kind::Task, "Extra".into());
         extra.depends_on.push(NodeId("n0025".into()));
         graph.insert(extra).unwrap();
         cache.invalidate();
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(cache.cells[&NodeId("extra".into())].0, 2);
         assert!(cache.focus.as_ref().unwrap().contains(&NodeId("extra".into())));
         assert_eq!(cache.dependents[&NodeId("n0025".into())], vec![NodeId("extra".into())]);
-        cache.refresh(&graph, &BTreeSet::new());
+        cache.refresh(&graph, &BTreeSet::new(), None);
         assert!(cache.focus.is_none());
     }
 
@@ -1165,7 +1247,7 @@ mod tests {
         let graph = chain_fixture(1000);
         let selected = graph.nodes().map(|node| node.id.clone()).collect();
         let mut cache = GraphCache::default();
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(cache.focus.as_ref(), Some(&selected));
         assert_eq!(cache.requirements.values().map(Vec::len).sum::<usize>(), 999);
         assert_eq!(cache.dependents.values().map(Vec::len).sum::<usize>(), 999);
@@ -1175,7 +1257,7 @@ mod tests {
     fn selection_focus_ignores_nodes_removed_from_the_graph() {
         let graph = fixture(1);
         let mut cache = GraphCache::default();
-        cache.refresh(&graph, &BTreeSet::from([id("missing"), id("n0000")]));
+        cache.refresh(&graph, &BTreeSet::from([id("missing"), id("n0000")]), None);
         assert_eq!(cache.focus, Some(BTreeSet::from([id("n0000")])));
     }
 
@@ -1188,9 +1270,9 @@ mod tests {
             ("end", Kind::Task, &["left", "right"], &[]),
         ]);
         let mut cache = GraphCache::default();
-        cache.refresh(&graph, &BTreeSet::from([id("left")]));
+        cache.refresh(&graph, &BTreeSet::from([id("left")]), None);
         assert_eq!(cache.focus, Some(BTreeSet::from([id("root"), id("left"), id("end")])));
-        cache.refresh(&graph, &BTreeSet::from([id("left"), id("right")]));
+        cache.refresh(&graph, &BTreeSet::from([id("left"), id("right")]), None);
         assert_eq!(cache.focus, Some(graph.nodes().map(|node| node.id.clone()).collect()));
     }
 
@@ -1203,10 +1285,10 @@ mod tests {
             ("next", Kind::Task, &["m"], &[]),
         ]);
         let mut cache = GraphCache::default();
-        cache.refresh(&graph, &BTreeSet::from([id("a")]));
+        cache.refresh(&graph, &BTreeSet::from([id("a")]), None);
         assert_eq!(cache.focus, Some(BTreeSet::from([id("a"), id("m"), id("next")])));
         assert_eq!(cache.open_requirements[&id("m")], 2);
-        cache.refresh(&graph, &BTreeSet::from([id("m")]));
+        cache.refresh(&graph, &BTreeSet::from([id("m")]), None);
         assert_eq!(cache.focus, Some(graph.nodes().map(|node| node.id.clone()).collect()));
     }
 
@@ -1223,7 +1305,7 @@ mod tests {
         ]);
         let mut cache = GraphCache::default();
         let selected = BTreeSet::from([id("m1"), id("m2")]);
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(
             cache.critical_edges,
             BTreeMap::from([
@@ -1235,7 +1317,7 @@ mod tests {
         );
         graph.set_status(&id("b"), Status::Done).unwrap();
         cache.invalidate();
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert!(!cache.critical_edges.contains_key(&id("b")));
         assert_eq!(cache.critical_edges[&id("c")], BTreeSet::from([id("d"), id("m1")]));
         assert_eq!(cache.open_requirements[&id("m1")], 1);
@@ -1250,19 +1332,19 @@ mod tests {
         ]);
         let selected = BTreeSet::from([id("m")]);
         let mut cache = GraphCache::default();
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         let cells = cache.cells.clone();
         let before = graph.clone();
         graph.edit(&id("a"), topo_core::Edit { title: Some("renamed".into()), ..Default::default() }).unwrap();
         cache.changed(&before, &graph);
         assert!(!cache.layout_dirty && !cache.dirty);
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(cache.cells, cells);
         let before = graph.clone();
         graph.set_status(&id("a"), Status::Done).unwrap();
         cache.changed(&before, &graph);
         assert!(!cache.layout_dirty && cache.dirty);
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(cache.cells, cells);
         assert_eq!(cache.progress[&id("m")], graph.progress(&id("m")));
         assert_eq!(cache.critical_paths[&id("m")], graph.critical_path(&id("m")));
@@ -1271,7 +1353,7 @@ mod tests {
         graph.unlink(&id("b"), &id("a")).unwrap();
         cache.changed(&before, &graph);
         assert!(cache.layout_dirty);
-        cache.refresh(&graph, &selected);
+        cache.refresh(&graph, &selected, None);
         assert_eq!(cache.cells.len(), graph.nodes().count());
         assert_eq!(cache.cells[&id("a")], (0, 0));
     }
@@ -1281,7 +1363,7 @@ mod tests {
         let mut graph = fixture(1000);
         graph.link(&id("n0999"), &id("n0000")).unwrap();
         let mut cache = GraphCache::default();
-        cache.refresh(&graph, &BTreeSet::new());
+        cache.refresh(&graph, &BTreeSet::new(), None);
         let viewport = Bounds::new(point(px(0.), px(0.)), size(px(1360.), px(860.)));
         for zoom in [0.25, 0.9, 2.5] {
             for x in [-10000., -500., -32., 0., 800., 40000.] {
@@ -1326,7 +1408,7 @@ mod tests {
             let graph = chain_fixture(count);
             let selected: BTreeSet<_> = graph.nodes().map(|node| node.id.clone()).collect();
             let mut cache = GraphCache::default();
-            cache.refresh(&graph, &BTreeSet::new());
+            cache.refresh(&graph, &BTreeSet::new(), None);
             let start = Instant::now();
             let legacy: BTreeSet<_> = selected
                 .iter()
@@ -1335,9 +1417,9 @@ mod tests {
             let legacy_ms = start.elapsed().as_secs_f64() * 1000.;
             let mut samples = Vec::new();
             for _ in 0..40 {
-                cache.refresh(&graph, &BTreeSet::new());
+                cache.refresh(&graph, &BTreeSet::new(), None);
                 let start = Instant::now();
-                cache.refresh(&graph, black_box(&selected));
+                cache.refresh(&graph, black_box(&selected), None);
                 samples.push(start.elapsed().as_secs_f64() * 1000.);
                 assert_eq!(cache.focus.as_ref(), Some(&legacy));
                 black_box(&cache.focus);

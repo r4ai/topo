@@ -1844,6 +1844,127 @@ fn arrow_keys_walk_through_group_bands_and_repeated_cards(cx: &mut TestAppContex
     assert_eq!(ui.selected().as_deref(), Some("b"));
 }
 
+const CROSS_SAMPLE: &[(&str, Kind, &[&str], &[&str])] = &[
+    ("a", Kind::Task, &[], &[]),
+    ("m", Kind::Milestone, &["a"], &[]),
+    ("b", Kind::Task, &["a"], &["m"]),
+    ("c", Kind::Task, &[], &["m"]),
+    ("w", Kind::Task, &[], &["m"]),
+];
+
+/// Bands #gui (m, b), #notes (a, b, w) and #ui (c, w); m depends on a, which shares no band with it.
+fn cross_fixture(ui: &mut Ui) {
+    ui.app.update(ui.cx, |app, cx| {
+        let tags =
+            |tags: &[&str]| Edit { tags: Some(tags.iter().map(|t| (*t).to_owned()).collect()), ..Edit::default() };
+        assert!(app.mutate(cx, |g| {
+            g.edit(&id("a"), tags(&["notes"]))?;
+            g.edit(&id("m"), tags(&["gui"]))?;
+            g.edit(&id("b"), tags(&["gui", "notes"]))?;
+            g.edit(&id("c"), tags(&["ui"]))?;
+            g.edit(&id("w"), tags(&["notes", "ui"]))
+        }));
+    });
+    ui.keys("shift-g");
+}
+
+impl Ui<'_> {
+    /// The selection's cross-band edges as `from>to` (`from~to` for membership), sorted.
+    fn cross(&mut self) -> Vec<String> {
+        self.redraw();
+        let mut edges: Vec<String> = self.read(|app| {
+            let edges = app.graph_cache.cross_edges();
+            edges.iter().map(|(f, t, member, ..)| format!("{f}{}{t}", if *member { "~" } else { ">" })).collect()
+        });
+        edges.sort();
+        edges
+    }
+
+    fn cards(&mut self, node: &str) -> Vec<crate::layout::Cell> {
+        self.read(|app| app.graph_cache.cards(&id(node)))
+    }
+}
+
+#[gpui::test]
+fn a_selected_node_draws_its_edges_that_share_no_band(cx: &mut TestAppContext) {
+    let mut ui = open(cx, CROSS_SAMPLE);
+    cross_fixture(&mut ui);
+    // b → m (#gui) and a → b (#notes) are drawn inside a band; nothing crosses without a selection.
+    assert!(ui.cross().is_empty());
+    let in_band = ui.read(|app| app.graph_cache.edge_count());
+    // The #gui milestone depends on a task tagged only #notes; c and w are members from other bands.
+    ui.select("m");
+    assert_eq!(ui.cross(), ["a>m", "c~m", "w~m"]);
+    // Edges already drawn within a band stay as they are and are not duplicated.
+    assert_eq!(ui.read(|app| app.graph_cache.edge_count()), in_band);
+    // Selecting the other end shows the same edge; a node whose edges are all in-band shows none.
+    ui.select("a");
+    assert_eq!(ui.cross(), ["a>m"]);
+    ui.select("b");
+    assert!(ui.cross().is_empty());
+    // Multi-select covers both ends and every kind once.
+    ui.keys("cmd-a");
+    assert_eq!(ui.cross(), ["a>m", "c~m", "w~m"]);
+    ui.keys("escape");
+    assert!(ui.cross().is_empty());
+}
+
+#[gpui::test]
+fn cross_band_edges_join_the_active_card_to_the_nearest_card(cx: &mut TestAppContext) {
+    let mut ui = open(cx, CROSS_SAMPLE);
+    cross_fixture(&mut ui);
+    let (m, w) = (ui.cards("m")[0], ui.cards("w"));
+    assert_eq!(w.len(), 2);
+    // Without a clicked card the first placement is used; m's only card is the nearest of its ends.
+    ui.select("w");
+    let ends = ui.read(|app| app.graph_cache.cross_edges().iter().map(|e| (e.3, e.4)).collect::<Vec<_>>());
+    assert_eq!(ends, [(w[0], m)]);
+    // Landing on w's card in the #ui band (by click or arrow keys) makes that one the end of the line.
+    ui.app.update(ui.cx, |app, _| app.placed = Some(w[1]));
+    ui.redraw();
+    let ends = ui.read(|app| app.graph_cache.cross_edges().iter().map(|e| (e.3, e.4)).collect::<Vec<_>>());
+    assert_eq!(ends, [(w[1], m)]);
+    // A node with two cards connects to the nearest of them: a's #notes card from m.
+    ui.select("m");
+    let a = ui.cards("a");
+    let ends = ui.read(|app| app.graph_cache.cross_edges().iter().map(|e| (e.3, e.4)).find(|e| e.0 == a[0]));
+    assert_eq!(ends, Some((a[0], m)));
+}
+
+#[gpui::test]
+fn cross_band_edges_skip_folded_bands_and_hidden_nodes(cx: &mut TestAppContext) {
+    let mut ui = open(cx, CROSS_SAMPLE);
+    cross_fixture(&mut ui);
+    ui.select("m");
+    assert_eq!(ui.cross(), ["a>m", "c~m", "w~m"]);
+    // c lives only in #ui; folding the band leaves it without a card, but w keeps its #notes one.
+    ui.click_on("group-#ui");
+    assert_eq!(ui.cross(), ["a>m", "w~m"]);
+    // Folding #notes too leaves only the lines to cards that are still shown.
+    ui.click_on("group-#notes");
+    assert_eq!(ui.cross(), Vec::<String>::new());
+    ui.click_on("group-#notes");
+    ui.click_on("group-#ui");
+    assert_eq!(ui.cross(), ["a>m", "c~m", "w~m"]);
+    // A done task is hidden with its edges, cross-band ones included.
+    ui.app.update(ui.cx, |app, cx| assert!(app.mutate(cx, |g| g.set_status(&id("a"), Status::Done))));
+    ui.keys("shift-h");
+    assert_eq!(ui.cross(), ["c~m", "w~m"]);
+}
+
+#[gpui::test]
+fn cross_band_edges_are_only_drawn_while_grouped(cx: &mut TestAppContext) {
+    let mut ui = open(cx, CROSS_SAMPLE);
+    cross_fixture(&mut ui);
+    ui.select("m");
+    assert!(!ui.cross().is_empty());
+    ui.keys("shift-g");
+    assert!(ui.cross().is_empty());
+    assert_eq!(ui.read(|app| app.graph_cache.edge_count()), 5);
+    ui.keys("shift-g");
+    assert_eq!(ui.cross(), ["a>m", "c~m", "w~m"]);
+}
+
 #[gpui::test]
 fn the_canvas_can_be_emptied_by_hiding_and_still_works(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
