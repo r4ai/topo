@@ -135,6 +135,7 @@ All in `ui.rs`. A view composes these instead of styling a `div` by hand.
 | `glass(level)` | `overlay` fill, hairline, radius `R_LG`, elevation `e2` or `e3` |
 | `dialog` / `scrim` | `scrim` backdrop and a centred `glass` at `e3` |
 | `chip` | Filled (`control`) or outline (hairline), text `T_CAPTION` |
+| Repository switcher | Palette-style glass dialog; see [repository-sync.md](repository-sync.md) |
 | `kbd`, `section_label`, `divider`, `progress_bar`, `toast_frame` | Small fixed recipes |
 
 ## Window
@@ -152,7 +153,6 @@ On macOS 26 and later, `TOPO_GLASS=1` swaps the blur for AppKit's `NSGlassEffect
 - GPUI has no per-element backdrop blur. Floating surfaces are simulated glass (a near-opaque fill, a hairline, a highlight and a shadow); only the window background is really blurred.
 - GPUI cannot set the window's native appearance, so choosing Light on a dark OS leaves the blur material dark. `glass_alpha` is high enough to keep the theme legible.
 - The offscreen renderer cannot capture the OS blur, so screenshots and tests are always opaque.
-- The repository chooser (`repository_view.rs`) inherits the tokens but keeps its layout until it is rebuilt.
 
 ## Visual QA
 

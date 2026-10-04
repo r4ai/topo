@@ -130,10 +130,11 @@ Built on GPUI (the GPU-accelerated UI framework powering the Zed editor), `topo-
 
 ### Workspace Management
 
-- Open Folder: Click the repository name in the toolbar or press `Cmd+O` (`Ctrl+O` on Linux/Windows)
+- Switch Repository: Click the repository name in the toolbar or press `Cmd+O` (`Ctrl+O` on Linux/Windows) to open the switcher over the canvas. Type to filter the recent workspaces, or paste a folder path to open it. `↑` / `↓` select, `Enter` opens, `Cmd+Backspace` forgets a recent workspace, and `Esc` clears the filter and then closes the switcher
+- Open Folder: Press `Cmd+O` again in the switcher, or click "Open folder…", to choose a folder with the system picker
 - Automatic Discovery: Opens the selected folder's own `.topo` workspace without requiring a Git root
-- Uninitialized Folders: Offers an inline "Initialize workspace" button
-- History: Remembers up to 10 recent workspace paths across app restarts
+- Uninitialized Folders: The switcher offers an "Initialize workspace" button (also `Enter`)
+- History: Remembers up to 10 recent workspace paths across app restarts. A folder that no longer exists is marked "missing", and cloud-linked workspaces carry a "cloud" tag
 
 ### Canvas Navigation
 

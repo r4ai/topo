@@ -903,7 +903,7 @@ impl TopoApp {
 }
 
 /// A shortcut hint that stays legible on the primary fill.
-fn on_primary_kbd(keys: &'static str) -> Div {
+pub(crate) fn on_primary_kbd(keys: &'static str) -> Div {
     let t = theme::current();
     ui::kbd(keys).text_color(t.on_emphasis).border_color(theme::alpha(t.on_emphasis, 0.3))
 }

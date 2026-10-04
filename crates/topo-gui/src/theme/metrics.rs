@@ -32,6 +32,10 @@ pub const H_ICON: f32 = 22.;
 pub const H_BUTTON: f32 = 26.;
 pub const H_INPUT: f32 = 28.;
 pub const H_TOOLBAR: f32 = 46.;
+pub const H_ROW: f32 = 44.;
+
+/// Widest palette-style dialog.
+pub const W_PALETTE: f32 = 560.;
 
 fn drop_shadow(y: f32, blur: f32) -> BoxShadow {
     BoxShadow {

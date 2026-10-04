@@ -1370,16 +1370,19 @@ impl Render for TopoApp {
         }
         // The field belongs to the one selected node and lives while it has the
         // focus. Leaving the window does not move the focus, so it survives that.
-        let focused = self.combo.focus_handle(cx).is_focused(window);
-        match &self.inline {
-            Some(edit) if !focused || self.selected_node().is_none_or(|n| n.id != edit.node) => {
-                self.inline = None;
-                window.focus(&self.focus, cx);
+        // Under the repository switcher the focus is elsewhere and the drafts wait.
+        if self.poll_visible {
+            let focused = self.combo.focus_handle(cx).is_focused(window);
+            match &self.inline {
+                Some(edit) if !focused || self.selected_node().is_none_or(|n| n.id != edit.node) => {
+                    self.inline = None;
+                    window.focus(&self.focus, cx);
+                }
+                None if focused => window.focus(&self.focus, cx),
+                _ => {}
             }
-            None if focused => window.focus(&self.focus, cx),
-            _ => {}
+            self.sync_notes(window, cx);
         }
-        self.sync_notes(window, cx);
         // The canvas takes the standard editing commands only while no text field is
         // open. A command that cannot run has no handler, which disables its menu item.
         let canvas = self.prompt.is_none() && self.inline.is_none() && self.notes.is_none();
@@ -1482,7 +1485,11 @@ fn main() -> Result<()> {
     }
     #[cfg(feature = "screenshot")]
     if let Some(path) = &args.screenshot {
-        return screenshot::render(open_workspace(args.workspace.as_deref())?, path, &args);
+        // The switcher, or a folder without a workspace, is the shell's to show; anything else is the editor alone.
+        return match open_workspace(args.workspace.as_deref()) {
+            Ok(ws) if !args.chooser => screenshot::render(ws, path, &args),
+            _ => screenshot::render_shell(path, &args),
+        };
     }
     let config = config::UserConfig::load();
     let start = repository::startup_target(
@@ -1541,6 +1548,7 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
     Application::with_platform(gpui_platform::current_platform(false)).run(move |cx: &mut App| {
         branding::set_app_icon();
         text_input::bind_keys(cx);
+        repository::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),

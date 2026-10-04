@@ -81,6 +81,16 @@ pub struct Args {
     #[arg(long, requires = "group_by_tag", value_name = "TAG", value_delimiter = ',', value_parser = node_id)]
     pub collapse: Vec<String>,
 
+    /// Capture with the repository switcher open over the workspace. On a folder with no `.topo` it shows the
+    /// switcher alone, as on the first launch
+    #[arg(long, requires = "screenshot")]
+    pub chooser: bool,
+
+    /// A `.topo` directory to list as a recent workspace in the capture (repeatable); one that does not exist
+    /// shows as missing. The saved history is never read
+    #[arg(long, requires = "screenshot", value_name = "PATH")]
+    pub recent: Vec<PathBuf>,
+
     /// Capture with this theme; never read from the saved preference
     #[arg(long, requires = "screenshot", value_enum, default_value_t = CaptureTheme::Dark)]
     pub theme: CaptureTheme,
@@ -160,6 +170,16 @@ mod tests {
         assert!(!parse(&["--screenshot", "o.png"]).unwrap().monotone);
         assert!(parse(&["--screenshot", "o.png", "--monotone"]).unwrap().monotone);
         assert!(parse(&["--monotone"]).is_err());
+    }
+
+    #[test]
+    fn the_switcher_flags_need_a_capture_and_recents_repeat() {
+        let args = parse(&["--screenshot", "o.png", "--chooser", "--recent", "a/.topo", "--recent=b/.topo"]).unwrap();
+        assert!(args.chooser);
+        assert_eq!(args.recent, [PathBuf::from("a/.topo"), PathBuf::from("b/.topo")]);
+        assert!(!parse(&["--screenshot", "o.png"]).unwrap().chooser);
+        assert!(parse(&["--chooser"]).is_err());
+        assert!(parse(&["--recent", "a"]).is_err());
     }
 
     #[test]

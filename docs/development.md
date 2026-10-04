@@ -144,6 +144,8 @@ Key options:
 - `--help-overlay`: Open keyboard shortcut cheatsheet
 - `--theme <dark|light>`: Render with this theme (default: dark)
 - `--monotone`: Render with every signal hue as a neutral
+- `--chooser`: Open the repository switcher over the workspace; on a folder with no `.topo` it shows the switcher alone, as on the first launch (without `--chooser` that folder shows the "no workspace yet" banner)
+- `--recent <path>`: List this `.topo` directory as a recent workspace (repeatable; one that does not exist shows as missing). The saved history is never read or written
 
 The states to capture in each theme are listed in [docs/gui/design-system.md](gui/design-system.md#visual-qa).
 

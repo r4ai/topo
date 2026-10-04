@@ -70,7 +70,6 @@ impl UserConfig {
 
     /// Writes the settings, creating the directory when needed. Best effort:
     /// a failure to persist a window size must not break the app.
-    #[cfg_attr(test, allow(dead_code))]
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = path() else { return Ok(()) };
         if let Some(parent) = path.parent() {
