@@ -86,10 +86,14 @@ Relational constraints enforce identity and column boundaries before graph recon
 
 Cloudflare D1 executes multi-statement batches transactionally:
 
-1. **Read Batch**: Retrieves caller membership, latest workspace version, existing idempotency key, nodes, and `unixepoch()` in one batch of five statements
+1. **Read Batch**: Retrieves caller membership, latest workspace version, existing idempotency key, conditionally selected nodes, and `unixepoch()` in one batch of five statements. The indexed node lookup is gated on writer authorization and an unrecorded key; a denied write or replay reads no node rows. Permission is checked from this transaction before graph validation, without a separate permission batch
 2. **Idempotency Verification**: If the idempotency key exists, returns the previously recorded version and created IDs immediately
 3. **Optimistic Version Check**: Rejects with `precondition_failed` if an `If-Match` header does not match the active version
 4. **Invariant Validation**: Hydrates a `Graph`, applies operations, verifies cycle-freedom, and computes timestamp stamps
 5. **Diff Generation**: Computes changed and deleted nodes
-6. **Commit Batch**: Inserts the new `changes` record, upserts modified nodes via `ON CONFLICT`, and removes deleted IDs
+6. **Commit Batch**: Inserts the new `changes` record with transaction-time authorization, upserts modified nodes via `ON CONFLICT`, and removes deleted IDs. Empty upsert/delete statements are omitted; a no-op write still records its version and idempotency result
 7. **Collision Handling**: If a concurrent write took the same version or idempotency key, the batch aborts and the whole sequence is recomputed. After three failed attempts the server returns `503 busy`
+
+## Graph read batches
+
+Graph GET uses one transaction containing membership, version and nodes. A conditional node statement tests the known version and gates the indexed workspace lookup with NULL for an unchanged graph, returning no node rows. Authorization is checked even before returning 304. Changed graph responses no longer require a second version/membership batch. See [request and server load measurements](../canvas-performance.md#request-and-server-load-reduction-2026-10-04) for query counts, GUI polling intervals and native benchmark limits.

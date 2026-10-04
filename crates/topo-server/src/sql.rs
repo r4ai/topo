@@ -486,12 +486,52 @@ const NODE_COLUMNS: [Nodes; 15] = [
 
 /// The nodes of a workspace, to read with [`node`].
 pub fn nodes(workspace_id: &str) -> Stmt {
-    stmt(
-        Query::select()
-            .columns(NODE_COLUMNS)
-            .from(Nodes::Table)
-            .and_where(Expr::col(Nodes::WorkspaceId).eq(workspace_id)),
-    )
+    stmt(&node_query(workspace_id))
+}
+
+fn node_query(workspace_id: &str) -> sea_query::SelectStatement {
+    node_query_for(Expr::val(workspace_id))
+}
+
+fn node_query_for(workspace: SimpleExpr) -> sea_query::SelectStatement {
+    Query::select()
+        .columns(NODE_COLUMNS)
+        .from(Nodes::Table)
+        .and_where(Expr::col(Nodes::WorkspaceId).eq(workspace))
+        .to_owned()
+}
+
+/// Test the version once in the same transaction as the membership and nodes.
+/// Gate the indexed workspace lookup with NULL to avoid scanning node rows on 304.
+pub fn nodes_changed(workspace_id: &str, known: Option<u64>) -> Stmt {
+    let workspace = if let Some(known) = known {
+        let current = Query::select()
+            .expr(Func::coalesce([Func::max(Expr::col(Changes::Version)).into(), Expr::val(0i64)]))
+            .from(Changes::Table)
+            .and_where(Expr::col(Changes::WorkspaceId).eq(workspace_id))
+            .to_owned();
+        Expr::case(Expr::SubQuery(None, Box::new(current.into())).ne(known), workspace_id)
+            .finally(None::<String>)
+            .into()
+    } else {
+        Expr::val(workspace_id)
+    };
+    stmt(&node_query_for(workspace))
+}
+
+/// Authorize before the indexed node lookup in the write's read transaction.
+/// A recorded idempotency key returns no nodes and needs no graph reconstruction.
+pub fn nodes_for_write(workspace_id: &str, key: &str, user_id: u64, token_id: &str) -> Stmt {
+    let recorded = Query::select()
+        .expr(Expr::val(1i64))
+        .from(Changes::Table)
+        .and_where(Expr::col(Changes::WorkspaceId).eq(workspace_id))
+        .and_where(Expr::col(Changes::IdempotencyKey).eq(key))
+        .to_owned();
+    let condition =
+        Expr::exists(recorded).not().and(authorized(workspace_id, user_id, token_id, &[Role::Owner, Role::Editor]));
+    let workspace = Expr::case(condition, workspace_id).finally(None::<String>).into();
+    stmt(&node_query_for(workspace))
 }
 
 /// A row of [`nodes`]. The four lists are stored as JSON text.

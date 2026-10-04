@@ -11,7 +11,7 @@ use gpui::{
 };
 use topo_core::Workspace;
 
-use crate::{CloseWindow, TopoApp, config::UserConfig, theme};
+use crate::{CloseWindow, Quit, TopoApp, config::UserConfig, layout, theme};
 
 #[path = "repository_view.rs"]
 mod view;
@@ -113,6 +113,11 @@ impl RepositoryWindow {
         if self.loading {
             return;
         }
+        if let Some(editor) = &self.editor
+            && !editor.update(cx, |app, cx| app.can_leave(cx))
+        {
+            return;
+        }
         self.chooser = true;
         if let Some(editor) = &self.editor {
             editor.update(cx, |app, _| app.set_poll_visible(false));
@@ -195,6 +200,11 @@ impl RepositoryWindow {
         if self.loading {
             return;
         }
+        if let Some(editor) = &self.editor
+            && !editor.update(cx, |app, cx| app.can_leave(cx))
+        {
+            return;
+        }
         self.loading = true;
         self.load_generation += 1;
         let generation = self.load_generation;
@@ -248,8 +258,17 @@ impl RepositoryWindow {
         // Preserve the user's width; all graph-specific state belongs to the new entity.
         let width =
             self.editor.as_ref().and_then(|editor| editor.read(cx).inspector_width).or(self.config.inspector_width);
-        let source = if ws.remote().is_none() { Some(TopoApp::file_watcher(&ws)?) } else { None };
-        let new = cx.new(|cx| TopoApp::with_source(ws, width, source, window, cx));
+        let source = TopoApp::updates(&ws)?;
+        // The toggles carry over to the next workspace; its collapsed groups are its own.
+        let view = match &self.editor {
+            Some(editor) => layout::View { collapsed: Default::default(), ..editor.read(cx).view.clone() },
+            None => layout::View {
+                hide_completed: self.config.hide_completed,
+                group_by_tag: self.config.group_by_tag,
+                ..Default::default()
+            },
+        };
+        let new = cx.new(|cx| TopoApp::with_source(ws, width, view.clone(), source, window, cx));
         self.subscription = Some(cx.subscribe_in(&new, window, |app, _, _: &OpenRepository, window, cx| {
             app.show_chooser(window, cx);
         }));
@@ -259,6 +278,7 @@ impl RepositoryWindow {
         }
         self.editor = Some(new);
         self.config.inspector_width = width;
+        (self.config.hide_completed, self.config.group_by_tag) = (view.hide_completed, view.group_by_tag);
         self.config.remember(dir);
         #[cfg(not(test))]
         if let Err(e) = self.config.save() {
@@ -290,7 +310,16 @@ impl Render for RepositoryWindow {
             .text_color(rgb(theme::TEXT))
             .font_family(".SystemUIFont")
             .on_action(cx.listener(|app, _: &OpenRepository, window, cx| app.show_chooser(window, cx)))
-            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
+                if app.editor.as_ref().is_none_or(|editor| editor.update(cx, |app, cx| app.can_leave(cx))) {
+                    window.remove_window();
+                }
+            }))
+            .on_action(cx.listener(|app, _: &Quit, _, cx| {
+                if app.editor.as_ref().is_none_or(|editor| editor.update(cx, |app, cx| app.can_leave(cx))) {
+                    cx.quit();
+                }
+            }))
             .when(!chooser, |d| d.child(self.editor.as_ref().unwrap().clone()))
             .when(chooser, |d| {
                 d.track_focus(&self.focus).on_key_down(cx.listener(Self::key_down)).child(self.chooser_view(window, cx))
@@ -350,6 +379,7 @@ mod tests {
             app.selected = Some(NodeId("same".into()));
             app.selected_nodes.insert(NodeId("same".into()));
         });
+        cx.run_until_parked();
         shell.update_in(cx, |app, window, cx| app.open_path(second.path().to_owned(), false, window, cx));
         cx.run_until_parked();
         let new = shell.read_with(cx, |app, _| app.editor.clone().unwrap());
@@ -370,6 +400,7 @@ mod tests {
         new.update(cx, |app, cx| {
             app.mutate(cx, |g| g.set_status(&NodeId("same".into()), Status::Doing));
         });
+        cx.run_until_parked();
         assert_eq!(
             Workspace::discover(first.path()).unwrap().graph.get(&NodeId("same".into())).unwrap().status,
             Status::Done
@@ -404,6 +435,17 @@ mod tests {
             app.start_notes(window, cx);
             app.notes_input.update(cx, |input, cx| input.set_text("unsaved draft", cx));
         });
+        // Changed notes are settled before the chooser covers the editor.
+        shell.update_in(cx, |app, window, cx| app.show_chooser(window, cx));
+        assert!(!shell.read_with(cx, |app, _| app.chooser));
+        assert!(editor.read_with(cx, |app, _| app.notes_ask.is_some()));
+        editor.update_in(cx, |app, window, cx| app.answer_notes(None, window, cx));
+        editor.read_with(cx, |app, cx| assert_eq!(app.notes_input.read(cx).text(), "unsaved draft"));
+        // The editor stays open while the chooser comes and goes, once it has nothing unsaved.
+        editor.update_in(cx, |app, _, cx| {
+            app.notes_input.update(cx, |input, cx| input.set_text("", cx));
+            assert!(!app.notes_dirty(cx));
+        });
         shell.update_in(cx, |app, window, cx| {
             app.show_chooser(window, cx);
             app.choose_folder(window, cx);
@@ -416,7 +458,20 @@ mod tests {
         assert!(!shell.read_with(cx, |app, _| app.chooser));
         editor.read_with(cx, |app, cx| {
             assert!(app.notes.is_some());
+            assert_eq!(app.notes_input.read(cx).text(), "");
+        });
+        // A draft typed since blocks every way of switching repositories, and survives the question.
+        editor.update_in(cx, |app, _, cx| app.notes_input.update(cx, |input, cx| input.set_text("unsaved draft", cx)));
+        shell.update_in(cx, |app, window, cx| app.open_path(uninitialized.path().to_owned(), true, window, cx));
+        cx.run_until_parked();
+        assert!(!uninitialized.path().join(".topo").exists());
+        assert!(shell.read_with(cx, |app, _| !app.loading && app.error.is_none() && app.pending.is_none()));
+        editor.update_in(cx, |app, window, cx| {
+            assert!(app.notes_ask.is_some());
+            app.answer_notes(None, window, cx);
+            assert!(app.notes.is_some());
             assert_eq!(app.notes_input.read(cx).text(), "unsaved draft");
+            app.notes_input.update(cx, |input, cx| input.set_text("", cx));
         });
         shell.update_in(cx, |app, window, cx| app.open_path(first.path().join("missing"), false, window, cx));
         cx.run_until_parked();
@@ -464,7 +519,8 @@ mod tests {
         workspace(dir.path(), "custom");
         let custom = dir.path().join("tasks");
         std::fs::rename(dir.path().join(".topo"), &custom).unwrap();
-        let config = UserConfig { inspector_width: Some(412.), recent_workspaces: vec![custom.clone()] };
+        let config =
+            UserConfig { inspector_width: Some(412.), recent_workspaces: vec![custom.clone()], ..Default::default() };
         let start = startup_target(None, None, &config, PathBuf::from("/missing-cwd"));
         let (shell, cx) = cx.add_window_view(|window, cx| RepositoryWindow::new(start, config, window, cx));
         cx.run_until_parked();
@@ -513,6 +569,29 @@ mod tests {
             assert_eq!(app.graph().get(&NodeId("same".into())).unwrap().title, "cloud");
         });
         assert_eq!(new.read_with(cx, |app, _| app.graph().get(&NodeId("same".into())).unwrap().title.clone()), "local");
+    }
+    #[gpui::test]
+    fn view_toggles_come_from_the_config_and_follow_the_user_to_the_next_workspace(cx: &mut TestAppContext) {
+        let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        workspace(first.path(), "first");
+        let config = UserConfig { hide_completed: true, ..Default::default() };
+        let (shell, cx) =
+            cx.add_window_view(|window, cx| RepositoryWindow::new(first.path().to_owned(), config, window, cx));
+        cx.run_until_parked();
+        let editor = shell.read_with(cx, |app, _| app.editor.clone().unwrap());
+        assert!(editor.read_with(cx, |app, _| app.view.hide_completed && !app.view.group_by_tag));
+        editor.update(cx, |app, _| {
+            app.toggle_group_by_tag();
+            app.toggle_group(&layout::Group::Untagged);
+        });
+        shell.update_in(cx, |app, window, cx| app.install(workspace(second.path(), "second"), window, cx).unwrap());
+        let next = shell.read_with(cx, |app, _| app.editor.clone().unwrap());
+        let view = next.read_with(cx, |app, _| app.view.clone());
+        assert!(view.hide_completed && view.group_by_tag);
+        // Collapsed groups belong to one graph's tags.
+        assert!(view.collapsed.is_empty());
+        let config = shell.read_with(cx, |app, _| app.config.clone());
+        assert!(config.hide_completed && config.group_by_tag);
     }
     #[gpui::test]
     fn toolbar_and_recent_repository_controls_switch_the_window(cx: &mut TestAppContext) {

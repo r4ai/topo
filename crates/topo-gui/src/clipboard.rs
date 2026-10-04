@@ -86,7 +86,14 @@ impl TopoApp {
 
     /// Selects every node the canvas shows undimmed by the priority filter.
     pub(crate) fn select_all(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<NodeId> = self.graph().nodes().filter(|n| self.passes_filter(n)).map(|n| n.id.clone()).collect();
+        self.ensure_graph_cache();
+        let cells = self.graph_cache.cells();
+        let ids: Vec<NodeId> = self
+            .graph()
+            .nodes()
+            .filter(|n| cells.contains_key(&n.id) && self.passes_filter(n))
+            .map(|n| n.id.clone())
+            .collect();
         self.selected_nodes = ids.into_iter().collect();
         if self.selected.as_ref().is_none_or(|id| !self.selected_nodes.contains(id)) {
             self.selected = self.selected_nodes.first().cloned();

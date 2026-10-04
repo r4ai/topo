@@ -23,6 +23,12 @@ pub struct UserConfig {
     /// Canonical `.topo` paths, most recently opened first. Never includes credentials.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_workspaces: Vec<PathBuf>,
+    /// Hide done and dropped nodes on the canvas.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_completed: bool,
+    /// Show the canvas as one band per tag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub group_by_tag: bool,
 }
 
 /// `topo-gui/config.toml` under the platform configuration directory.
@@ -102,7 +108,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         assert_eq!(UserConfig::load_from(&path), None);
-        let config = UserConfig { inspector_width: Some(412.), ..Default::default() };
+        let config = UserConfig { inspector_width: Some(412.), hide_completed: true, ..Default::default() };
         fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
         assert_eq!(UserConfig::load_from(&path), Some(config));
     }
@@ -124,5 +130,16 @@ mod history_tests {
         let text = toml::to_string_pretty(&config).unwrap();
         assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), config);
         assert_eq!(config.inspector_width, Some(412.));
+    }
+
+    #[test]
+    fn view_toggles_default_off_for_old_configs_and_round_trip() {
+        let old: UserConfig = toml::from_str("inspector_width = 412").unwrap();
+        assert!(!old.hide_completed && !old.group_by_tag);
+        let config = UserConfig { hide_completed: true, group_by_tag: true, ..old };
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), config);
+        // Off is the default and stays out of the file.
+        assert!(!toml::to_string_pretty(&UserConfig::default()).unwrap().contains("hide_completed"));
     }
 }

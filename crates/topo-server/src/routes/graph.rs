@@ -67,17 +67,19 @@ pub async fn get(
     Path(wid): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let mut results = state.db.batch(vec![caller.membership(&wid), sql::version(&wid)]).await?;
-    let current = etag(write::version(results.remove(1))?);
+    // Accept only the exact strong numeric ETag emitted by this endpoint.
+    let known = headers.get(IF_NONE_MATCH).and_then(|value| value.to_str().ok()).and_then(|value| {
+        let version = value.strip_prefix('"')?.strip_suffix('"')?.parse::<u64>().ok()?;
+        (etag(version) == value).then_some(version)
+    });
+    let mut results =
+        state.db.batch(vec![caller.membership(&wid), sql::version(&wid), sql::nodes_changed(&wid, known)]).await?;
     caller.role(&wid, results.remove(0))?;
-    if headers.get(IF_NONE_MATCH).is_some_and(|known| known.as_bytes() == current.as_bytes()) {
-        return Ok((StatusCode::NOT_MODIFIED, [(ETAG, current)]).into_response());
-    }
-    // The version may have moved since the check, so it is read again with the nodes.
-    let mut results = state.db.batch(vec![caller.membership(&wid), sql::version(&wid), sql::nodes(&wid)]).await?;
-    caller.role(&wid, results.remove(0))?;
-    let nodes = write::nodes(results.remove(1))?.into_iter().map(Into::into).collect();
     let version = write::version(results.remove(0))?;
+    if known == Some(version) {
+        return Ok((StatusCode::NOT_MODIFIED, [(ETAG, etag(version))]).into_response());
+    }
+    let nodes = write::nodes(results.remove(0))?.into_iter().map(Into::into).collect();
     Ok(([(ETAG, etag(version))], axum::Json(Snapshot { version, nodes })).into_response())
 }
 

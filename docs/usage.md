@@ -144,6 +144,15 @@ Built on GPUI (the GPU-accelerated UI framework powering the Zed editor), `topo-
 - Actual Size: `Cmd+0`, Zoom In: `Cmd+=`, Zoom Out: `Cmd+-`
 - Toggle Fit / Actual Size: Trackpad two-finger double-tap (macOS only)
 
+### View Modes
+
+Both toggles are in the bottom bar and are remembered across app restarts (user config, shared by all workspaces).
+
+- Priority Filter: `Shift+P` dims nodes below a priority
+- Hide Completed: `Shift+H` hides every done and dropped node together with its edges (edges are not re-routed through hidden nodes). A hidden node is also dropped from the selection, from Select All and from search
+- Group by Tag: `Shift+G` lays the canvas out as one band per tag, sorted by name, with an `untagged` band last. Tags are sets, so a node with several tags appears in every one of its bands. Edges are drawn inside a band. Click a band header to fold or unfold it (folding is not remembered)
+- The modes combine with each other and with the priority filter
+
 ### Node Operations
 
 - Select: Click node (`Cmd` / `Ctrl` + click for multi-selection)
@@ -170,7 +179,12 @@ Built on GPUI (the GPU-accelerated UI framework powering the Zed editor), `topo-
   - `d`: Due date
   - `t`: Tags (press Space or comma to commit chip, Backspace to delete)
   - `g`: Pull Request (enter URL or `owner/repo#123`)
-  - `e`: Notes editor (`Cmd+Enter` to save)
+  - `e`: Notes editor (see below)
+- Notes editor: Markdown is highlighted (headings, emphasis, code, links, lists, quotes); a "Saved" / "Unsaved changes" badge shows whether the text differs from what it opened with
+  - `Cmd+Enter` saves and closes. `Esc`, a click elsewhere, selecting another node, or closing the window closes it silently when nothing changed; with unsaved changes it asks to Save (`Enter`), Discard (`D`) or Keep editing (`Esc`)
+  - `Home` / `End` (also `Cmd+←` / `Cmd+→`, and `Ctrl+A` / `Ctrl+E` on macOS) go to the start / end of the line between line breaks; `Cmd+↑` / `Cmd+↓` (`Ctrl+Home` / `Ctrl+End`) go to the start / end of the notes; `Option+←` / `Option+→` move by word. Add `Shift` to extend the selection
+  - `Tab` / `Shift+Tab` indent / outdent the selected lines (or type an indentation); `Enter` continues a list, task list or quote (an empty item ends it); `Shift+Enter` breaks the line plainly
+  - Long notes scroll the panel to keep the cursor in view
 - Autocompletion: Suggests workspace assignees, existing tags, and relative dates (`+3d`, `friday`)
 
 ## Cloud Synchronization

@@ -1,0 +1,190 @@
+{
+  "date": "2026-10-04",
+  "platform": "macOS arm64, Apple M5, Rust 1.96.0",
+  "backend": "in-memory SQLite, release; SQL execution and row conversion only; excludes network and D1 latency",
+  "nodes": 5000,
+  "repetitions": 5,
+  "calls_per_repetition": 100,
+  "runs": [
+    {
+      "full_before": {
+        "ms_per_call": 4.52846,
+        "node_rows_per_call": 5000
+      },
+      "full_after": {
+        "ms_per_call": 4.47082,
+        "node_rows_per_call": 5000
+      },
+      "unchanged_before": {
+        "ms_per_call": 0.020640000000000002,
+        "node_rows_per_call": 0
+      },
+      "unchanged_after": {
+        "ms_per_call": 0.030750000000000003,
+        "node_rows_per_call": 0
+      },
+      "replay_before": {
+        "ms_per_call": 4.61386,
+        "node_rows_per_call": 5000
+      },
+      "replay_after": {
+        "ms_per_call": 0.021640000000000003,
+        "node_rows_per_call": 0
+      }
+    },
+    {
+      "full_before": {
+        "ms_per_call": 4.960570000000001,
+        "node_rows_per_call": 5000
+      },
+      "full_after": {
+        "ms_per_call": 4.75975,
+        "node_rows_per_call": 5000
+      },
+      "unchanged_before": {
+        "ms_per_call": 0.02176,
+        "node_rows_per_call": 0
+      },
+      "unchanged_after": {
+        "ms_per_call": 0.03133,
+        "node_rows_per_call": 0
+      },
+      "replay_before": {
+        "ms_per_call": 4.7087900000000005,
+        "node_rows_per_call": 5000
+      },
+      "replay_after": {
+        "ms_per_call": 0.022029999999999998,
+        "node_rows_per_call": 0
+      }
+    },
+    {
+      "full_before": {
+        "ms_per_call": 4.53052,
+        "node_rows_per_call": 5000
+      },
+      "full_after": {
+        "ms_per_call": 4.66209,
+        "node_rows_per_call": 5000
+      },
+      "unchanged_before": {
+        "ms_per_call": 0.02119,
+        "node_rows_per_call": 0
+      },
+      "unchanged_after": {
+        "ms_per_call": 0.03089,
+        "node_rows_per_call": 0
+      },
+      "replay_before": {
+        "ms_per_call": 4.664820000000001,
+        "node_rows_per_call": 5000
+      },
+      "replay_after": {
+        "ms_per_call": 0.02182,
+        "node_rows_per_call": 0
+      }
+    },
+    {
+      "full_before": {
+        "ms_per_call": 4.72042,
+        "node_rows_per_call": 5000
+      },
+      "full_after": {
+        "ms_per_call": 4.70302,
+        "node_rows_per_call": 5000
+      },
+      "unchanged_before": {
+        "ms_per_call": 0.021030000000000004,
+        "node_rows_per_call": 0
+      },
+      "unchanged_after": {
+        "ms_per_call": 0.03094,
+        "node_rows_per_call": 0
+      },
+      "replay_before": {
+        "ms_per_call": 4.5456,
+        "node_rows_per_call": 5000
+      },
+      "replay_after": {
+        "ms_per_call": 0.02136,
+        "node_rows_per_call": 0
+      }
+    },
+    {
+      "full_before": {
+        "ms_per_call": 4.5881799999999995,
+        "node_rows_per_call": 5000
+      },
+      "full_after": {
+        "ms_per_call": 4.5476600000000005,
+        "node_rows_per_call": 5000
+      },
+      "unchanged_before": {
+        "ms_per_call": 0.02094,
+        "node_rows_per_call": 0
+      },
+      "unchanged_after": {
+        "ms_per_call": 0.03047,
+        "node_rows_per_call": 0
+      },
+      "replay_before": {
+        "ms_per_call": 4.519769999999999,
+        "node_rows_per_call": 5000
+      },
+      "replay_after": {
+        "ms_per_call": 0.02119,
+        "node_rows_per_call": 0
+      }
+    }
+  ],
+  "median_ms_per_call": {
+    "full_before": 4.58818,
+    "full_after": 4.66209,
+    "unchanged_before": 0.02103,
+    "unchanged_after": 0.03089,
+    "replay_before": 4.61386,
+    "replay_after": 0.02164
+  },
+  "request_counts": {
+    "save_before": 3,
+    "save_after": 2,
+    "steady_polls_per_minute_before": 12,
+    "steady_polls_per_minute_after": 2
+  },
+  "handler_db_counts_excluding_bearer_lookup": {
+    "full_get_before": {
+      "batches": 2,
+      "statements": 5
+    },
+    "full_get_after": {
+      "batches": 1,
+      "statements": 3
+    },
+    "unchanged_get_before": {
+      "batches": 1,
+      "statements": 2
+    },
+    "unchanged_get_after": {
+      "batches": 1,
+      "statements": 3
+    },
+    "normal_edit_before": {
+      "batches": 3,
+      "statements": 9
+    },
+    "normal_edit_after": {
+      "batches": 2,
+      "statements": 7
+    },
+    "replay_before": {
+      "batches": 2,
+      "statements": 6,
+      "node_rows": 5000
+    },
+    "replay_after": {
+      "batches": 1,
+      "statements": 5,
+      "node_rows": 0
+    }
+  }
+}

@@ -248,17 +248,22 @@ fn competing_owner_demotions_never_leave_the_workspace_without_an_owner() {
 
 #[test]
 fn graph_read_rechecks_access_with_the_returned_snapshot() {
-    let db = Arc::new(Interleaving::default());
-    let api = Api::over(db.clone());
-    let alice = api.sign_in("alice");
-    let wid = api.workspace(&alice);
-    let n =
-        topo_core::Node::new(topo_core::NodeId("a".into()), topo_core::Kind::Task, "created after revocation".into());
-    db.before("SELECT \"id\", \"kind\"", vec![sql::delete_member(&wid, 1), sql::upsert_nodes(&wid, &[&n])]);
-    let response = api.get(&format!("/v1/workspaces/{wid}/graph"), &alice);
-    assert!(db.next.lock().unwrap().is_none());
-    assert_eq!(code(&response), (404, "not_found"));
-    assert!(response.body.get("nodes").is_none());
+    for headers in [vec![], vec![("if-none-match", "\"0\"")], vec![("if-none-match", "\"1\"")]] {
+        let db = Arc::new(Interleaving::default());
+        let api = Api::over(db.clone());
+        let alice = api.sign_in("alice");
+        let wid = api.workspace(&alice);
+        let n = topo_core::Node::new(
+            topo_core::NodeId("a".into()),
+            topo_core::Kind::Task,
+            "created after revocation".into(),
+        );
+        db.before("SELECT \"id\", \"kind\"", vec![sql::delete_member(&wid, 1), sql::upsert_nodes(&wid, &[&n])]);
+        let response = api.call("GET", &format!("/v1/workspaces/{wid}/graph"), &alice, &headers, None);
+        assert!(db.next.lock().unwrap().is_none());
+        assert_eq!(code(&response), (404, "not_found"));
+        assert!(response.body.get("nodes").is_none());
+    }
 }
 
 #[test]
@@ -760,4 +765,138 @@ fn the_openapi_document_lists_every_route() {
     assert_eq!(docs.status(), StatusCode::OK);
     let html = block_on(docs.into_body().collect()).unwrap().to_bytes();
     assert!(String::from_utf8_lossy(&html).contains("scalar"));
+}
+
+#[derive(Default)]
+struct CountedDb {
+    inner: SqliteDb,
+    batches: AtomicUsize,
+    statements: AtomicUsize,
+    node_rows: AtomicUsize,
+}
+
+impl CountedDb {
+    fn reset(&self) {
+        self.batches.store(0, Ordering::SeqCst);
+        self.statements.store(0, Ordering::SeqCst);
+        self.node_rows.store(0, Ordering::SeqCst);
+    }
+    fn counts(&self) -> (usize, usize, usize) {
+        (
+            self.batches.load(Ordering::SeqCst),
+            self.statements.load(Ordering::SeqCst),
+            self.node_rows.load(Ordering::SeqCst),
+        )
+    }
+}
+impl Db for CountedDb {
+    fn batch(&self, statements: Vec<Stmt>) -> BoxFuture<'_, Result<Vec<Rows>, DbError>> {
+        Box::pin(async move {
+            self.batches.fetch_add(1, Ordering::SeqCst);
+            self.statements.fetch_add(statements.len(), Ordering::SeqCst);
+            let nodes: Vec<_> = statements
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.sql().starts_with("SELECT \"id\", \"kind\""))
+                .map(|(i, _)| i)
+                .collect();
+            let rows = self.inner.batch(statements).await?;
+            for i in nodes {
+                self.node_rows.fetch_add(rows[i].0.len(), Ordering::SeqCst);
+            }
+            Ok(rows)
+        })
+    }
+}
+
+#[test]
+fn reads_and_replays_bound_database_work_without_returning_stale_nodes() {
+    let db = Arc::new(CountedDb::default());
+    let api = Api::over(db.clone());
+    let alice = api.sign_in("alice");
+    let wid = api.workspace(&alice);
+    let ops = json!([{"op":"add", "id":"a", "title":"a"}]);
+    let first = api.apply(&wid, &alice, "first", ops.clone());
+    assert_eq!(first.status, StatusCode::OK);
+    let path = format!("/v1/workspaces/{wid}/graph");
+    db.reset();
+    let full = api.get(&path, &alice);
+    assert_eq!(full.body["nodes"][0]["id"], "a");
+    // Includes the separate bearer-token lookup; graph itself is one batch/three statements.
+    assert_eq!(db.counts(), (2, 4, 1));
+    db.reset();
+    assert_eq!(api.call("GET", &path, &alice, &[("if-none-match", "\"1\"")], None).status, StatusCode::NOT_MODIFIED);
+    assert_eq!(db.counts(), (2, 4, 0));
+    db.reset();
+    let replay = api.apply(&wid, &alice, "first", ops);
+    assert_eq!(replay.body, first.body);
+    assert_eq!(db.node_rows.load(Ordering::SeqCst), 0);
+    // Unquoted or weak validators must not accidentally become a 304.
+    for known in ["1", "W/\"1\"", "\"01\"", "\"18446744073709551616\""] {
+        assert_eq!(api.call("GET", &path, &alice, &[("if-none-match", known)], None).status, StatusCode::OK);
+    }
+    api.apply(&wid, &alice, "second", json!([{"op":"add", "id":"b", "title":"b"}]));
+    db.reset();
+    let changed = api.call("GET", &path, &alice, &[("if-none-match", "\"1\"")], None);
+    assert_eq!(changed.body["version"], 2);
+    assert_eq!(changed.body["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(db.counts(), (2, 4, 2));
+    let bob = api.sign_in("bob");
+    assert_eq!(
+        api.send("PUT", &format!("/v1/workspaces/{wid}/members/bob"), &alice, json!({"role":"viewer"})).status,
+        StatusCode::NO_CONTENT
+    );
+    db.reset();
+    assert_eq!(code(&api.apply(&wid, &bob, "denied", json!([]))), (403, "forbidden"));
+    assert_eq!(db.node_rows.load(Ordering::SeqCst), 0);
+    // Empty operations still have their own durable audit/idempotency record, but no node DML.
+    db.reset();
+    assert_eq!(api.apply(&wid, &alice, "empty", json!([])).status, StatusCode::OK);
+    assert_eq!(db.counts(), (3, 7, 2));
+}
+
+#[test]
+#[ignore = "manual native SQLite timing, not production D1 latency"]
+fn graph_database_load_benchmark() {
+    let db = Arc::new(SqliteDb::new());
+    let api = Api::over(db.clone());
+    let alice = api.sign_in("alice");
+    let wid = api.workspace(&alice);
+    let token_id = api.get("/v1/tokens", &alice).body[0]["id"].as_str().unwrap().to_owned();
+    let nodes: Vec<_> = (0..5000)
+        .map(|i| topo_core::Node::new(topo_core::NodeId(format!("n{i}")), topo_core::Kind::Task, format!("task {i}")))
+        .collect();
+    let refs: Vec<_> = nodes.iter().collect();
+    block_on(db.batch(vec![sql::upsert_nodes(&wid, &refs)])).unwrap();
+    let loops = 100;
+    for mode in ["full_before", "full_after", "unchanged_before", "unchanged_after", "replay_before", "replay_after"] {
+        let started = std::time::Instant::now();
+        let mut returned = 0;
+        for _ in 0..loops {
+            if mode == "full_before" {
+                block_on(db.batch(vec![sql::membership(&wid, 1, &token_id), sql::version(&wid)])).unwrap();
+            }
+            let statements = match mode {
+                "unchanged_before" => vec![sql::membership(&wid, 1, &token_id), sql::version(&wid)],
+                "unchanged_after" => {
+                    vec![sql::membership(&wid, 1, &token_id), sql::version(&wid), sql::nodes_changed(&wid, Some(0))]
+                }
+                "replay_before" => vec![sql::nodes(&wid)],
+                "replay_after" => vec![sql::nodes_for_write(&wid, "replay", 1, &token_id)],
+                _ => vec![sql::membership(&wid, 1, &token_id), sql::version(&wid), sql::nodes(&wid)],
+            };
+            let mut rows = block_on(db.batch(statements)).unwrap();
+            if mode != "unchanged_before" {
+                returned += rows.pop().unwrap().0.len();
+            }
+        }
+        eprintln!(
+            "server_db_bench mode={mode} nodes=5000 loops={loops} elapsed_ms={:.3} node_rows={returned}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        if mode == "unchanged_after" {
+            // Establish the key used by the next replay measurements.
+            assert_eq!(api.apply(&wid, &alice, "replay", json!([])).status, StatusCode::OK);
+        }
+    }
 }

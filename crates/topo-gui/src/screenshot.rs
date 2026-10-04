@@ -56,6 +56,18 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
                 many => app.select_nodes(many, cx),
             }
             app.show_help = help;
+            app.view = crate::layout::View {
+                hide_completed: options.hide_completed,
+                group_by_tag: options.group_by_tag,
+                collapsed: options
+                    .collapse
+                    .iter()
+                    .map(|tag| match tag.as_str() {
+                        "untagged" => crate::layout::Group::Untagged,
+                        tag => crate::layout::Group::Tag(tag.to_owned()),
+                    })
+                    .collect(),
+            };
             cx.notify();
             anyhow::Ok(())
         })
@@ -80,7 +92,15 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
                     app.open_prompt(crate::Prompt::Search, window, cx);
                     app.palette.update(cx, |palette, cx| palette.set_text(query, cx));
                 }
-                None => app.start_notes(window, cx),
+                None => {
+                    app.start_notes(window, cx);
+                    if let Some(text) = &options.notes_text {
+                        app.notes_input().update(cx, |input, cx| input.set_text(text, cx));
+                    }
+                    if options.unsaved_dialog {
+                        app.ask_notes(crate::notes::Then::Stay, cx);
+                    }
+                }
             })
         })?;
     }
@@ -91,6 +111,21 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
         cx.update(|app| app.notify(entity.entity_id()));
     }
     cx.run_until_parked();
+
+    // Toggling a view mode in the app frames the new layout; do the same here.
+    if options.hide_completed || options.group_by_tag {
+        cx.update(|app| {
+            entity.update(app, |app, cx| {
+                app.refit();
+                cx.notify();
+            })
+        });
+        for _ in 0..2 {
+            cx.run_until_parked();
+            cx.update(|app| app.notify(entity.entity_id()));
+        }
+        cx.run_until_parked();
+    }
 
     let image = cx.capture_screenshot(handle.into())?;
     write_png(&image, path)?;

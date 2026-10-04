@@ -164,7 +164,7 @@ impl Combobox {
         }
     }
 
-    #[cfg(test)]
+    /// The existing query results, shared with canvas highlighting.
     pub fn choices(&self) -> &[Choice] {
         &self.choices
     }

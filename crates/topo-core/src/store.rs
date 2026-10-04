@@ -22,6 +22,11 @@ pub trait Remote: Send + Sync {
     fn fetch(&self, known: Option<u64>) -> Result<Option<Snapshot>, Error>;
     /// Applies operations to the server's current graph.
     fn apply(&self, ops: &[Op]) -> Result<ApplyResult, Error>;
+    /// Retries of one write carry the same key and exactly the same operations.
+    /// Network remotes override this to deduplicate an ambiguous response.
+    fn apply_with_key(&self, ops: &[Op], _key: &str) -> Result<ApplyResult, Error> {
+        self.apply(ops)
+    }
 }
 
 /// A remote in this process, holding a graph and its version. It applies
@@ -56,6 +61,7 @@ pub fn now() -> Timestamp {
 /// The Markdown files are the single source of truth, unless the workspace is
 /// linked to a [`Remote`], which then is. Mutate `graph`, then call
 /// [`Workspace::save`], which writes exactly the nodes that changed.
+#[derive(Clone)]
 pub struct Workspace {
     dir: PathBuf,
     pub graph: Graph,

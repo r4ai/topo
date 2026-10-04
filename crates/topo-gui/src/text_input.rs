@@ -5,7 +5,10 @@
 //!
 //! A field made with [`TextInput::multiline`] holds several lines and wraps
 //! them to its width: Enter breaks the line, Up and Down move between rows,
-//! and ⌘Enter submits.
+//! and ⌘Enter submits. Home and End (and ⌘←, ⌘→, ⌃A, ⌃E) go to the start and
+//! end of the line between line breaks; ⌘↑ and ⌘↓ go to those of the text.
+//! One made with [`TextInput::markdown`] also colors Markdown, indents with Tab
+//! and carries lists on with Enter, and keeps its cursor in view of a scroller.
 //!
 //! The standard editing shortcuts ([`SelectAll`], [`Copy`], [`Cut`], [`Paste`],
 //! [`Undo`], [`Redo`]) are bound for the whole window. A focused field handles
@@ -13,16 +16,19 @@
 //! no field has the focus.
 
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, SharedString, Style, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px, relative, size,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, KeyBinding,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollHandle,
+    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point,
+    prelude::*, px, relative, size,
 };
 use smallvec::SmallVec;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::markdown::{self, Change, Span};
 use crate::theme;
 
 actions!(
@@ -56,6 +62,16 @@ actions!(
         Next,
         Previous,
         Newline,
+        /// A line break that does not continue the list the line is in.
+        PlainNewline,
+        DocStart,
+        DocEnd,
+        SelectDocStart,
+        SelectDocEnd,
+        SelectWordLeft,
+        SelectWordRight,
+        Indent,
+        Outdent,
     ]
 );
 
@@ -112,8 +128,20 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("tab", Next, Some(CONTEXT)),
         KeyBinding::new("shift-tab", Previous, Some(CONTEXT)),
         KeyBinding::new("enter", Newline, Some(AREA)),
-        KeyBinding::new("shift-enter", Newline, Some(AREA)),
+        KeyBinding::new("shift-enter", PlainNewline, Some(AREA)),
         KeyBinding::new(&format!("{MOD}-enter"), Submit, Some(AREA)),
+        KeyBinding::new("tab", Indent, Some(AREA)),
+        KeyBinding::new("shift-tab", Outdent, Some(AREA)),
+        KeyBinding::new("cmd-up", DocStart, Some(AREA)),
+        KeyBinding::new("ctrl-home", DocStart, Some(AREA)),
+        KeyBinding::new("cmd-down", DocEnd, Some(AREA)),
+        KeyBinding::new("ctrl-end", DocEnd, Some(AREA)),
+        KeyBinding::new("cmd-shift-up", SelectDocStart, Some(AREA)),
+        KeyBinding::new("ctrl-shift-home", SelectDocStart, Some(AREA)),
+        KeyBinding::new("cmd-shift-down", SelectDocEnd, Some(AREA)),
+        KeyBinding::new("ctrl-shift-end", SelectDocEnd, Some(AREA)),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some(AREA)),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some(AREA)),
     ]);
 }
 
@@ -142,6 +170,12 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     /// Several lines: Enter breaks the line.
     multiline: bool,
+    /// The text is Markdown: it is colored, and Enter and Tab know about lists.
+    markdown: bool,
+    /// The scroller around the field, which moves to keep the cursor in view.
+    scroll: Option<ScrollHandle>,
+    /// The cursor moved since the last frame and is to be brought into view.
+    reveal: bool,
     /// The text wraps to the width of the field instead of scrolling sideways.
     wrap: bool,
     /// The shaped text of the last frame and where it was painted.
@@ -152,6 +186,9 @@ pub struct TextInput {
     redo: Vec<TextState>,
     /// The last edit typed text at the cursor; more typing joins its undo step.
     typing: bool,
+    /// The Markdown spans of the text they were computed for, so that frames
+    /// that draw unchanged text do not tokenize it again.
+    spans: std::cell::RefCell<Option<(SharedString, Rc<[Span]>)>>,
 }
 
 /// The content and the selection.
@@ -160,6 +197,19 @@ type TextState = (SharedString, Range<usize>);
 impl EventEmitter<InputEvent> for TextInput {}
 
 impl TextInput {
+    /// The Markdown spans of the content, computed once per text.
+    fn spans(&self) -> Rc<[Span]> {
+        let mut cache = self.spans.borrow_mut();
+        match &*cache {
+            Some((text, spans)) if *text == self.content => spans.clone(),
+            _ => {
+                let spans: Rc<[Span]> = markdown::highlight(&self.content).into();
+                *cache = Some((self.content.clone(), spans.clone()));
+                spans
+            }
+        }
+    }
+
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -170,18 +220,27 @@ impl TextInput {
             selection_reversed: false,
             marked_range: None,
             multiline: false,
+            markdown: false,
+            scroll: None,
+            reveal: false,
             wrap: false,
             layout: None,
             is_selecting: false,
             undo: Vec::new(),
             redo: Vec::new(),
             typing: false,
+            spans: Default::default(),
         }
     }
 
     /// A field of several lines.
     pub fn multiline(cx: &mut Context<Self>) -> Self {
         Self { multiline: true, wrap: true, ..Self::new(cx) }
+    }
+
+    /// A field of several lines of Markdown, inside `scroll`.
+    pub fn markdown(scroll: ScrollHandle, cx: &mut Context<Self>) -> Self {
+        Self { markdown: true, scroll: Some(scroll), ..Self::multiline(cx) }
     }
 
     /// Makes one line of text wrap into rows as wide as the field, or scroll sideways.
@@ -192,6 +251,12 @@ impl TextInput {
 
     pub fn text(&self) -> &str {
         &self.content
+    }
+
+    /// The selected bytes; an empty range is the cursor.
+    #[cfg(test)]
+    pub fn selection(&self) -> Range<usize> {
+        self.selected_range.clone()
     }
 
     /// Replaces the content and selects all of it, so typing overwrites it.
@@ -252,6 +317,22 @@ impl TextInput {
         self.selection_reversed = false;
         self.marked_range = None;
         self.typing = false;
+        self.reveal = true;
+        cx.emit(InputEvent::Changed);
+        cx.notify();
+    }
+
+    /// Replaces part of the text as one undo step. Text typed right after it
+    /// joins the step if `typing`.
+    fn apply(&mut self, change: Change, typing: bool, cx: &mut Context<Self>) {
+        self.checkpoint();
+        self.content =
+            (self.content[..change.range.start].to_owned() + &change.text + &self.content[change.range.end..]).into();
+        self.selected_range = change.selection;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.typing = typing;
+        self.reveal = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -286,12 +367,20 @@ impl TextInput {
         self.move_to(self.next_word(self.cursor_offset()), cx);
     }
 
+    fn word_select_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word(self.cursor_offset()), cx);
+    }
+
+    fn word_select_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word(self.cursor_offset()), cx);
+    }
+
     fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(0, cx);
+        self.select_to(self.line_start(), cx);
     }
 
     fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.content.len(), cx);
+        self.select_to(self.line_end(), cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -300,11 +389,46 @@ impl TextInput {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
+        self.move_to(self.line_start(), cx);
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        self.move_to(self.line_end(), cx);
+    }
+
+    /// Where Home goes: the start of the line the cursor is on, or of the one line of a single-line field.
+    fn line_start(&self) -> usize {
+        match self.multiline {
+            true => markdown::line_start(&self.content, self.cursor_offset()),
+            false => 0,
+        }
+    }
+
+    fn line_end(&self) -> usize {
+        match self.multiline {
+            true => markdown::line_end(&self.content, self.cursor_offset()),
+            false => self.content.len(),
+        }
+    }
+
+    /// Enter: a line break, which in Markdown carries on the list the line is in.
+    fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        match self.markdown {
+            true => self.apply(markdown::newline(&self.content, &self.selected_range), true, cx),
+            false => self.replace_text_in_range(None, "\n", window, cx),
+        }
+    }
+
+    fn indent(&mut self, _: &Indent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(change) = markdown::indent(&self.content, &self.selected_range) {
+            self.apply(change, false, cx);
+        }
+    }
+
+    fn outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(change) = markdown::outdent(&self.content, &self.selected_range) {
+            self.apply(change, false, cx);
+        }
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -332,7 +456,13 @@ impl TextInput {
     }
 
     fn delete_to_start(&mut self, _: &DeleteToStart, window: &mut Window, cx: &mut Context<Self>) {
-        self.selected_range = 0..self.cursor_offset();
+        let cursor = self.cursor_offset();
+        // At the start of a line the line break before it goes.
+        let start = match self.line_start() {
+            start if start == cursor && self.multiline => self.previous_boundary(cursor),
+            start => start,
+        };
+        self.selected_range = start..cursor;
         self.replace_text_in_range(None, "", window, cx)
     }
 
@@ -384,6 +514,7 @@ impl TextInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.typing = false;
+        self.reveal = true;
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -418,6 +549,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.reveal = true;
         match self.selection_reversed {
             true => self.selected_range.start = offset,
             false => self.selected_range.end = offset,
@@ -543,6 +675,7 @@ impl EntityInputHandler for TextInput {
         self.content = (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..]).into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        self.reveal = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -571,6 +704,7 @@ impl EntityInputHandler for TextInput {
             new_selected_range_utf16.unwrap_or(new_text.encode_utf16().count()..new_text.encode_utf16().count());
         self.selected_range =
             range.start + utf8_offset(new_text, within.start)..range.start + utf8_offset(new_text, within.end);
+        self.reveal = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -723,26 +857,71 @@ impl TextElement {
             strikethrough: None,
         };
         let ghost_run = TextRun { len: ghost.len(), color: theme::faint().into(), ..run.clone() };
-        let mut runs: Vec<TextRun> = match input.marked_range.as_ref() {
-            Some(marked) => [
-                TextRun { len: marked.start, ..run.clone() },
-                TextRun {
-                    len: marked.end - marked.start,
-                    underline: Some(UnderlineStyle { color: Some(run.color), thickness: px(1.0), wavy: false }),
-                    ..run.clone()
-                },
-                TextRun { len: typed - marked.end, ..run },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect(),
-            None => vec![run],
+        let spans = match input.markdown && !input.content.is_empty() {
+            true => input.spans(),
+            false => Rc::new([Span { len: typed, style: markdown::Style::Plain }]),
         };
+        let mut runs: Vec<TextRun> = spans.iter().map(|span| styled(&run, *span)).collect();
+        if let Some(marked) = input.marked_range.as_ref() {
+            runs = underlined(runs, marked);
+        }
         if ghost.is_empty() {
             return (text, runs);
         }
         runs.push(ghost_run);
         (format!("{text}{ghost}").into(), runs)
+    }
+}
+
+/// `run` as `span` draws it: colored, bold or italic as its Markdown style says.
+fn styled(run: &TextRun, span: Span) -> TextRun {
+    let mut font = run.font.clone();
+    match span.style {
+        markdown::Style::Strong => font.weight = FontWeight::BOLD,
+        markdown::Style::Heading => font.weight = FontWeight::SEMIBOLD,
+        markdown::Style::Emphasis => font.style = FontStyle::Italic,
+        _ => {}
+    }
+    let color = theme::markdown_color(span.style).map_or(run.color, Into::into);
+    TextRun { len: span.len, font, color, ..run.clone() }
+}
+
+/// `runs` with the bytes `marked` underlined, as an input method shows a composition.
+fn underlined(runs: Vec<TextRun>, marked: &Range<usize>) -> Vec<TextRun> {
+    let mut start = 0;
+    let mut out = Vec::new();
+    for run in runs {
+        let end = start + run.len;
+        let (from, to) = (marked.start.clamp(start, end), marked.end.clamp(start, end));
+        let underline = Some(UnderlineStyle { color: Some(run.color), thickness: px(1.0), wavy: false });
+        for (len, underline) in [(from - start, None), (to - from, underline), (end - to, None)] {
+            if len > 0 {
+                out.push(TextRun { len, underline, ..run.clone() });
+            }
+        }
+        start = end;
+    }
+    out
+}
+
+/// Scrolls `scroll` as little as it takes to bring `caret` into view, with a line to spare.
+fn reveal(scroll: &ScrollHandle, caret: Bounds<Pixels>, window: &mut Window) {
+    let view = scroll.bounds();
+    let margin = caret.size.height;
+    let (top, bottom) = (view.top() + margin, view.bottom() - margin);
+    if top >= bottom {
+        return;
+    }
+    let by = match () {
+        _ if caret.top() < top => top - caret.top(),
+        _ if caret.bottom() > bottom => bottom - caret.bottom(),
+        _ => return,
+    };
+    let mut offset = scroll.offset();
+    offset.y = (offset.y + by).clamp(-scroll.max_offset().y, px(0.));
+    if offset != scroll.offset() {
+        scroll.set_offset(offset);
+        window.request_animation_frame();
     }
 }
 
@@ -828,6 +1007,11 @@ impl Element for TextElement {
         }
         let caret = Bounds::new(layout.origin + layout.position(cursor), size(cursor_width, layout.line_height));
         let selection = layout.selection(&selected, bounds.size.width);
+        let scroll = input.scroll.clone().filter(|_| input.reveal);
+        if let Some(scroll) = scroll {
+            reveal(&scroll, caret, window);
+            self.input.update(cx, |input, _| input.reveal = false);
+        }
         PrepaintState {
             cursor: selected.is_empty().then(|| fill(caret, theme::accent())),
             selection: selection.into_iter().map(|row| fill(row, theme::selection())).collect(),
@@ -892,6 +1076,14 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::word_select_left))
+            .on_action(cx.listener(Self::word_select_right))
+            .on_action(cx.listener(Self::indent))
+            .on_action(cx.listener(Self::outdent))
+            .on_action(cx.listener(|input, _: &DocStart, _, cx| input.move_to(0, cx)))
+            .on_action(cx.listener(|input, _: &DocEnd, _, cx| input.move_to(input.content.len(), cx)))
+            .on_action(cx.listener(|input, _: &SelectDocStart, _, cx| input.select_to(0, cx)))
+            .on_action(cx.listener(|input, _: &SelectDocEnd, _, cx| input.select_to(input.content.len(), cx)))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
@@ -902,8 +1094,9 @@ impl Render for TextInput {
             .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.emit(InputEvent::Cancel)))
             .on_action(cx.listener(|input, _: &Up, _, cx| input.vertical(false, cx)))
             .on_action(cx.listener(|input, _: &Down, _, cx| input.vertical(true, cx)))
+            .on_action(cx.listener(Self::newline))
             .on_action(
-                cx.listener(|input, _: &Newline, window, cx| input.replace_text_in_range(None, "\n", window, cx)),
+                cx.listener(|input, _: &PlainNewline, window, cx| input.replace_text_in_range(None, "\n", window, cx)),
             )
             .on_action(cx.listener(|_, _: &Next, _, cx| cx.emit(InputEvent::Next)))
             .on_action(cx.listener(|_, _: &Previous, _, cx| cx.emit(InputEvent::Previous)))
@@ -933,5 +1126,94 @@ mod tests {
         assert_eq!(utf8_offset("かa😀b", 2), 4);
         assert_eq!(utf8_offset("かa😀b", 4), 8);
         assert_eq!(utf8_offset("かa😀b", 99), 9);
+    }
+
+    fn run(len: usize) -> TextRun {
+        TextRun {
+            len,
+            font: gpui::font("test"),
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }
+    }
+
+    #[test]
+    fn highlighting_colors_the_text_without_changing_its_bytes() {
+        let text = "# ヘッダ\n*強調* `code` plain";
+        let runs: Vec<TextRun> = markdown::highlight(text).iter().map(|span| styled(&run(0), *span)).collect();
+        assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
+        assert_eq!(runs[0].font.weight, FontWeight::SEMIBOLD);
+        assert_eq!(runs[0].color, theme::accent().into());
+        assert!(runs.iter().any(|run| run.font.style == FontStyle::Italic));
+        assert!(runs.iter().all(|run| run.underline.is_none()));
+    }
+
+    #[test]
+    fn a_composition_is_underlined_across_the_colored_runs() {
+        // "ab" and "cd" differ in color; the composition covers "b" and "c".
+        let runs = underlined(vec![run(2), TextRun { color: gpui::white(), ..run(2) }], &(1..3));
+        let shape: Vec<_> = runs.iter().map(|run| (run.len, run.underline.is_some(), run.color)).collect();
+        assert_eq!(
+            shape,
+            [(1, false, gpui::black()), (1, true, gpui::black()), (1, true, gpui::white()), (1, false, gpui::white())]
+        );
+        // Nothing marked, nothing underlined.
+        assert!(underlined(vec![run(4)], &(0..0)).iter().all(|run| run.underline.is_none()));
+    }
+
+    #[gpui::test]
+    fn spans_are_computed_once_per_text_and_follow_a_japanese_composition(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler;
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::markdown(ScrollHandle::new(), cx));
+        input.update_in(cx, |input, window, cx| {
+            input.set_text("# 見出し\n- 項目", cx);
+            let first = input.spans();
+            assert!(Rc::ptr_eq(&first, &input.spans()), "unchanged text is not tokenized again");
+            // The composition is part of the content; its bytes are covered by the spans.
+            input.replace_and_mark_text_in_range(None, "にほん", None, window, cx);
+            let spans = input.spans();
+            assert!(!Rc::ptr_eq(&first, &spans));
+            assert!(input.content.ends_with("- 項目にほん"));
+            assert_eq!(spans.iter().map(|span| span.len).sum::<usize>(), input.content.len());
+            assert_eq!(input.marked_range, Some(input.content.len() - "にほん".len()..input.content.len()));
+            input.replace_text_in_range(None, "日本", window, cx);
+            assert!(input.content.ends_with("- 項目日本") && input.marked_range.is_none());
+            assert_eq!(input.spans().iter().map(|span| span.len).sum::<usize>(), input.content.len());
+        });
+    }
+
+    #[gpui::test]
+    fn a_single_line_field_keeps_its_keys(cx: &mut gpui::TestAppContext) {
+        cx.update(bind_keys);
+        let (input, cx) = cx.add_window_view(|_, cx| TextInput::new(cx));
+        input.update_in(cx, |input, window, cx| {
+            input.set_text("ab cd", cx);
+            window.focus(&input.focus_handle(cx), cx);
+        });
+        let selection = |input: &Entity<TextInput>, cx: &mut gpui::VisualTestContext| {
+            input.read_with(cx, |input, _| input.selection())
+        };
+        for (keys, expected) in [
+            ("home", 0..0),
+            ("end", 5..5),
+            ("cmd-left", 0..0),
+            ("cmd-right", 5..5),
+            ("alt-left", 3..3),
+            ("cmd-shift-left", 0..3),
+            // Not bound outside multiline fields: no movement and no new line.
+            ("cmd-up", 0..3),
+            ("alt-shift-left", 0..3),
+            ("tab", 0..3),
+        ] {
+            cx.simulate_keystrokes(&if cfg!(target_os = "macos") {
+                keys.to_owned()
+            } else {
+                keys.replace("cmd-", "ctrl-")
+            });
+            assert_eq!(selection(&input, cx), expected, "{keys}");
+        }
+        assert_eq!(input.read_with(cx, |input, _| input.text().to_owned()), "ab cd");
     }
 }
