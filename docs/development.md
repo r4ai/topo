@@ -144,6 +144,8 @@ Key options:
 - `--help-overlay`: Open keyboard shortcut cheatsheet
 - `--theme <dark|light>`: Render with this theme (default: dark)
 
+The states to capture in each theme are listed in [docs/gui/design-system.md](gui/design-system.md#visual-qa).
+
 ## Release Process
 
 Tag verification, cross-compilation matrix, checksum generation, and release publishing steps are documented in [docs/releasing.md](releasing.md).

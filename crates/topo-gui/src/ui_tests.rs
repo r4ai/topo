@@ -2,7 +2,9 @@
 
 use std::ops::Range;
 
-use gpui::{Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, point, px, size};
+use gpui::{
+    Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext, WindowAppearance, point, px, size,
+};
 use tempfile::TempDir;
 use topo_core::{Edit, Graph, Kind, Node, NodeId, Priority, Status, Workspace};
 
@@ -2081,4 +2083,76 @@ fn the_toolbar_button_cycles_the_theme_mode(cx: &mut TestAppContext) {
     assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Light, &theme::LIGHT));
     ui.click_on("theme");
     assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Dark, &theme::DARK));
+}
+
+/// Drives the app through its main states and returns each state's name with a selector that must be drawn.
+fn drive_states(ui: &mut Ui) -> Vec<(&'static str, &'static str)> {
+    let mut seen = Vec::new();
+    let mut check = |ui: &mut Ui, state: &'static str, selector: &'static str| {
+        ui.redraw();
+        assert!(ui.cx.debug_bounds(selector).is_some(), "{state}: {selector} is drawn");
+        seen.push((state, selector));
+    };
+    check(ui, "overview", "brand");
+    ui.select("a");
+    check(ui, "task", "title-text");
+    ui.select("m");
+    check(ui, "milestone", "title-text");
+    ui.keys("shift-g");
+    check(ui, "grouped", "group-untagged");
+    ui.keys("shift-g");
+    ui.keys("?");
+    check(ui, "help", "help-card");
+    ui.keys("escape");
+    ui.keys("/");
+    check(ui, "search", "prompt-card");
+    ui.keys("escape");
+    ui.select("a");
+    ui.keys("t");
+    check(ui, "inline edit", "inline-edit");
+    ui.keys("escape");
+    ui.keys("e");
+    check(ui, "notes", "notes-editor");
+    ui.type_text("draft");
+    ui.keys("escape");
+    check(ui, "unsaved dialog", "notes-dialog");
+    ui.keys("d");
+    ui.app.update(ui.cx, |app, cx| app.toast("Saved", false, cx));
+    check(ui, "toast", "toast");
+    seen
+}
+
+#[gpui::test]
+fn every_main_state_draws_in_both_themes(cx: &mut TestAppContext) {
+    for mode in [theme::ThemeMode::Dark, theme::ThemeMode::Light] {
+        theme::apply(mode, WindowAppearance::Light);
+        let mut ui = open(cx, SAMPLE);
+        theme::apply(mode, WindowAppearance::Light);
+        ui.redraw();
+        let expected = if mode == theme::ThemeMode::Dark { &theme::DARK } else { &theme::LIGHT };
+        assert!(std::ptr::eq(theme::current(), expected));
+        assert_eq!(drive_states(&mut ui).len(), 10);
+    }
+    theme::apply(theme::ThemeMode::Dark, WindowAppearance::Light);
+}
+
+#[gpui::test]
+fn switching_the_theme_is_purely_visual(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    theme::apply(theme::ThemeMode::Dark, WindowAppearance::Light);
+    ui.select("b");
+    ui.keys("t");
+    let selectors = ["brand", "title-text", "inline-edit", "node-a", "node-b", "node-m", "zoom"];
+    let state = |ui: &mut Ui| {
+        let bounds: Vec<_> = selectors.iter().map(|s| ui.cx.debug_bounds(s)).collect();
+        (ui.selection(), ui.inline(), bounds)
+    };
+    ui.redraw();
+    let before = state(&mut ui);
+    assert!(before.2.iter().all(Option::is_some));
+    theme::apply(theme::ThemeMode::Light, WindowAppearance::Light);
+    ui.redraw();
+    assert!(std::ptr::eq(theme::current(), &theme::LIGHT));
+    assert_eq!(state(&mut ui), before);
+    theme::apply(theme::ThemeMode::Dark, WindowAppearance::Light);
 }

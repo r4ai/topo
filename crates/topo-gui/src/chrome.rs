@@ -479,6 +479,7 @@ impl TopoApp {
 
         let card = ui::glass(Elevation::Dialog)
             .id("prompt")
+            .debug_selector(|| "prompt-card".to_owned())
             .w(px(560.))
             .flex()
             .flex_col()
@@ -539,6 +540,7 @@ impl TopoApp {
         Some(
             div().absolute().bottom(px(58.)).left_0().right_0().flex().justify_center().child(
                 ui::toast_frame()
+                    .debug_selector(|| "toast".to_owned())
                     .flex()
                     .items_center()
                     .gap_2()

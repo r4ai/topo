@@ -142,6 +142,9 @@ cargo run -p topo-gui --features screenshot -- \
 - `--edit-notes`: ノートを編集中の状態で表示。`--select` が必要で、`--edit` とは併用不可
 - `--search <query>`: 検索バーを開いた状態で表示
 - `--help-overlay`: キーボードショートカット一覧を表示
+- `--theme <dark|light>`: 指定したテーマで描画（既定: dark）
+
+テーマごとに撮影する状態の一覧は [docs/gui/design-system.md](gui/design-system.md#visual-qa) を参照。
 
 ## リリースプロセス
 

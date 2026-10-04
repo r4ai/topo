@@ -120,9 +120,40 @@ All in `ui.rs`. A view composes these instead of styling a `div` by hand.
 | Windows 11 | Mica backdrop; the root paints `bg` at `glass_alpha` | Standard |
 | Linux | Opaque `bg` | Standard |
 
+On macOS 26 and later, `TOPO_GLASS=1` swaps the blur for AppKit's `NSGlassEffectView` behind the window as an experiment (`glass.rs`).
+
 ## Limits
 
 - GPUI has no per-element backdrop blur. Floating surfaces are simulated glass (a near-opaque fill, a hairline, a highlight and a shadow); only the window background is really blurred.
 - GPUI cannot set the window's native appearance, so choosing Light on a dark OS leaves the blur material dark. `glass_alpha` is high enough to keep the theme legible.
 - The offscreen renderer cannot capture the OS blur, so screenshots and tests are always opaque.
 - The repository chooser (`repository_view.rs`) inherits the tokens but keeps its layout until it is rebuilt.
+
+## Visual QA
+
+Capture a state in a theme with the screenshot build (macOS):
+
+```bash
+cargo run -p topo-gui --features screenshot -- <workspace> --screenshot out.png --theme <dark|light> ...
+```
+
+Capture each of the eight states in both themes:
+
+| State | Flags |
+| :--- | :--- |
+| Default | none |
+| Select | `--select <id>` |
+| Milestone, grouped | `--select <milestone-id> --group-by-tag` |
+| Help | `--help-overlay` |
+| Search | `--search <query>` |
+| Notes | `--select <id> --edit-notes` |
+| Inline edit | `--select <id> --edit tags --type <text>` |
+| Unsaved dialog | `--select <id> --edit-notes --notes-text <text> --unsaved-dialog` |
+
+Screenshots are opaque and never show the OS blur or the window chrome, so these are checked by hand:
+
+- Switching the theme repaints every window immediately, and the choice survives a restart.
+- System mode follows the OS appearance live.
+- macOS: the titlebar drags the window, a double-click zooms it, fullscreen works, and the traffic lights align with the toolbar.
+- Text stays legible over a bright and a dark desktop, in both themes.
+- Windows 11: the Mica backdrop shows and the text stays legible.

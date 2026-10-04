@@ -153,6 +153,12 @@ Both toggles are in the bottom bar and are remembered across app restarts (user 
 - Group by Tag: `Shift+G` lays the canvas out as one band per tag, sorted by name, with an `untagged` band last. Tags are sets, so a node with several tags appears in every one of its bands. Edges are drawn inside a band; an edge whose ends share no band is not drawn, except for the selected nodes: each of their dependency and milestone edges that no band shows gets one highlighted line from the selected node's card (the one last clicked) to the nearest card of the other end, so you can trace it. Ends in a folded band or hidden by Hide Completed have no card and get no line. Click a band header to fold or unfold it (folding is not remembered)
 - The modes combine with each other and with the priority filter
 
+### Appearance
+
+- Modes: System (default, follows the OS), Light and Dark
+- Switch: `View > Appearance` or the theme button in the toolbar; the choice is saved per user and applies to every window
+- Details: [gui/design-system.md](gui/design-system.md)
+
 ### Node Operations
 
 - Select: Click node (`Cmd` / `Ctrl` + click for multi-selection)

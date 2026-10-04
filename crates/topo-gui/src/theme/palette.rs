@@ -120,4 +120,32 @@ mod tests {
             }
         }
     }
+
+    fn spread(c: Rgba) -> f32 {
+        c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b)
+    }
+
+    #[test]
+    fn surfaces_and_text_are_neutral_and_alarms_are_chromatic() {
+        for (name, t) in [("dark", &DARK), ("light", &LIGHT)] {
+            let neutral = [
+                ("bg", t.bg),
+                ("card", t.card),
+                ("card_hover", t.card_hover),
+                ("card_milestone", t.card_milestone),
+                ("card_milestone_hover", t.card_milestone_hover),
+                ("fg", t.fg),
+                ("fg_muted", t.fg_muted),
+                ("fg_faint", t.fg_faint),
+                ("emphasis", t.emphasis),
+                ("on_emphasis", t.on_emphasis),
+            ];
+            for (role, color) in neutral {
+                assert!(spread(color) <= 0.04, "{name} {role} is tinted: {:.3}", spread(color));
+            }
+            for (role, color) in [("danger", t.danger), ("warn", t.warn), ("success", t.success)] {
+                assert!(spread(color) >= 0.25, "{name} {role} is grey: {:.3}", spread(color));
+            }
+        }
+    }
 }
