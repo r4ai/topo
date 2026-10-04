@@ -1013,7 +1013,7 @@ impl Element for TextElement {
             self.input.update(cx, |input, _| input.reveal = false);
         }
         PrepaintState {
-            cursor: selected.is_empty().then(|| fill(caret, theme::current().emphasis)),
+            cursor: selected.is_empty().then(|| fill(caret, theme::current().accent)),
             selection: selection.into_iter().map(|row| fill(row, theme::current().selection)).collect(),
             layout: Some(layout),
         }
@@ -1145,7 +1145,7 @@ mod tests {
         let runs: Vec<TextRun> = markdown::highlight(text).iter().map(|span| styled(&run(0), *span)).collect();
         assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), text.len());
         assert_eq!(runs[0].font.weight, FontWeight::SEMIBOLD);
-        assert_eq!(runs[0].color, theme::current().emphasis.into());
+        assert_eq!(runs[0].color, theme::current().md_heading.into());
         assert!(runs.iter().any(|run| run.font.style == FontStyle::Italic));
         assert!(runs.iter().all(|run| run.underline.is_none()));
     }

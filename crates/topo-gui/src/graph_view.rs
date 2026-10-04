@@ -665,10 +665,10 @@ impl TopoApp {
             let on_critical = self.graph_cache.critical_edges.get(from).is_some_and(|targets| targets.contains(to));
             let (color, width) = match () {
                 _ if !emphasized(from) || !emphasized(to) => (t.edge_dim.into(), 1.),
-                _ if on_critical => (t.emphasis.into(), 2.5),
-                _ if on_focus => (t.fg.into(), 2.),
+                _ if on_critical => (t.critical.into(), 2.5),
+                _ if on_focus => (t.accent.into(), 2.),
                 _ if closed => (t.edge_closed.into(), 1.25),
-                _ if *membership => (t.edge.into(), 1.25),
+                _ if *membership => (theme::alpha(t.milestone, 0.5), 1.25),
                 _ => (t.edge.into(), 1.5),
             };
             EdgePaint {
@@ -693,7 +693,7 @@ impl TopoApp {
             let color = match &drop {
                 Some((_, _, false)) => t.danger,
                 Some(_) => t.success,
-                None => t.fg,
+                None => t.accent,
             };
             Some((anchor(*cells.get(source)?, true), *mouse, color))
         });
@@ -918,9 +918,10 @@ impl TopoApp {
         let border: Hsla = match (state.drop, state.selected || state.cursor) {
             (Some(true), _) => t.success.into(),
             (Some(false), _) => t.danger.into(),
-            (None, true) => t.emphasis.into(),
-            _ if state.critical => t.border_strong.into(),
-            _ if milestone || state.hovered => t.border_strong.into(),
+            (None, true) => t.accent.into(),
+            _ if state.critical => theme::alpha(t.critical, 0.6),
+            _ if milestone => theme::alpha(t.milestone, 0.45),
+            _ if state.hovered => t.border_strong.into(),
             _ => t.hairline.into(),
         };
         let bg = match (milestone, state.hovered) {
@@ -972,20 +973,24 @@ impl TopoApp {
             div().flex_shrink_0().px(px(5. * z)).rounded(px(3. * z)).bg(fill).text_color(color).child(label)
         };
         let neutral: Hsla = t.control.into();
+        let tinted = |label: String, color: Rgba| mini(label, color, theme::alpha(color, 0.14));
         let due = node.due.map(|d| {
             let color = if closed { t.fg_faint } else { dates::urgency_color(d, today) };
             let label = format!("⏱ {}", dates::short(d, today));
             match color == t.danger || color == t.warn {
-                true => mini(label, color, theme::alpha(color, 0.14)),
+                true => tinted(label, color),
                 false => div().flex_shrink_0().text_color(color).child(label),
             }
         });
         // Named with a glyph as well as colored. Tags give way to it and to the assignee.
         let priority = node.priority.map(|p| {
             let color = theme::priority_color(p);
-            let fill = if color == t.danger { theme::alpha(color, 0.14) } else { neutral };
-            mini(theme::priority_text(p), color, fill)
-                .when(p == topo_core::Priority::High, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+            let label = theme::priority_text(p);
+            let chip = match p {
+                topo_core::Priority::Urgent | topo_core::Priority::High => tinted(label, color),
+                _ => mini(label, color, neutral),
+            };
+            chip.when(p == topo_core::Priority::High, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
         });
         let assignee = node.assignee.as_ref().map(|a| div().min_w(px(0.)).truncate().child(format!("@{a}")));
         let tags = 2usize.saturating_sub(usize::from(priority.is_some()) + usize::from(assignee.is_some()));
@@ -1006,7 +1011,7 @@ impl TopoApp {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_color(if complete { t.fg } else { t.fg_muted })
+                            .text_color(if complete { t.progress_complete } else { t.progress })
                             .child(format!("{done}/{total}")),
                     )
                     .children(priority)
@@ -1015,10 +1020,10 @@ impl TopoApp {
             Kind::Task => {
                 let open_reqs = self.graph_cache.open_requirements[&node.id];
                 let status = match node.status {
-                    Status::Doing => mini("In progress".into(), t.on_emphasis, t.emphasis.into()),
-                    Status::Done => mini("Done".into(), t.fg_faint, neutral),
+                    Status::Doing => mini("In progress".into(), t.on_accent, t.accent.into()),
+                    Status::Done => tinted("Done".into(), t.status_done),
                     Status::Dropped => mini("Dropped".into(), t.fg_faint, neutral),
-                    Status::Todo if open_reqs == 0 => mini("Ready".into(), t.fg, neutral),
+                    Status::Todo if open_reqs == 0 => tinted("Ready".into(), t.ready),
                     Status::Todo => div().flex_shrink_0().child(format!("Blocked by {open_reqs}")),
                 };
                 meta.child(status)
@@ -1040,9 +1045,9 @@ impl TopoApp {
                 .rounded_full()
                 .bg(t.card)
                 .border_2()
-                .border_color(t.emphasis)
+                .border_color(t.accent)
                 .cursor(CursorStyle::Crosshair)
-                .hover(|s| s.bg(t.emphasis))
+                .hover(|s| s.bg(t.accent))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |app, ev: &MouseDownEvent, _, cx| {

@@ -425,7 +425,7 @@ impl Render for Combobox {
         let field = div().flex_1().min_w(px(64.)).child(self.input.clone());
         if self.palette {
             // The owner draws the card around it; the list follows the field in the flow.
-            let lead = div().flex_shrink_0().text_color(t.emphasis).child(self.lead.clone());
+            let lead = div().flex_shrink_0().text_color(t.accent).child(self.lead.clone());
             return div()
                 .id("combobox")
                 .w_full()

@@ -34,6 +34,9 @@ pub struct UserConfig {
     /// The chosen theme mode; `System` follows the OS appearance.
     #[serde(default, skip_serializing_if = "is_default")]
     pub theme: ThemeMode,
+    /// Draw every signal hue as a neutral.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub monotone: bool,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -166,5 +169,17 @@ mod theme_tests {
         assert!(!toml::to_string_pretty(&UserConfig::default()).unwrap().contains("theme"));
         let text = toml::to_string_pretty(&light).unwrap();
         assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), light);
+    }
+
+    #[test]
+    fn monotone_is_off_when_absent_round_trips_and_is_not_written_when_off() {
+        let old: UserConfig = toml::from_str("inspector_width = 412").unwrap();
+        assert!(!old.monotone);
+        assert!(!toml::to_string_pretty(&UserConfig::default()).unwrap().contains("monotone"));
+        let on: UserConfig = toml::from_str("monotone = true").unwrap();
+        assert!(on.monotone);
+        let text = toml::to_string_pretty(&on).unwrap();
+        assert!(text.contains("monotone = true"));
+        assert_eq!(toml::from_str::<UserConfig>(&text).unwrap(), on);
     }
 }

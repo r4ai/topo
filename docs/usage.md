@@ -156,7 +156,8 @@ Both toggles are in the bottom bar and are remembered across app restarts (user 
 ### Appearance
 
 - Modes: System (default, follows the OS), Light and Dark
-- Switch: `View > Appearance` or the theme button in the toolbar; the choice is saved per user and applies to every window
+- Monotone: an option, off by default, that draws every signal hue (blue, amber, green) as a neutral and leaves only the alarm colours; it combines with any mode
+- Switch: `View > Appearance` or the theme button in the toolbar (a menu with the modes and Monotone); the choice is saved per user and applies to every window
 - Details: [gui/design-system.md](gui/design-system.md)
 
 ### Node Operations

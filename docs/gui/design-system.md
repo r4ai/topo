@@ -4,8 +4,8 @@ The visual language of `topo-gui`: principles, tokens, themes and shared compone
 
 ## Principles
 
-1. **Monotone.** The interface is achromatic. Hierarchy comes from luminance, weight, fill versus outline, and glyphs, never from hue.
-2. **Colour is an alarm.** Only three hues exist, and each means one thing: `danger` (overdue, error, urgent, destructive), `warn` (due soon, unsaved), `success` (saved, a valid drop target). Nothing decorative is coloured.
+1. **Quiet.** Surfaces, text, borders and controls are achromatic. Hierarchy comes from luminance, weight and fill versus outline.
+2. **Hue is a signal.** A small fixed set of hues, each with one job: `accent` (blue) for selection, focus, in-progress and links; amber for the critical path, milestones and high priority; green for done and ready; plus the alarms `danger`, `warn` and `success`. Nothing decorative is coloured.
 3. **Minimal.** One border weight (a hairline), few surfaces, generous radii, no ornament. A control is quiet until hovered.
 4. **Glass.** Chrome reads as translucent material above the content: tinted fills with alpha, a hairline edge, a faint top highlight and a soft shadow. Where the OS can blur the window background, the window itself is glass.
 5. **Meaning lives in one place.** Views name a role (`t.fg_muted`, `theme::status_color`), never a literal colour or size.
@@ -22,12 +22,16 @@ The previous look, audited before the redesign:
 
 ## Themes
 
-Three modes: **System** (default, follows the OS appearance live), **Light**, **Dark**.
+Three modes: **System** (default, follows the OS appearance live), **Light**, **Dark**. Each has a hued palette (`DARK`, `LIGHT`) and a monotone one (`DARK_MONO`, `LIGHT_MONO`) that differ only in the signal roles.
 
-- **Storage.** `theme` in the per-user `topo-gui/config.toml` (`UserConfig`), as `"system"`, `"light"` or `"dark"`. The default is omitted from the file. It is never stored in a repository's `.topo/`.
-- **Switching.** `View > Appearance` in the native menu, and the theme button in the toolbar, which cycles System, Light, Dark and names the new mode in a toast. A switch repaints every window at once and is saved immediately.
-- **Implementation.** The active theme is a `&'static Theme` in a thread-local cell, read with `theme::current()`. `theme::apply` sets it and refreshes the windows. Views take `let t = theme::current();` once per render function.
-- **Screenshots and tests** never read the saved mode. They render Dark unless `--theme light` is given, and are always opaque.
+- **Storage.** `theme` in the per-user `topo-gui/config.toml` (`UserConfig`), as `"system"`, `"light"` or `"dark"`, and `monotone` as a boolean. Defaults are omitted from the file. Neither is ever stored in a repository's `.topo/`.
+- **Switching.** `View > Appearance` in the native menu: System, Light, Dark, then a checkable Monotone item. The theme button in the toolbar toggles a popover (Escape or a click outside closes it) holding the three modes as a segmented control and a Monotone row. Choosing a mode names it in a toast. A switch repaints every window at once and is saved immediately.
+- **Implementation.** The active theme is a `&'static Theme` in a thread-local cell, read with `theme::current()`. `theme::apply(mode, monotone, appearance)` sets it and `theme::set_mode` / `theme::set_monotone` also save and refresh the windows. Views take `let t = theme::current();` once per render function.
+- **Screenshots and tests** never read the saved choice. They render Dark and hued unless `--theme light` or `--monotone` is given, and are always opaque.
+
+### Monotone
+
+An opt-in option, off by default and independent of the mode. It maps every signal role to a neutral (the table below), leaving only the alarms `danger`, `warn` and `success` coloured. It is stored as `monotone` in the user config and toggled from `View > Appearance` or the toolbar theme menu.
 
 ## Colour roles
 
@@ -46,35 +50,56 @@ Fills with alpha are tints, so they work on both an opaque and a blurred window.
 | `hairline` / `border_strong` | white 8% / 16% | black 8% / 16% | Borders |
 | `highlight` | white 10% | white 90% | Inset top edge of glass |
 | `fg` / `fg_muted` / `fg_faint` | `#f2f2f3` / `#a0a0a8` / `#6a6a73` | `#18181b` / `#5c5c66` / `#8a8a93` | Text levels |
-| `emphasis` / `on_emphasis` | `#ffffff` / `#0f0f11` | `#111113` / `#ffffff` | The monotone accent: selection, focus, primary fill, critical path, doing |
-| `selection` | white 22% | black 16% | Text selection |
+| `emphasis` / `on_emphasis` | `#ffffff` / `#0f0f11` | `#111113` / `#ffffff` | The neutral accent: primary button fill, and the neutral stand-in for several signals in Monotone |
+| `selection` | `accent` 30% | `accent` 22% | Text selection (Monotone: white 22% / black 16%) |
 | `danger` / `warn` / `success` | `#ff6b6b` / `#f0b445` / `#5fd39a` | `#d92d2d` / `#b7791f` / `#1a8f59` | Alarm states only |
 | `edge` / `edge_closed` / `edge_dim` | white 28% / 14% / 7% | black 30% / 14% / 7% | Canvas edges |
 | `grid_dot` | white 5.5% | black 8% | Canvas grid |
 | `scrim` | black 50% | black 25% | Modal backdrop |
 | `shadow` | black 50% | black 14% | Shadow colour |
 
-Contrast floors, checked by a test for both themes on `bg`, `card` and `overlay`: `fg` 7:1, `fg_muted` 4.5:1, `fg_faint` 3:1, and `danger`, `warn`, `success` 3:1.
+### Signal roles
 
-## Meaning without hue
+Hue is used only through these roles. In Monotone each takes the neutral in the last column.
 
-The mapping functions in `theme/mod.rs` are the single source.
+| Role | Dark | Light | Monotone |
+| :--- | :--- | :--- | :--- |
+| `accent` | `#7aa7ff` | `#2f6fed` | `emphasis` |
+| `on_accent` | `#0f0f11` | `#ffffff` | `on_emphasis` |
+| `critical` | `#f0b445` | `#b7791f` | `emphasis` |
+| `milestone` | `#f0b445` | `#b7791f` | `fg` |
+| `status_done` | `#5fd39a` | `#1a8f59` | `fg_faint` |
+| `ready` | `#5fd39a` | `#1a8f59` | `fg` |
+| `priority_high` | `#f0b445` | `#b7791f` | `fg` |
+| `md_heading` | `accent` | `accent` | `emphasis` |
+| `md_link` | `accent` | `accent` | `fg` |
+| `progress` | `accent` | `accent` | `fg_muted` |
+| `progress_complete` | `#5fd39a` | `#1a8f59` | `fg` |
+
+Contrast floors, checked by a test for all four palettes on `bg`, `card` and `overlay`: `fg` 7:1, `fg_muted` 4.5:1, `fg_faint` 3:1, and `danger`, `warn`, `success`, `accent`, `critical`, `milestone`, `status_done`, `ready`, `priority_high` 3:1; `on_accent` on `accent` 4.5:1. A second test requires every signal role to be achromatic in the monotone palettes and `accent`, `critical`, `milestone`, `status_done` to be chromatic in the others.
+
+## Meaning
+
+The mapping functions in `theme/mod.rs` are the single source. Each row states the default expression; Monotone replaces the hue by the neutral in the signal table. Glyphs and weight carry the meaning in both.
 
 | Meaning | Expression |
 | :--- | :--- |
-| Status | Glyph first: `○` todo, `◐` doing, `✓` done, `⊘` dropped. Todo `fg_muted`; doing `emphasis` with a filled chip (`emphasis` fill, `on_emphasis` text); done `fg_faint` with strikethrough and 60% card opacity; dropped `fg_faint` |
-| Priority | Glyph first: `!!`, `↑`, `=`, `↓`. Urgent `danger`; high `fg` semibold; medium `fg_muted`; low `fg_faint` |
-| Selection | Card: 2px `emphasis` border and `e1` shadow. Rows and segments: `control_active` fill with `fg` text |
-| Critical path | Edge `emphasis` at width 2.5; card border `border_strong` |
-| Focused edge | `fg` at width 2 (dashed when it is a membership edge) |
-| Milestone | `◆` in `fg`, `card_milestone` fill, `border_strong` border, larger radius, dashed membership edges in `edge` |
+| Status | Glyph first: `○` todo, `◐` doing, `✓` done, `⊘` dropped. Todo `fg_muted`; doing `accent` with a solid chip (`accent` fill, `on_accent` text); done `status_done` with strikethrough and 60% card opacity; dropped `fg_faint` |
+| Priority | Glyph first: `!!`, `↑`, `=`, `↓`. Urgent `danger`; high `priority_high` semibold; medium `fg_muted`; low `fg_faint`. Urgent and high are tinted chips on the canvas |
+| Selection | Card: 2px `accent` border and `e1` shadow. Text selection: `accent` tint. Rows and segments: `control_active` fill with `fg` text |
+| Critical path | Edge `critical` at width 2.5; card border `critical` at 60% |
+| Focused edge | `accent` at width 2 (dashed when it is a membership edge) |
+| Milestone | `◆` in `milestone` (`status_done` once closed), `card_milestone` fill, border `milestone` at 45%, larger radius, dashed membership edges in `milestone` at 50% |
 | Tag | Neutral chip: `control` fill, `fg_muted` text |
-| Progress | Bar `fg_muted` on a `control` track; `fg` when complete |
-| Due | Overdue `danger`; within three days `warn`; otherwise `fg_muted` |
-| Readiness | Ready `fg`; in progress `emphasis`; blocked `fg_muted`; closed `fg_faint` |
-| Link drag | Allowed `success`; refused `danger`; undecided `fg` |
+| Progress | Bar `progress` on a `control` track; `progress_complete` when complete |
+| Due | Overdue `danger`; within three days `warn`; otherwise `fg_muted`. Overdue and soon are tinted chips |
+| Readiness | Ready `ready`; in progress `accent`; blocked `fg_muted`; closed `fg_faint`. On a card, "Ready" and "Done" are tinted chips |
+| Link drag | Allowed `success`; refused `danger`; undecided `accent` |
+| Focus | Input caret, focused input border, the link handle and the palette lead glyph in `accent` |
 | Toast | Neutral glass; a `danger` or `success` glyph and hairline only |
-| Markdown | Heading `emphasis` (semibold); code and quote `fg_muted`; link `fg`; marker `fg_faint` |
+| Markdown | Heading `md_heading` (semibold); code and quote `fg_muted`; link `md_link`; marker `fg_faint` |
+
+A coloured chip has one recipe: text in the colour on a fill of that colour at 14%. The one solid chip is "In progress".
 
 ## Metrics
 
@@ -103,8 +128,8 @@ All in `ui.rs`. A view composes these instead of styling a `div` by hand.
 | :--- | :--- |
 | `button` | Variants: plain (`control`), primary (`emphasis` fill), danger (`danger` text and tint), ghost (no fill until hover). Height `H_BUTTON`, radius `R_MD` |
 | `icon_button` | `H_ICON` square, ghost |
-| `segmented` | One `control` track, the chosen segment in `control_active` |
-| `input_frame` | `field` fill, hairline; `emphasis` border on focus, `danger` on error |
+| `segmented` | One `control` track, the chosen segment in `control_active`; a segment's label may be any element, so a glyph can carry its own colour |
+| `input_frame` | `field` fill, hairline; `accent` border on focus, `danger` on error |
 | `list_row` | Hover `control_hover`, selected `control_active` |
 | `panel` | `chrome` fill with a hairline on the content side |
 | `glass(level)` | `overlay` fill, hairline, radius `R_LG`, elevation `e2` or `e3` |
@@ -134,10 +159,10 @@ On macOS 26 and later, `TOPO_GLASS=1` swaps the blur for AppKit's `NSGlassEffect
 Capture a state in a theme with the screenshot build (macOS):
 
 ```bash
-cargo run -p topo-gui --features screenshot -- <workspace> --screenshot out.png --theme <dark|light> ...
+cargo run -p topo-gui --features screenshot -- <workspace> --screenshot out.png --theme <dark|light> [--monotone] ...
 ```
 
-Capture each of the eight states in both themes:
+Capture each of the eight states in both themes, and in both with `--monotone`:
 
 | State | Flags |
 | :--- | :--- |
@@ -152,7 +177,8 @@ Capture each of the eight states in both themes:
 
 Screenshots are opaque and never show the OS blur or the window chrome, so these are checked by hand:
 
-- Switching the theme repaints every window immediately, and the choice survives a restart.
+- Switching the theme or Monotone, from the menu or the toolbar popover, repaints every window immediately, and the choice survives a restart.
+- The toolbar popover closes on Escape and on a click outside it.
 - System mode follows the OS appearance live.
 - macOS: the titlebar drags the window, a double-click zooms it, fullscreen works, and the traffic lights align with the toolbar.
 - Text stays legible over a bright and a dark desktop, in both themes.

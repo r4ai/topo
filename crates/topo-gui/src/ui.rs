@@ -114,7 +114,7 @@ pub fn segmented() -> Div {
 }
 
 /// One choice inside `segmented`.
-pub fn segment(id: impl Into<SharedString>, label: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+pub fn segment(id: impl Into<SharedString>, label: impl IntoElement, selected: bool) -> Stateful<Div> {
     let id = id.into();
     let t = current();
     let hover = t.control_hover;
@@ -133,7 +133,7 @@ pub fn segment(id: impl Into<SharedString>, label: impl Into<SharedString>, sele
             true => d.bg(t.control_active).text_color(t.fg).font_weight(FontWeight::MEDIUM),
             false => d.text_color(t.fg_muted).hover(move |s| s.bg(hover)),
         })
-        .child(label.into())
+        .child(label)
 }
 
 /// The well of a text input; the border shows focus or an error.
@@ -141,7 +141,7 @@ pub fn input_frame(focused: bool, error: bool) -> Div {
     let t = current();
     let border = match (error, focused) {
         (true, _) => t.danger,
-        (false, true) => t.emphasis,
+        (false, true) => t.accent,
         (false, false) => t.hairline,
     };
     div().min_h(px(H_INPUT)).rounded(px(R_MD)).bg(t.field).border_1().border_color(border)
@@ -194,7 +194,7 @@ pub fn chip_outline(label: impl Into<SharedString>) -> Div {
     chip_frame(label).border_1().border_color(t.hairline).text_color(t.fg_muted)
 }
 
-/// A label tinted with an alarm `color`.
+/// A label tinted with a signal or alarm `color`.
 pub fn chip_tinted(label: impl Into<SharedString>, color: Rgba) -> Div {
     chip_frame(label).bg(alpha(color, 0.14)).text_color(color)
 }
@@ -236,10 +236,10 @@ pub fn divider() -> Div {
     div().h(px(1.)).w_full().flex_shrink_0().bg(current().hairline)
 }
 
-/// Horizontal progress bar filled to `fraction` (0..=1); `complete` brightens the fill.
+/// Horizontal progress bar filled to `fraction` (0..=1); `complete` takes the completed color.
 pub fn progress_bar(fraction: f32, complete: bool, height: f32) -> Div {
     let t = current();
-    let fill = if complete { t.fg } else { t.fg_muted };
+    let fill = if complete { t.progress_complete } else { t.progress };
     div()
         .flex_1()
         .h(px(height))

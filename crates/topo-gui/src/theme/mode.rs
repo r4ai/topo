@@ -26,22 +26,18 @@ impl ThemeMode {
         }
     }
 
-    /// The mode a toolbar click cycles to.
-    pub fn next(self) -> Self {
-        match self {
-            ThemeMode::System => ThemeMode::Light,
-            ThemeMode::Light => ThemeMode::Dark,
-            ThemeMode::Dark => ThemeMode::System,
-        }
-    }
-
-    /// The theme this mode draws with when the OS is in `appearance`.
-    pub fn resolve(self, appearance: WindowAppearance) -> &'static Theme {
-        match (self, appearance) {
-            (ThemeMode::Light, _) | (ThemeMode::System, WindowAppearance::Light | WindowAppearance::VibrantLight) => {
-                &palette::LIGHT
-            }
-            _ => &palette::DARK,
+    /// The theme this mode draws with when the OS is in `appearance`; `monotone` drops the signal hues.
+    pub fn resolve(self, appearance: WindowAppearance, monotone: bool) -> &'static Theme {
+        let light = match self {
+            ThemeMode::Light => true,
+            ThemeMode::Dark => false,
+            ThemeMode::System => matches!(appearance, WindowAppearance::Light | WindowAppearance::VibrantLight),
+        };
+        match (light, monotone) {
+            (true, false) => &palette::LIGHT,
+            (true, true) => &palette::LIGHT_MONO,
+            (false, false) => &palette::DARK,
+            (false, true) => &palette::DARK_MONO,
         }
     }
 }
@@ -49,6 +45,7 @@ impl ThemeMode {
 thread_local! {
     // Dark until the app applies the saved mode, matching `CURRENT`, so tests and captures need no setup.
     static MODE: Cell<ThemeMode> = const { Cell::new(ThemeMode::Dark) };
+    static MONOTONE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The mode the user chose.
@@ -56,36 +53,52 @@ pub fn mode() -> ThemeMode {
     MODE.with(Cell::get)
 }
 
-/// Makes `mode` the chosen mode and draws with the theme it resolves to under `appearance`.
-pub fn apply(mode: ThemeMode, appearance: WindowAppearance) {
-    MODE.with(|cell| cell.set(mode));
-    CURRENT.with(|cell| cell.set(mode.resolve(appearance)));
+/// Whether the signal hues are replaced by neutrals.
+pub fn monotone() -> bool {
+    MONOTONE.with(Cell::get)
 }
 
-actions!(theme, [ThemeSystem, ThemeLight, ThemeDark]);
+/// Makes `mode` and `monotone` the choice and draws with the theme they resolve to under `appearance`.
+pub fn apply(mode: ThemeMode, monotone: bool, appearance: WindowAppearance) {
+    MODE.with(|cell| cell.set(mode));
+    MONOTONE.with(|cell| cell.set(monotone));
+    CURRENT.with(|cell| cell.set(mode.resolve(appearance, monotone)));
+}
 
-/// Registers the menu actions that choose a mode.
+actions!(theme, [ThemeSystem, ThemeLight, ThemeDark, ToggleMonotone]);
+
+/// Registers the menu actions that choose a mode or toggle monotone.
 pub fn init(cx: &mut App) {
     cx.on_action(|_: &ThemeSystem, cx| set_mode(ThemeMode::System, cx));
     cx.on_action(|_: &ThemeLight, cx| set_mode(ThemeMode::Light, cx));
     cx.on_action(|_: &ThemeDark, cx| set_mode(ThemeMode::Dark, cx));
+    cx.on_action(|_: &ToggleMonotone, cx| set_monotone(!monotone(), cx));
 }
 
 /// Switches to `mode`: saves it, moves the menu check mark and redraws every window.
 pub fn set_mode(mode: ThemeMode, cx: &mut App) {
-    apply(mode, cx.window_appearance());
-    persist(mode);
-    cx.set_menus(crate::menus(mode));
+    apply(mode, monotone(), cx.window_appearance());
+    settled(cx);
+}
+
+/// Turns the signal hues off or on, like `set_mode`.
+pub fn set_monotone(monotone: bool, cx: &mut App) {
+    apply(mode(), monotone, cx.window_appearance());
+    settled(cx);
+}
+
+fn settled(cx: &mut App) {
+    persist();
+    cx.set_menus(crate::menus(mode(), monotone()));
     cx.refresh_windows();
 }
 
-/// Saves the chosen mode so the next launch starts with the same one.
-#[cfg_attr(test, allow(unused_variables))]
-fn persist(mode: ThemeMode) {
+/// Saves the choice so the next launch starts with the same one.
+fn persist() {
     #[cfg(not(test))]
     {
         let mut config = crate::config::UserConfig::load();
-        config.theme = mode;
+        (config.theme, config.monotone) = (mode(), monotone());
         let _ = config.save();
     }
 }
@@ -95,29 +108,31 @@ mod tests {
     use super::*;
     use WindowAppearance::{Dark, Light, VibrantDark, VibrantLight};
 
+    const PALETTES: [(bool, &Theme, &Theme); 2] =
+        [(false, &palette::LIGHT, &palette::DARK), (true, &palette::LIGHT_MONO, &palette::DARK_MONO)];
+
     #[test]
-    fn modes_resolve_to_a_theme_for_every_appearance() {
+    fn modes_resolve_to_a_theme_for_every_appearance_and_monotone_setting() {
         for appearance in [Light, VibrantLight, Dark, VibrantDark] {
-            assert_eq!(ThemeMode::Light.resolve(appearance), &palette::LIGHT);
-            assert_eq!(ThemeMode::Dark.resolve(appearance), &palette::DARK);
+            for (monotone, light, dark) in PALETTES {
+                assert_eq!(ThemeMode::Light.resolve(appearance, monotone), light);
+                assert_eq!(ThemeMode::Dark.resolve(appearance, monotone), dark);
+            }
         }
-        assert_eq!(ThemeMode::System.resolve(Light), &palette::LIGHT);
-        assert_eq!(ThemeMode::System.resolve(VibrantLight), &palette::LIGHT);
-        assert_eq!(ThemeMode::System.resolve(Dark), &palette::DARK);
-        assert_eq!(ThemeMode::System.resolve(VibrantDark), &palette::DARK);
+        for (monotone, light, dark) in PALETTES {
+            assert_eq!(ThemeMode::System.resolve(Light, monotone), light);
+            assert_eq!(ThemeMode::System.resolve(VibrantLight, monotone), light);
+            assert_eq!(ThemeMode::System.resolve(Dark, monotone), dark);
+            assert_eq!(ThemeMode::System.resolve(VibrantDark, monotone), dark);
+        }
     }
 
     #[test]
-    fn the_toolbar_cycles_through_every_mode() {
-        let cycle: Vec<_> = std::iter::successors(Some(ThemeMode::System), |m| Some(m.next())).take(4).collect();
-        assert_eq!(cycle, [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark, ThemeMode::System]);
-    }
-
-    #[test]
-    fn apply_sets_the_mode_and_the_resolved_theme() {
-        apply(ThemeMode::System, Light);
-        assert_eq!((mode(), super::super::current()), (ThemeMode::System, &palette::LIGHT));
-        apply(ThemeMode::System, Dark);
-        assert_eq!(super::super::current(), &palette::DARK);
+    fn apply_sets_the_mode_the_monotone_flag_and_the_resolved_theme() {
+        apply(ThemeMode::System, false, Light);
+        assert_eq!((mode(), monotone(), super::super::current()), (ThemeMode::System, false, &palette::LIGHT));
+        apply(ThemeMode::System, true, Dark);
+        assert_eq!((monotone(), super::super::current()), (true, &palette::DARK_MONO));
+        apply(ThemeMode::Dark, false, Dark);
     }
 }

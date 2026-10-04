@@ -108,7 +108,7 @@ impl RepositoryWindow {
         // `System` follows the OS: redraw when its appearance flips.
         cx.observe_window_appearance(window, |_, window, cx| {
             if theme::mode() == theme::ThemeMode::System {
-                theme::apply(theme::ThemeMode::System, window.appearance());
+                theme::apply(theme::ThemeMode::System, theme::monotone(), window.appearance());
                 cx.refresh_windows();
             }
         })
@@ -288,7 +288,7 @@ impl RepositoryWindow {
         self.config.inspector_width = width;
         (self.config.hide_completed, self.config.group_by_tag) = (view.hide_completed, view.group_by_tag);
         // Another window may have changed the mode since this copy was loaded.
-        self.config.theme = theme::mode();
+        (self.config.theme, self.config.monotone) = (theme::mode(), theme::monotone());
         self.config.remember(dir);
         #[cfg(not(test))]
         if let Err(e) = self.config.save() {
@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn installing_a_workspace_keeps_the_chosen_theme_in_the_config(cx: &mut TestAppContext) {
+    fn installing_a_workspace_keeps_the_chosen_theme_and_monotone_in_the_config(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         workspace(dir.path(), "first");
         let (shell, cx) = cx.add_window_view(|window, cx| {
@@ -592,11 +592,15 @@ mod tests {
         });
         cx.run_until_parked();
         // The window's copy still says `System` when the user picks another mode.
-        theme::apply(theme::ThemeMode::Light, gpui::WindowAppearance::Dark);
+        theme::apply(theme::ThemeMode::Light, true, gpui::WindowAppearance::Dark);
         let next = tempfile::tempdir().unwrap();
         let ws = workspace(next.path(), "next");
         shell.update_in(cx, |app, window, cx| app.install(ws, window, cx).unwrap());
-        assert_eq!(shell.read_with(cx, |app, _| app.config.theme), theme::ThemeMode::Light);
+        assert_eq!(
+            shell.read_with(cx, |app, _| (app.config.theme, app.config.monotone)),
+            (theme::ThemeMode::Light, true)
+        );
+        theme::apply(theme::ThemeMode::Dark, false, gpui::WindowAppearance::Dark);
     }
 
     #[gpui::test]

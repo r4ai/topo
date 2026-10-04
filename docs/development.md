@@ -143,6 +143,7 @@ Key options:
 - `--search <query>`: Open search bar with query
 - `--help-overlay`: Open keyboard shortcut cheatsheet
 - `--theme <dark|light>`: Render with this theme (default: dark)
+- `--monotone`: Render with every signal hue as a neutral
 
 The states to capture in each theme are listed in [docs/gui/design-system.md](gui/design-system.md#visual-qa).
 

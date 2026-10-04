@@ -84,6 +84,10 @@ pub struct Args {
     /// Capture with this theme; never read from the saved preference
     #[arg(long, requires = "screenshot", value_enum, default_value_t = CaptureTheme::Dark)]
     pub theme: CaptureTheme,
+
+    /// Capture with every signal hue drawn as a neutral; never read from the saved preference
+    #[arg(long, requires = "screenshot")]
+    pub monotone: bool,
 }
 
 /// The themes a capture can be rendered with.
@@ -149,6 +153,13 @@ mod tests {
         assert_eq!(parse(&["--screenshot", "o.png", "--theme", "light"]).unwrap().theme, CaptureTheme::Light);
         assert!(parse(&["--screenshot", "o.png", "--theme", "bogus"]).is_err());
         assert!(parse(&["--theme", "light"]).is_err());
+    }
+
+    #[test]
+    fn monotone_is_off_by_default_and_needs_a_capture() {
+        assert!(!parse(&["--screenshot", "o.png"]).unwrap().monotone);
+        assert!(parse(&["--screenshot", "o.png", "--monotone"]).unwrap().monotone);
+        assert!(parse(&["--monotone"]).is_err());
     }
 
     #[test]

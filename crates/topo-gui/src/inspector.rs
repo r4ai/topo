@@ -112,12 +112,16 @@ impl TopoApp {
     fn status_control(&self, current: Option<Status>, cx: &mut Context<Self>) -> Div {
         let mut segments = ui::segmented().mt_3();
         for (i, status) in [Status::Todo, Status::Doing, Status::Done, Status::Dropped].into_iter().enumerate() {
-            let label = format!("{} {}", theme::status_icon(status), theme::status_label(status));
+            let label = div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(div().text_color(theme::status_color(status)).child(theme::status_icon(status)))
+                .child(theme::status_label(status));
             segments = segments.child(
                 ui::segment(format!("status-{i}"), label, current == Some(status))
                     .flex_1()
                     .h(px(metrics::H_BUTTON))
-                    .gap_1()
                     .on_click(cx.listener(move |app, _, _, cx| app.set_selected_status(status, cx))),
             );
         }
@@ -246,6 +250,7 @@ impl TopoApp {
             let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
             let complete = m.status.is_closed() || (total > 0 && done == total);
             let id = m.id.clone();
+            let (glyph, glyph_color) = theme::node_icon(m);
             let due = m.due.map(|d| {
                 let color = if m.status.is_closed() { t.fg_faint } else { dates::urgency_color(d, today) };
                 div().text_color(color).child(format!("due {} · {}", dates::short(d, today), dates::relative(d, today)))
@@ -269,7 +274,7 @@ impl TopoApp {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_color(t.fg).child("◆"))
+                            .child(div().text_color(glyph_color).child(glyph))
                             .child(
                                 div()
                                     .flex_1()
@@ -366,9 +371,9 @@ impl TopoApp {
         let (state, state_color) = match (node.status, open_reqs.len()) {
             (Status::Done, _) => ("Done".to_owned(), t.fg_faint),
             (Status::Dropped, _) => ("Dropped".to_owned(), t.fg_faint),
-            (_, 0) if milestone => ("Reached — every requirement is closed".to_owned(), t.fg),
-            (Status::Doing, _) => ("In progress".to_owned(), t.emphasis),
-            (_, 0) => ("Ready to start".to_owned(), t.fg),
+            (_, 0) if milestone => ("Reached — every requirement is closed".to_owned(), t.ready),
+            (Status::Doing, _) => ("In progress".to_owned(), t.accent),
+            (_, 0) => ("Ready to start".to_owned(), t.ready),
             (_, n) if milestone => (format!("{n} requirement{} still open", if n == 1 { "" } else { "s" }), t.fg_muted),
             (_, n) => (format!("Blocked by {n} open requirement{}", if n == 1 { "" } else { "s" }), t.fg_muted),
         };
@@ -694,7 +699,7 @@ impl TopoApp {
                             .min_w(px(0.))
                             .truncate()
                             .text_size(px(T_BODY))
-                            .text_color(t.fg)
+                            .text_color(t.md_link)
                             .child(pr_label(url)),
                     )
                     .child(

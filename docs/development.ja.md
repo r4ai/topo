@@ -143,6 +143,7 @@ cargo run -p topo-gui --features screenshot -- \
 - `--search <query>`: 検索バーを開いた状態で表示
 - `--help-overlay`: キーボードショートカット一覧を表示
 - `--theme <dark|light>`: 指定したテーマで描画（既定: dark）
+- `--monotone`: 色相のシグナルをすべて無彩色にして描画
 
 テーマごとに撮影する状態の一覧は [docs/gui/design-system.md](gui/design-system.md#visual-qa) を参照。
 

@@ -2073,16 +2073,37 @@ fn quitting_with_unsaved_notes_asks_and_then_quits(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_toolbar_button_cycles_the_theme_mode(cx: &mut TestAppContext) {
+fn the_toolbar_button_opens_a_menu_that_sets_the_mode_and_monotone(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
     // The test platform reports a light appearance, so `System` resolves to the light theme.
-    assert_eq!(theme::mode(), theme::ThemeMode::Dark);
+    assert_eq!((theme::mode(), theme::monotone()), (theme::ThemeMode::Dark, false));
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
     ui.click_on("theme");
-    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::System, &theme::LIGHT));
-    ui.click_on("theme");
+    assert!(ui.cx.debug_bounds("theme-menu").is_some());
+    ui.click_on("theme-light");
     assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Light, &theme::LIGHT));
+    assert!(ui.cx.debug_bounds("theme-menu").is_some(), "choosing a mode keeps the menu open");
+    ui.click_on("theme-system");
+    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::System, &theme::LIGHT));
+    ui.click_on("theme-monotone");
+    assert!(theme::monotone());
+    assert_eq!(theme::current(), &theme::LIGHT_MONO);
+    ui.click_on("theme-dark");
+    assert_eq!(theme::current(), &theme::DARK_MONO);
+    ui.click_on("theme-monotone");
+    assert!(!theme::monotone());
+    assert_eq!(theme::current(), &theme::DARK);
+    ui.keys("escape");
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+    // The button toggles it, and a click elsewhere closes it without acting on what is under it.
     ui.click_on("theme");
-    assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Dark, &theme::DARK));
+    ui.click_on("theme");
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+    ui.click_on("theme");
+    ui.click_on("help");
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+    assert!(!ui.read(|app| app.show_help));
 }
 
 /// Drives the app through its main states and returns each state's name with a selector that must be drawn.
@@ -2123,23 +2144,28 @@ fn drive_states(ui: &mut Ui) -> Vec<(&'static str, &'static str)> {
 }
 
 #[gpui::test]
-fn every_main_state_draws_in_both_themes(cx: &mut TestAppContext) {
-    for mode in [theme::ThemeMode::Dark, theme::ThemeMode::Light] {
-        theme::apply(mode, WindowAppearance::Light);
+fn every_main_state_draws_in_every_palette(cx: &mut TestAppContext) {
+    let palettes = [
+        (theme::ThemeMode::Dark, false, &theme::DARK),
+        (theme::ThemeMode::Light, false, &theme::LIGHT),
+        (theme::ThemeMode::Dark, true, &theme::DARK_MONO),
+        (theme::ThemeMode::Light, true, &theme::LIGHT_MONO),
+    ];
+    for (mode, monotone, expected) in palettes {
+        theme::apply(mode, monotone, WindowAppearance::Light);
         let mut ui = open(cx, SAMPLE);
-        theme::apply(mode, WindowAppearance::Light);
+        theme::apply(mode, monotone, WindowAppearance::Light);
         ui.redraw();
-        let expected = if mode == theme::ThemeMode::Dark { &theme::DARK } else { &theme::LIGHT };
         assert!(std::ptr::eq(theme::current(), expected));
         assert_eq!(drive_states(&mut ui).len(), 10);
     }
-    theme::apply(theme::ThemeMode::Dark, WindowAppearance::Light);
+    theme::apply(theme::ThemeMode::Dark, false, WindowAppearance::Light);
 }
 
 #[gpui::test]
 fn switching_the_theme_is_purely_visual(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
-    theme::apply(theme::ThemeMode::Dark, WindowAppearance::Light);
+    theme::apply(theme::ThemeMode::Dark, false, WindowAppearance::Light);
     ui.select("b");
     ui.keys("t");
     let selectors = ["brand", "title-text", "inline-edit", "node-a", "node-b", "node-m", "zoom"];
@@ -2150,9 +2176,9 @@ fn switching_the_theme_is_purely_visual(cx: &mut TestAppContext) {
     ui.redraw();
     let before = state(&mut ui);
     assert!(before.2.iter().all(Option::is_some));
-    theme::apply(theme::ThemeMode::Light, WindowAppearance::Light);
+    theme::apply(theme::ThemeMode::Light, false, WindowAppearance::Light);
     ui.redraw();
     assert!(std::ptr::eq(theme::current(), &theme::LIGHT));
     assert_eq!(state(&mut ui), before);
-    theme::apply(theme::ThemeMode::Dark, WindowAppearance::Light);
+    theme::apply(theme::ThemeMode::Dark, false, WindowAppearance::Light);
 }

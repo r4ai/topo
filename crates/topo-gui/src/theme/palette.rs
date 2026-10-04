@@ -12,7 +12,48 @@ const fn hex(rgb: u32, a: f32) -> Rgba {
     }
 }
 
-pub static DARK: Theme = Theme {
+/// Stands in for a signal role in a base theme; `mono` or `hued` always replaces it.
+const UNSET: Rgba = hex(0x000000, 0.0);
+
+/// `base` with every signal role mapped to a neutral of its own.
+const fn mono(base: Theme) -> Theme {
+    Theme {
+        accent: base.emphasis,
+        on_accent: base.on_emphasis,
+        critical: base.emphasis,
+        milestone: base.fg,
+        status_done: base.fg_faint,
+        ready: base.fg,
+        priority_high: base.fg,
+        md_heading: base.emphasis,
+        md_link: base.fg,
+        progress: base.fg_muted,
+        progress_complete: base.fg,
+        ..base
+    }
+}
+
+/// `base` with the signal hues: `accent` for selection, focus and links, `warm` for the critical path and
+/// milestones, `good` for done and ready.
+const fn hued(base: Theme, accent: Rgba, on_accent: Rgba, warm: Rgba, good: Rgba, selection: Rgba) -> Theme {
+    Theme {
+        accent,
+        on_accent,
+        critical: warm,
+        milestone: warm,
+        status_done: good,
+        ready: good,
+        priority_high: warm,
+        md_heading: accent,
+        md_link: accent,
+        progress: accent,
+        progress_complete: good,
+        selection,
+        ..base
+    }
+}
+
+const DARK_BASE: Theme = Theme {
     bg: hex(0x0f0f11, 1.0),
     glass_alpha: 0.78,
     chrome: hex(0xffffff, 0.035),
@@ -43,9 +84,20 @@ pub static DARK: Theme = Theme {
     grid_dot: hex(0xffffff, 0.055),
     scrim: hex(0x000000, 0.5),
     shadow: hex(0x000000, 0.5),
+    accent: UNSET,
+    on_accent: UNSET,
+    critical: UNSET,
+    milestone: UNSET,
+    status_done: UNSET,
+    ready: UNSET,
+    priority_high: UNSET,
+    md_heading: UNSET,
+    md_link: UNSET,
+    progress: UNSET,
+    progress_complete: UNSET,
 };
 
-pub static LIGHT: Theme = Theme {
+const LIGHT_BASE: Theme = Theme {
     bg: hex(0xf2f2f4, 1.0),
     glass_alpha: 0.72,
     chrome: hex(0xffffff, 0.55),
@@ -76,7 +128,37 @@ pub static LIGHT: Theme = Theme {
     grid_dot: hex(0x000000, 0.08),
     scrim: hex(0x000000, 0.25),
     shadow: hex(0x000000, 0.14),
+    accent: UNSET,
+    on_accent: UNSET,
+    critical: UNSET,
+    milestone: UNSET,
+    status_done: UNSET,
+    ready: UNSET,
+    priority_high: UNSET,
+    md_heading: UNSET,
+    md_link: UNSET,
+    progress: UNSET,
+    progress_complete: UNSET,
 };
+
+pub static DARK_MONO: Theme = mono(DARK_BASE);
+pub static LIGHT_MONO: Theme = mono(LIGHT_BASE);
+pub static DARK: Theme = hued(
+    DARK_BASE,
+    hex(0x7aa7ff, 1.0),
+    hex(0x0f0f11, 1.0),
+    hex(0xf0b445, 1.0),
+    hex(0x5fd39a, 1.0),
+    hex(0x7aa7ff, 0.30),
+);
+pub static LIGHT: Theme = hued(
+    LIGHT_BASE,
+    hex(0x2f6fed, 1.0),
+    hex(0xffffff, 1.0),
+    hex(0xb7791f, 1.0),
+    hex(0x1a8f59, 1.0),
+    hex(0x2f6fed, 0.22),
+);
 
 #[cfg(test)]
 mod tests {
@@ -101,9 +183,12 @@ mod tests {
         (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
     }
 
+    const ALL: [(&str, &Theme); 4] =
+        [("dark", &DARK), ("light", &LIGHT), ("dark mono", &DARK_MONO), ("light mono", &LIGHT_MONO)];
+
     #[test]
-    fn text_and_alarm_colors_meet_their_contrast_floors() {
-        for (name, t) in [("dark", &DARK), ("light", &LIGHT)] {
+    fn text_alarm_and_signal_colors_meet_their_contrast_floors() {
+        for (name, t) in ALL {
             for (surface, bg) in [("bg", t.bg), ("card", t.card), ("overlay", over(t.overlay, t.bg))] {
                 let floors = [
                     ("fg", t.fg, 7.),
@@ -112,12 +197,20 @@ mod tests {
                     ("danger", t.danger, 3.),
                     ("warn", t.warn, 3.),
                     ("success", t.success, 3.),
+                    ("accent", t.accent, 3.),
+                    ("critical", t.critical, 3.),
+                    ("milestone", t.milestone, 3.),
+                    ("status_done", t.status_done, 3.),
+                    ("ready", t.ready, 3.),
+                    ("priority_high", t.priority_high, 3.),
                 ];
                 for (role, color, floor) in floors {
                     let ratio = contrast(color, bg);
                     assert!(ratio >= floor, "{name} {role} on {surface}: {ratio:.2} < {floor}");
                 }
             }
+            let ratio = contrast(t.on_accent, t.accent);
+            assert!(ratio >= 4.5, "{name} on_accent on accent: {ratio:.2} < 4.5");
         }
     }
 
@@ -127,7 +220,7 @@ mod tests {
 
     #[test]
     fn surfaces_and_text_are_neutral_and_alarms_are_chromatic() {
-        for (name, t) in [("dark", &DARK), ("light", &LIGHT)] {
+        for (name, t) in ALL {
             let neutral = [
                 ("bg", t.bg),
                 ("card", t.card),
@@ -146,6 +239,49 @@ mod tests {
             for (role, color) in [("danger", t.danger), ("warn", t.warn), ("success", t.success)] {
                 assert!(spread(color) >= 0.25, "{name} {role} is grey: {:.3}", spread(color));
             }
+        }
+    }
+
+    fn signals(t: &Theme) -> [(&'static str, Rgba); 11] {
+        [
+            ("accent", t.accent),
+            ("on_accent", t.on_accent),
+            ("critical", t.critical),
+            ("milestone", t.milestone),
+            ("status_done", t.status_done),
+            ("ready", t.ready),
+            ("priority_high", t.priority_high),
+            ("md_heading", t.md_heading),
+            ("md_link", t.md_link),
+            ("progress", t.progress),
+            ("progress_complete", t.progress_complete),
+        ]
+    }
+
+    #[test]
+    fn monotone_signals_are_achromatic_and_the_hued_ones_are_not() {
+        for (name, t) in [("dark mono", &DARK_MONO), ("light mono", &LIGHT_MONO)] {
+            for (role, color) in signals(t) {
+                assert!(spread(color) <= 0.04, "{name} {role} is tinted: {:.3}", spread(color));
+            }
+        }
+        for (name, t) in [("dark", &DARK), ("light", &LIGHT)] {
+            for (role, color) in [
+                ("accent", t.accent),
+                ("critical", t.critical),
+                ("milestone", t.milestone),
+                ("status_done", t.status_done),
+            ] {
+                assert!(spread(color) >= 0.25, "{name} {role} is grey: {:.3}", spread(color));
+            }
+        }
+    }
+
+    #[test]
+    fn a_theme_and_its_monotone_variant_differ_only_in_signals() {
+        for (hued, mono) in [(&DARK, &DARK_MONO), (&LIGHT, &LIGHT_MONO)] {
+            let strip = |t: &Theme| Theme { selection: UNSET, ..super::mono(*t) };
+            assert_eq!(strip(hued), strip(mono));
         }
     }
 }

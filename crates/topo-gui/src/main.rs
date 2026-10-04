@@ -210,6 +210,8 @@ struct TopoApp {
     /// Which nodes the canvas shows and how it groups them.
     view: layout::View,
     show_help: bool,
+    /// The popover under the toolbar's theme button is open.
+    theme_menu: bool,
     /// Narrow window: the toolbar and inspector drop secondary text.
     compact: bool,
     /// A left press landed on the toolbar background and may turn into a window drag.
@@ -327,6 +329,7 @@ impl TopoApp {
             priority_filter: None,
             view,
             show_help: false,
+            theme_menu: false,
             compact: false,
             toolbar_press: false,
             inspector_width,
@@ -698,6 +701,7 @@ impl TopoApp {
         });
         self.prompt = Some(prompt);
         self.show_help = false;
+        self.theme_menu = false;
         self.refresh_palette(cx);
         window.focus(&self.palette.focus_handle(cx), cx);
         cx.notify();
@@ -1280,6 +1284,7 @@ impl TopoApp {
             ("g", _) if m.shift => self.toggle_group_by_tag(),
             ("escape", _) => match () {
                 _ if self.drag.is_some() => self.drag = None,
+                _ if self.theme_menu => self.theme_menu = false,
                 _ if self.show_help => self.show_help = false,
                 _ => self.clear_selection(),
             },
@@ -1489,8 +1494,8 @@ fn main() -> Result<()> {
     run(start, config)
 }
 
-/// The native menu bar, with a check mark on the chosen theme mode.
-fn menus(mode: theme::ThemeMode) -> Vec<Menu> {
+/// The native menu bar, with check marks on the chosen theme mode and on Monotone.
+fn menus(mode: theme::ThemeMode, monotone: bool) -> Vec<Menu> {
     use theme::ThemeMode;
     vec![
         Menu { name: "topo".into(), items: vec![MenuItem::action("Quit topo", Quit)], disabled: false },
@@ -1521,6 +1526,8 @@ fn menus(mode: theme::ThemeMode) -> Vec<Menu> {
                     MenuItem::action("System", theme::ThemeSystem).checked(mode == ThemeMode::System),
                     MenuItem::action("Light", theme::ThemeLight).checked(mode == ThemeMode::Light),
                     MenuItem::action("Dark", theme::ThemeDark).checked(mode == ThemeMode::Dark),
+                    MenuItem::separator(),
+                    MenuItem::action("Monotone", theme::ToggleMonotone).checked(monotone),
                 ],
                 disabled: false,
             })],
@@ -1543,8 +1550,8 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
         ]);
         theme::set_translucent(window_background() != WindowBackgroundAppearance::Opaque);
         theme::init(cx);
-        theme::apply(config.theme, cx.window_appearance());
-        cx.set_menus(menus(config.theme));
+        theme::apply(config.theme, config.monotone, cx.window_appearance());
+        cx.set_menus(menus(config.theme, config.monotone));
         let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
         let options = WindowOptions {
             app_id: Some("dev.r4ai.topo".into()),

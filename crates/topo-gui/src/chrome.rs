@@ -1,14 +1,14 @@
 //! Everything around the graph: toolbar, prompt, toasts, zoom controls and help.
 
 use gpui::{
-    AnyElement, App, Context, Div, MouseButton, Pixels, Rgba, SharedString, Stateful, Window, WindowControlArea, div,
-    prelude::*, px,
+    Anchor, AnyElement, App, Context, Div, MouseButton, Pixels, Rgba, SharedString, Stateful, Window,
+    WindowControlArea, anchored, deferred, div, prelude::*, px,
 };
 use topo_core::{Kind, NodeId, Priority};
 
 use crate::theme::{
     self,
-    metrics::{H_ICON, R_LG, R_SM, R_XL, T_BODY_LG, T_HEADING, T_SMALL, T_TITLE},
+    metrics::{H_BUTTON, H_ICON, R_LG, R_SM, R_XL, T_BODY, T_BODY_LG, T_HEADING, T_SMALL, T_TITLE},
 };
 use crate::ui::{self, Elevation};
 use crate::{NewNode, OrganizeKind, Prompt, TopoApp};
@@ -160,7 +160,7 @@ impl TopoApp {
                             .flex_shrink_0()
                             .items_center()
                             .gap_2()
-                            .child(div().text_color(t.fg).child("◆"))
+                            .child(div().text_color(t.milestone).child("◆"))
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_sm().child("topo")),
                     )
                     // The workspace name is the first thing to give way in a narrow window.
@@ -184,13 +184,13 @@ impl TopoApp {
                     .flex_shrink_0()
                     .items_center()
                     .gap_1()
-                    .child(self.stat("stat-ready", "●", self.stat_text(ready.len(), "ready"), t.fg, ready, cx))
+                    .child(self.stat("stat-ready", "●", self.stat_text(ready.len(), "ready"), t.ready, ready, cx))
                     .when(!doing.is_empty(), |d| {
                         d.child(self.stat(
                             "stat-doing",
                             "◐",
                             self.stat_text(doing.len(), "in progress"),
-                            t.fg_muted,
+                            t.accent,
                             doing,
                             cx,
                         ))
@@ -255,17 +255,78 @@ impl TopoApp {
             .child(div().w(px(1.)).h(px(20.)).bg(t.hairline))
             .child(history("undo", "↩\u{fe0e}", true, !self.undo.is_empty(), cx))
             .child(history("redo", "↪\u{fe0e}", false, !self.redo.is_empty(), cx))
-            .child(stop_click(ui::icon_button("theme", theme_glyph(theme::mode()))).on_click(cx.listener(
-                |app, _, _, cx| {
-                    let mode = theme::mode().next();
-                    theme::set_mode(mode, cx);
-                    app.toast(format!("Theme: {}", mode.label()), false, cx);
-                },
-            )))
+            .child(
+                div()
+                    .relative()
+                    .flex_shrink_0()
+                    .child(stop_click(ui::icon_button("theme", theme_glyph(theme::mode()))).on_click(cx.listener(
+                        |app, _, _, cx| {
+                            app.theme_menu = !app.theme_menu;
+                            cx.notify();
+                        },
+                    )))
+                    .when(self.theme_menu, |d| d.child(self.theme_menu_popover(cx))),
+            )
             .child(stop_click(ui::icon_button("help", "?")).on_click(cx.listener(|app, _, _, cx| {
                 app.show_help = !app.show_help;
                 cx.notify();
             })))
+    }
+
+    /// The popover under the theme button: the mode, and the Monotone switch.
+    fn theme_menu_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = theme::current();
+        let mut modes = ui::segmented();
+        for (id, mode) in [
+            ("theme-system", theme::ThemeMode::System),
+            ("theme-light", theme::ThemeMode::Light),
+            ("theme-dark", theme::ThemeMode::Dark),
+        ] {
+            modes = modes.child(ui::segment(id, mode.label(), theme::mode() == mode).flex_1().on_click(cx.listener(
+                move |app, _, _, cx| {
+                    theme::set_mode(mode, cx);
+                    app.toast(format!("Theme: {}", mode.label()), false, cx);
+                },
+            )));
+        }
+        let monotone = theme::monotone();
+        let menu = ui::glass(Elevation::Popover)
+            .id("theme-menu")
+            .debug_selector(|| "theme-menu".to_owned())
+            .occlude()
+            .w(px(240.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_1()
+            .text_size(px(T_BODY))
+            .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
+            // A click away only closes the menu; it does not reach what is under it.
+            .on_mouse_down_out(cx.listener(|app, _, _, cx| {
+                app.theme_menu = false;
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(modes)
+            .child(
+                ui::list_row("theme-monotone", false)
+                    .debug_selector(|| "theme-monotone".to_owned())
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .h(px(H_BUTTON))
+                    .child("Monotone")
+                    .child(div().text_color(t.fg_muted).child(if monotone { "✓" } else { "" }))
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        let on = !theme::monotone();
+                        theme::set_monotone(on, cx);
+                        app.toast(format!("Monotone {}", if on { "on" } else { "off" }), false, cx);
+                    })),
+            );
+        div().absolute().right(px(0.)).top_full().mt_1().child(
+            deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(menu))
+                .with_priority(1),
+        )
     }
 
     pub(crate) fn persistence_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {

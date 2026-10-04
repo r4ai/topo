@@ -24,7 +24,7 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
         CaptureTheme::Dark => ThemeMode::Dark,
         CaptureTheme::Light => ThemeMode::Light,
     };
-    theme::apply(mode, gpui::WindowAppearance::default());
+    theme::apply(mode, options.monotone, gpui::WindowAppearance::default());
     let platform = gpui_platform::current_platform(false);
     let mut cx = VisualTestAppContext::new(platform);
     cx.update(text_input::bind_keys);
