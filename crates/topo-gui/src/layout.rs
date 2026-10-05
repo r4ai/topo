@@ -74,10 +74,23 @@ pub fn layout(graph: &Graph, view: &View) -> Layout {
         .filter(|id| !(view.hide_completed && graph.get(id).is_some_and(|n| n.status.is_closed())))
         .collect();
     let shown: BTreeSet<&NodeId> = order.iter().copied().collect();
-    let requirements = |id: &NodeId| -> Vec<&NodeId> {
-        let node = graph.get(id).expect("ids come from the graph");
-        graph.requirements(node).into_iter().filter(|d| shown.contains(d)).collect()
-    };
+    // Index memberships once. Calling graph.requirements for every milestone
+    // scans all nodes, twice per layout and again for every tag band.
+    let mut requirements: BTreeMap<&NodeId, Vec<&NodeId>> = order
+        .iter()
+        .map(|id| {
+            let node = graph.get(id).expect("ids come from the graph");
+            (*id, node.depends_on.iter().filter(|d| shown.contains(d)).collect())
+        })
+        .collect();
+    for id in &order {
+        for milestone in &graph.get(id).expect("ids come from the graph").milestones {
+            if let Some(members) = requirements.get_mut(milestone) {
+                members.push(id);
+            }
+        }
+    }
+    let requirements = |id: &NodeId| requirements[id].clone();
     let mut column: BTreeMap<&NodeId, usize> = BTreeMap::new();
     for id in &order {
         column.insert(id, requirements(id).iter().map(|d| column[d] + 1).max().unwrap_or(0));

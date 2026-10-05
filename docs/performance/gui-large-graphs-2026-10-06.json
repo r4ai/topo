@@ -1,0 +1,891 @@
+{
+  "date": "2026-10-06",
+  "baseline": "4bbca9c",
+  "after": "working tree after inspector inset correction",
+  "platform": "macOS 26.6.2 arm64",
+  "rust": "1.96.0",
+  "optimization": "release",
+  "window_pixels": [
+    1360,
+    860
+  ],
+  "frame_samples": 40,
+  "layout_samples": 10,
+  "note": "Task counts exclude one extra milestone. Sequential rerun of identical benchmark harnesses after implementation and visual fixes. Rendering-thread CPU excludes descheduling but includes kernel work. Earlier trials encountered host memory pressure. No display FPS measurement.",
+  "measurements": [
+    {
+      "workload": "1000 selected nodes pan",
+      "before": {
+        "elapsed_ms": {
+          "median": 27.389,
+          "p95": 33.327
+        },
+        "render_thread_cpu_ms": {
+          "median": 27.238,
+          "p95": 32.214
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 1.755,
+          "p95": 1.953
+        },
+        "render_thread_cpu_ms": {
+          "median": 1.752,
+          "p95": 1.909
+        }
+      }
+    },
+    {
+      "workload": "5000 selected nodes pan",
+      "before": {
+        "elapsed_ms": {
+          "median": 174.024,
+          "p95": 684.921
+        },
+        "render_thread_cpu_ms": {
+          "median": 171.82,
+          "p95": 463.472
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.398,
+          "p95": 2.527
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.379,
+          "p95": 2.527
+        }
+      }
+    },
+    {
+      "workload": "2000 nodes 1000 milestones grouped=false layout",
+      "before": {
+        "elapsed_ms": {
+          "median": 19.722,
+          "p95": 22.453
+        },
+        "render_thread_cpu_ms": {
+          "median": 19.519,
+          "p95": 21.257
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 1.73,
+          "p95": 1.835
+        },
+        "render_thread_cpu_ms": {
+          "median": 1.73,
+          "p95": 1.829
+        }
+      }
+    },
+    {
+      "workload": "2000 nodes 1000 milestones grouped=true layout",
+      "before": {
+        "elapsed_ms": {
+          "median": 19.082,
+          "p95": 20.082
+        },
+        "render_thread_cpu_ms": {
+          "median": 18.926,
+          "p95": 19.943
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 1.892,
+          "p95": 1.981
+        },
+        "render_thread_cpu_ms": {
+          "median": 1.892,
+          "p95": 1.982
+        }
+      }
+    },
+    {
+      "workload": "10000 nodes 5000 milestones grouped=false layout",
+      "before": {
+        "elapsed_ms": {
+          "median": 417.832,
+          "p95": 442.155
+        },
+        "render_thread_cpu_ms": {
+          "median": 415.408,
+          "p95": 439.612
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 10.796,
+          "p95": 11.266
+        },
+        "render_thread_cpu_ms": {
+          "median": 10.796,
+          "p95": 11.26
+        }
+      }
+    },
+    {
+      "workload": "10000 nodes 5000 milestones grouped=true layout",
+      "before": {
+        "elapsed_ms": {
+          "median": 627.951,
+          "p95": 1030.36
+        },
+        "render_thread_cpu_ms": {
+          "median": 603.538,
+          "p95": 809.986
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 12.819,
+          "p95": 13.942
+        },
+        "render_thread_cpu_ms": {
+          "median": 12.819,
+          "p95": 13.66
+        }
+      }
+    },
+    {
+      "workload": "nodes=100 density=1 pan",
+      "before": {
+        "elapsed_ms": {
+          "median": 1.983,
+          "p95": 10.546
+        },
+        "render_thread_cpu_ms": {
+          "median": 1.976,
+          "p95": 5.002
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 1.671,
+          "p95": 1.805
+        },
+        "render_thread_cpu_ms": {
+          "median": 1.671,
+          "p95": 1.803
+        }
+      }
+    },
+    {
+      "workload": "nodes=100 density=1 zoom",
+      "before": {
+        "elapsed_ms": {
+          "median": 2.142,
+          "p95": 3.027
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.142,
+          "p95": 2.818
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 1.686,
+          "p95": 1.746
+        },
+        "render_thread_cpu_ms": {
+          "median": 1.686,
+          "p95": 1.746
+        }
+      }
+    },
+    {
+      "workload": "nodes=100 density=1 hover",
+      "before": {
+        "elapsed_ms": {
+          "median": 2.241,
+          "p95": 3.391
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.217,
+          "p95": 2.649
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 1.718,
+          "p95": 1.992
+        },
+        "render_thread_cpu_ms": {
+          "median": 1.718,
+          "p95": 1.978
+        }
+      }
+    },
+    {
+      "workload": "nodes=100 density=1 selection",
+      "before": {
+        "elapsed_ms": {
+          "median": 2.299,
+          "p95": 2.6
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.299,
+          "p95": 2.558
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.273,
+          "p95": 2.649
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.27,
+          "p95": 2.542
+        }
+      }
+    },
+    {
+      "workload": "nodes=100 density=1 search",
+      "before": {
+        "elapsed_ms": {
+          "median": 2.427,
+          "p95": 2.649
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.424,
+          "p95": 2.65
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.646,
+          "p95": 2.859
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.644,
+          "p95": 2.815
+        }
+      }
+    },
+    {
+      "workload": "nodes=100 density=1 input",
+      "before": {
+        "elapsed_ms": {
+          "median": 2.252,
+          "p95": 2.363
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.252,
+          "p95": 2.363
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.629,
+          "p95": 3.081
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.619,
+          "p95": 3.018
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=1 pan",
+      "before": {
+        "elapsed_ms": {
+          "median": 7.1,
+          "p95": 39.553
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.965,
+          "p95": 15.347
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.084,
+          "p95": 13.056
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.336,
+          "p95": 7.148
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=1 zoom",
+      "before": {
+        "elapsed_ms": {
+          "median": 10.156,
+          "p95": 13.067
+        },
+        "render_thread_cpu_ms": {
+          "median": 9.905,
+          "p95": 12.101
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.617,
+          "p95": 17.251
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.748,
+          "p95": 8.257
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=1 hover",
+      "before": {
+        "elapsed_ms": {
+          "median": 9.912,
+          "p95": 14.873
+        },
+        "render_thread_cpu_ms": {
+          "median": 9.606,
+          "p95": 12.503
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.397,
+          "p95": 10.293
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.623,
+          "p95": 7.689
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=1 selection",
+      "before": {
+        "elapsed_ms": {
+          "median": 10.817,
+          "p95": 16.596
+        },
+        "render_thread_cpu_ms": {
+          "median": 10.278,
+          "p95": 13.358
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.115,
+          "p95": 9.968
+        },
+        "render_thread_cpu_ms": {
+          "median": 5.964,
+          "p95": 7.78
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=1 search",
+      "before": {
+        "elapsed_ms": {
+          "median": 11.604,
+          "p95": 13.604
+        },
+        "render_thread_cpu_ms": {
+          "median": 11.141,
+          "p95": 11.966
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.57,
+          "p95": 7.726
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.474,
+          "p95": 7.466
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=1 input",
+      "before": {
+        "elapsed_ms": {
+          "median": 8.865,
+          "p95": 20.21
+        },
+        "render_thread_cpu_ms": {
+          "median": 8.648,
+          "p95": 12.245
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 3.382,
+          "p95": 3.595
+        },
+        "render_thread_cpu_ms": {
+          "median": 3.382,
+          "p95": 3.595
+        }
+      }
+    },
+    {
+      "workload": "nodes=1000 density=12 pan",
+      "before": {
+        "elapsed_ms": {
+          "median": 7.382,
+          "p95": 8.8
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.301,
+          "p95": 8.348
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.351,
+          "p95": 12.432
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.21,
+          "p95": 9.486
+        }
+      }
+    },
+    {
+      "workload": "nodes=1000 density=12 zoom",
+      "before": {
+        "elapsed_ms": {
+          "median": 7.901,
+          "p95": 21.674
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.859,
+          "p95": 11.609
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.958,
+          "p95": 8.574
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.959,
+          "p95": 8.513
+        }
+      }
+    },
+    {
+      "workload": "nodes=1000 density=12 hover",
+      "before": {
+        "elapsed_ms": {
+          "median": 8.541,
+          "p95": 20.523
+        },
+        "render_thread_cpu_ms": {
+          "median": 8.413,
+          "p95": 11.387
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.016,
+          "p95": 7.204
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.016,
+          "p95": 6.85
+        }
+      }
+    },
+    {
+      "workload": "nodes=1000 density=12 selection",
+      "before": {
+        "elapsed_ms": {
+          "median": 8.668,
+          "p95": 10.3
+        },
+        "render_thread_cpu_ms": {
+          "median": 8.618,
+          "p95": 9.556
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.482,
+          "p95": 8.171
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.463,
+          "p95": 8.112
+        }
+      }
+    },
+    {
+      "workload": "nodes=1000 density=12 search",
+      "before": {
+        "elapsed_ms": {
+          "median": 7.566,
+          "p95": 8.482
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.538,
+          "p95": 8.237
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.196,
+          "p95": 6.419
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.199,
+          "p95": 6.42
+        }
+      }
+    },
+    {
+      "workload": "nodes=1000 density=12 input",
+      "before": {
+        "elapsed_ms": {
+          "median": 7.562,
+          "p95": 8.311
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.307,
+          "p95": 7.891
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 5.914,
+          "p95": 6.258
+        },
+        "render_thread_cpu_ms": {
+          "median": 5.903,
+          "p95": 6.214
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=0 pan",
+      "before": {
+        "elapsed_ms": {
+          "median": 181.839,
+          "p95": 317.964
+        },
+        "render_thread_cpu_ms": {
+          "median": 179.234,
+          "p95": 274.872
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.914,
+          "p95": 7.857
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.916,
+          "p95": 7.857
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=0 zoom",
+      "before": {
+        "elapsed_ms": {
+          "median": 191.315,
+          "p95": 244.171
+        },
+        "render_thread_cpu_ms": {
+          "median": 190.534,
+          "p95": 228.039
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.967,
+          "p95": 8.317
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.95,
+          "p95": 8.085
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=0 hover",
+      "before": {
+        "elapsed_ms": {
+          "median": 300.45,
+          "p95": 630.33
+        },
+        "render_thread_cpu_ms": {
+          "median": 292.744,
+          "p95": 479.641
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.181,
+          "p95": 8.187
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.178,
+          "p95": 7.772
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=0 selection",
+      "before": {
+        "elapsed_ms": {
+          "median": 58.096,
+          "p95": 60.792
+        },
+        "render_thread_cpu_ms": {
+          "median": 58.097,
+          "p95": 60.561
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 11.185,
+          "p95": 46.217
+        },
+        "render_thread_cpu_ms": {
+          "median": 10.747,
+          "p95": 13.879
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=0 search",
+      "before": {
+        "elapsed_ms": {
+          "median": 66.716,
+          "p95": 82.437
+        },
+        "render_thread_cpu_ms": {
+          "median": 65.883,
+          "p95": 80.117
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 10.327,
+          "p95": 12.221
+        },
+        "render_thread_cpu_ms": {
+          "median": 10.286,
+          "p95": 12.209
+        }
+      }
+    },
+    {
+      "workload": "nodes=5000 density=0 input",
+      "before": {
+        "elapsed_ms": {
+          "median": 81.138,
+          "p95": 471.108
+        },
+        "render_thread_cpu_ms": {
+          "median": 78.422,
+          "p95": 178.752
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.412,
+          "p95": 7.86
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.412,
+          "p95": 7.781
+        }
+      }
+    },
+    {
+      "workload": "nodes=20000 density=1 pan",
+      "before": {
+        "elapsed_ms": {
+          "median": 15.548,
+          "p95": 17.139
+        },
+        "render_thread_cpu_ms": {
+          "median": 15.492,
+          "p95": 16.773
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.051,
+          "p95": 2.271
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.051,
+          "p95": 2.269
+        }
+      }
+    },
+    {
+      "workload": "nodes=20000 density=1 zoom",
+      "before": {
+        "elapsed_ms": {
+          "median": 17.682,
+          "p95": 28.003
+        },
+        "render_thread_cpu_ms": {
+          "median": 17.604,
+          "p95": 23.702
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.147,
+          "p95": 2.387
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.147,
+          "p95": 2.388
+        }
+      }
+    },
+    {
+      "workload": "nodes=20000 density=1 hover",
+      "before": {
+        "elapsed_ms": {
+          "median": 16.328,
+          "p95": 17.997
+        },
+        "render_thread_cpu_ms": {
+          "median": 16.168,
+          "p95": 17.906
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.107,
+          "p95": 2.226
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.107,
+          "p95": 2.226
+        }
+      }
+    },
+    {
+      "workload": "nodes=20000 density=1 selection",
+      "before": {
+        "elapsed_ms": {
+          "median": 18.163,
+          "p95": 21.583
+        },
+        "render_thread_cpu_ms": {
+          "median": 17.889,
+          "p95": 19.79
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 3.27,
+          "p95": 3.669
+        },
+        "render_thread_cpu_ms": {
+          "median": 3.271,
+          "p95": 3.669
+        }
+      }
+    },
+    {
+      "workload": "nodes=20000 density=1 search",
+      "before": {
+        "elapsed_ms": {
+          "median": 21.633,
+          "p95": 46.386
+        },
+        "render_thread_cpu_ms": {
+          "median": 21.592,
+          "p95": 32.065
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 6.406,
+          "p95": 6.626
+        },
+        "render_thread_cpu_ms": {
+          "median": 6.407,
+          "p95": 6.627
+        }
+      }
+    },
+    {
+      "workload": "nodes=20000 density=1 input",
+      "before": {
+        "elapsed_ms": {
+          "median": 23.275,
+          "p95": 85.28
+        },
+        "render_thread_cpu_ms": {
+          "median": 22.652,
+          "p95": 37.615
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 2.694,
+          "p95": 2.999
+        },
+        "render_thread_cpu_ms": {
+          "median": 2.695,
+          "p95": 2.999
+        }
+      }
+    },
+    {
+      "workload": "500 nodes 120ms remote edit-to-visible-state",
+      "before": {
+        "elapsed_ms": {
+          "median": 8.377,
+          "p95": 10.356
+        },
+        "render_thread_cpu_ms": {
+          "median": 8.345,
+          "p95": 10.142
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 7.625,
+          "p95": 9.116
+        },
+        "render_thread_cpu_ms": {
+          "median": 7.626,
+          "p95": 8.684
+        }
+      }
+    },
+    {
+      "workload": "500 nodes 120ms remote edit-to-settled",
+      "before": {
+        "elapsed_ms": {
+          "median": 147.342,
+          "p95": 151.205
+        },
+        "render_thread_cpu_ms": {
+          "median": 22.463,
+          "p95": 25.74
+        }
+      },
+      "after": {
+        "elapsed_ms": {
+          "median": 146.647,
+          "p95": 171.192
+        },
+        "render_thread_cpu_ms": {
+          "median": 21.409,
+          "p95": 22.749
+        }
+      }
+    }
+  ]
+}

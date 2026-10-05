@@ -3,8 +3,8 @@
 use std::cmp::Reverse;
 
 use gpui::{
-    AnyElement, Context, CursorStyle, Div, ElementId, FontWeight, MouseButton, MouseDownEvent, SharedString, Stateful,
-    div, prelude::*, px,
+    AnyElement, Context, CursorStyle, Div, ElementId, FontWeight, ListAlignment, ListState, MouseButton,
+    MouseDownEvent, SharedString, Stateful, div, list, prelude::*, px, uniform_list,
 };
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -22,20 +22,83 @@ type Remove = fn(&mut Graph, &NodeId, &NodeId) -> Result<(), topo_core::Error>;
 /// The two ends of a relation and how to remove it.
 type Removal = Option<(NodeId, NodeId, Remove)>;
 
+/// Row identities are retained between frames; GPUI builds only the visible rows.
+#[derive(Clone, PartialEq, Eq)]
+enum OverviewRow {
+    Title,
+    Intro,
+    DoingHeading,
+    Doing(NodeId),
+    ReadyHeading(usize),
+    EmptyReady,
+    Ready(NodeId),
+    MilestonesHeading,
+    Milestone(NodeId),
+}
+
+pub(crate) struct Overview {
+    rows: Vec<OverviewRow>,
+    pub(crate) list: ListState,
+}
+
+impl Default for Overview {
+    fn default() -> Self {
+        Self { rows: Vec::new(), list: ListState::new(0, ListAlignment::Top, px(100.)) }
+    }
+}
+
+impl Overview {
+    pub(crate) fn refresh(&mut self, graph: &Graph, ready: &[NodeId], doing: &[NodeId]) {
+        let get = |id: &NodeId| graph.get(id).expect("cached graph node");
+        let mut doing: Vec<_> = doing.iter().collect();
+        doing.sort_by_key(|id| Reverse(get(id).priority));
+        let mut ready: Vec<_> = ready.iter().collect();
+        ready.sort_by_key(|id| {
+            let n = get(id);
+            (Reverse(n.priority), n.due.is_none(), n.due)
+        });
+        let mut rows = vec![OverviewRow::Title, OverviewRow::Intro];
+        if !doing.is_empty() {
+            rows.push(OverviewRow::DoingHeading);
+            rows.extend(doing.into_iter().cloned().map(OverviewRow::Doing));
+        }
+        rows.push(OverviewRow::ReadyHeading(ready.len()));
+        if ready.is_empty() {
+            rows.push(OverviewRow::EmptyReady);
+        }
+        rows.extend(ready.into_iter().cloned().map(OverviewRow::Ready));
+        let mut milestones = graph.nodes().filter(|n| n.kind == Kind::Milestone).peekable();
+        if milestones.peek().is_some() {
+            rows.push(OverviewRow::MilestonesHeading);
+        }
+        rows.extend(milestones.map(|n| OverviewRow::Milestone(n.id.clone())));
+        if rows != self.rows {
+            // Retain unchanged prefix/suffix heights and the scroll anchor on updates.
+            let prefix = rows.iter().zip(&self.rows).take_while(|(a, b)| a == b).count();
+            let suffix =
+                rows[prefix..].iter().rev().zip(self.rows[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+            self.list.splice(prefix..self.rows.len() - suffix, rows.len() - prefix - suffix);
+            self.rows = rows;
+        }
+        // Metadata can change a milestone's height without changing its identity.
+        self.list.remeasure();
+    }
+}
+
 impl TopoApp {
     pub(crate) fn inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
+        let overview = self.selected_nodes.is_empty();
         let content: Vec<AnyElement> = match self.selected_nodes.len() {
             n if n > 1 => self.selection_details(cx),
             _ => match self.selected_node() {
                 Some(node) => self.node_details(node, cx),
-                None => self.overview(cx),
+                None => Vec::new(),
             },
         };
         div().relative().flex_shrink_0().h_full().w(px(self.inspector_width())).child(self.resize_handle(cx)).child(
             ui::panel()
                 .id("inspector")
-                .track_scroll(&self.inspector_scroll)
                 .size_full()
                 .flex()
                 .flex_col()
@@ -43,9 +106,67 @@ impl TopoApp {
                 .border_color(t.hairline)
                 .text_size(px(T_BODY_LG))
                 .text_color(t.fg)
-                .overflow_y_scroll()
+                .min_h(px(0.))
                 .children(self.proposals_view(cx))
-                .child(div().flex().flex_col().p_4().children(content)),
+                .when_else(
+                    overview,
+                    |panel| {
+                        panel.child(
+                            list(
+                                self.graph_cache.overview.list.clone(),
+                                cx.processor(|app, index, _, cx| {
+                                    div()
+                                        .w_full()
+                                        .px_4()
+                                        .flex()
+                                        .flex_col()
+                                        .child(app.overview_row(index, cx))
+                                        .into_any_element()
+                                }),
+                            )
+                            .flex_1()
+                            .min_h(px(0.))
+                            .py_4(),
+                        )
+                    },
+                    |panel| {
+                        if self.selected_nodes.len() > 1 {
+                            return panel.child(div().flex().flex_col().flex_shrink_0().p_4().children(content)).child(
+                                uniform_list(
+                                    "selected-rows",
+                                    self.graph_cache.selected_ids.len(),
+                                    cx.processor(|app, range: std::ops::Range<usize>, _, cx| {
+                                        range
+                                            .map(|index| {
+                                                let id = &app.graph_cache.selected_ids[index];
+                                                app.node_row(
+                                                    "selected",
+                                                    app.graph().get(id).expect("selected node"),
+                                                    Some(id.to_string()),
+                                                    None,
+                                                    cx,
+                                                )
+                                                .h(px(30.))
+                                                .w_full()
+                                                .mx_0()
+                                                .px_0()
+                                            })
+                                            .collect()
+                                    }),
+                                )
+                                .track_scroll(&self.graph_cache.selection_scroll)
+                                .flex_1()
+                                .min_h(px(0.))
+                                .px_4()
+                                .pb_4(),
+                            );
+                        }
+                        panel
+                            .track_scroll(&self.inspector_scroll)
+                            .overflow_y_scroll()
+                            .child(div().flex().flex_col().p_4().children(content))
+                    },
+                ),
         )
     }
 
@@ -74,9 +195,8 @@ impl TopoApp {
 
     fn selection_details(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let t = theme::current();
-        let nodes: Vec<_> = self.selected_nodes.iter().filter_map(|id| self.graph().get(id)).collect();
-        let common_status = nodes.first().map(|n| n.status).filter(|s| nodes.iter().all(|n| n.status == *s));
-        let mut out = vec![
+        let common_status = self.graph_cache.selected_status;
+        vec![
             div()
                 .flex()
                 .items_center()
@@ -86,7 +206,7 @@ impl TopoApp {
                         .flex_1()
                         .text_size(px(T_HEADING))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("{} nodes selected", nodes.len())),
+                        .child(format!("{} nodes selected", self.selected_nodes.len())),
                 )
                 .child(icon_button_svg("deselect", Icon::Close).on_click(cx.listener(|app, _, _, cx| {
                     app.select(None, false);
@@ -101,11 +221,7 @@ impl TopoApp {
                 .into_any_element(),
             self.status_control(common_status, cx).into_any_element(),
             section_label("SELECTED NODES").into_any_element(),
-        ];
-        for node in nodes {
-            out.push(self.node_row("selected", node, Some(node.id.to_string()), None, cx).into_any_element());
-        }
-        out
+        ]
     }
 
     /// Every segment reserves its border, keeping labels still as the active status changes.
@@ -195,118 +311,101 @@ impl TopoApp {
             }))
     }
 
-    fn overview(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn overview_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let t = theme::current();
-        let graph = self.graph();
         let today = dates::today();
-        let mut out: Vec<AnyElement> = Vec::new();
-        out.push(div().text_size(px(T_HEADING)).font_weight(FontWeight::SEMIBOLD).child("Overview").into_any_element());
-        out.push(
-            div()
-                .text_size(px(T_BODY))
-                .text_color(t.fg_muted)
-                .child("Select a node to edit it. Edits from the CLI or agents appear live.")
-                .into_any_element(),
-        );
-
-        // What matters most comes first; a priority is named, not only colored.
         let detail = |node: &Node| {
             let parts = [node.priority.map(theme::priority_text), node.due.map(|d| dates::short(d, today))];
             Some(parts.into_iter().flatten().collect::<Vec<_>>().join(" · ")).filter(|d| !d.is_empty())
         };
-        let mut doing: Vec<&Node> = self.graph_cache.doing.iter().filter_map(|id| graph.get(id)).collect();
-        doing.sort_by_key(|n| Reverse(n.priority));
-        if !doing.is_empty() {
-            out.push(section_label("IN PROGRESS").into_any_element());
-            for node in doing {
-                let who = node.assignee.as_ref().map(|a| format!("@{a}"));
-                out.push(self.node_row("doing", node, who.or_else(|| detail(node)), None, cx).into_any_element());
+        match &self.graph_cache.overview.rows[index] {
+            OverviewRow::Title => {
+                div().text_size(px(T_HEADING)).font_weight(FontWeight::SEMIBOLD).child("Overview").into_any_element()
+            }
+            OverviewRow::Intro => div()
+                .text_size(px(T_BODY))
+                .text_color(t.fg_muted)
+                .child("Select a node to edit it. Edits from the CLI or agents appear live.")
+                .into_any_element(),
+            OverviewRow::DoingHeading => section_label("IN PROGRESS").into_any_element(),
+            OverviewRow::ReadyHeading(count) => section_label(format!("READY NOW · {count}")).into_any_element(),
+            OverviewRow::EmptyReady => div()
+                .text_size(px(T_BODY))
+                .text_color(t.fg_faint)
+                .child("Nothing is unblocked right now.")
+                .into_any_element(),
+            OverviewRow::MilestonesHeading => section_label("MILESTONES").into_any_element(),
+            OverviewRow::Doing(id) | OverviewRow::Ready(id) => {
+                let node = self.graph().get(id).expect("overview node");
+                let doing = matches!(self.graph_cache.overview.rows[index], OverviewRow::Doing(_));
+                let who = doing.then(|| node.assignee.as_ref().map(|a| format!("@{a}"))).flatten();
+                self.node_row(if doing { "doing" } else { "ready" }, node, who.or_else(|| detail(node)), None, cx)
+                    .into_any_element()
+            }
+            OverviewRow::Milestone(id) => {
+                self.overview_milestone(self.graph().get(id).expect("overview milestone"), cx)
             }
         }
+    }
 
-        let mut ready: Vec<&Node> = self.graph_cache.ready.iter().filter_map(|id| graph.get(id)).collect();
-        ready.sort_by_key(|n| (Reverse(n.priority), n.due.is_none(), n.due));
-        out.push(section_label(format!("READY NOW · {}", ready.len())).into_any_element());
-        if ready.is_empty() {
-            out.push(
+    fn overview_milestone(&self, m: &Node, cx: &mut Context<Self>) -> AnyElement {
+        let t = theme::current();
+        let today = dates::today();
+        let (done, total) = self.graph_cache.progress[&m.id];
+        let left = self.graph_cache.critical_lengths[&m.id];
+        let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
+        let complete = m.status.is_closed() || (total > 0 && done == total);
+        let id = m.id.clone();
+        let selector = format!("overview-{id}");
+        let (glyph, glyph_color) = theme::node_icon(m);
+        let due = m.due.map(|d| {
+            let color = if m.status.is_closed() { t.fg_faint } else { dates::urgency_color(d, today) };
+            div().text_color(color).child(format!("due {} · {}", dates::short(d, today), dates::relative(d, today)))
+        });
+        div()
+            .id(ElementId::Name(format!("overview-{id}").into()))
+            .debug_selector(move || selector.clone())
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .p_2p5()
+            .mb_2()
+            .rounded(px(R_LG))
+            .bg(t.card)
+            .border_1()
+            .border_color(t.hairline)
+            .cursor_pointer()
+            .hover(|s| s.border_color(t.border_strong))
+            .child(
                 div()
-                    .text_size(px(T_BODY))
-                    .text_color(t.fg_faint)
-                    .child("Nothing is unblocked right now.")
-                    .into_any_element(),
-            );
-        }
-        for node in ready {
-            out.push(self.node_row("ready", node, detail(node), None, cx).into_any_element());
-        }
-
-        let milestones: Vec<&Node> = graph.nodes().filter(|n| n.kind == Kind::Milestone).collect();
-        if !milestones.is_empty() {
-            out.push(section_label("MILESTONES").into_any_element());
-        }
-        for m in milestones {
-            let (done, total) = self.graph_cache.progress[&m.id];
-            let left = self.graph_cache.critical_lengths[&m.id];
-            let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
-            let complete = m.status.is_closed() || (total > 0 && done == total);
-            let id = m.id.clone();
-            let (glyph, glyph_color) = theme::node_icon(m);
-            let due = m.due.map(|d| {
-                let color = if m.status.is_closed() { t.fg_faint } else { dates::urgency_color(d, today) };
-                div().text_color(color).child(format!("due {} · {}", dates::short(d, today), dates::relative(d, today)))
-            });
-            out.push(
-                div()
-                    .id(ElementId::Name(format!("overview-{id}").into()))
                     .flex()
-                    .flex_col()
-                    .gap_1p5()
-                    .p_2p5()
-                    .mb_2()
-                    .rounded(px(R_LG))
-                    .bg(t.card)
-                    .border_1()
-                    .border_color(t.hairline)
-                    .cursor_pointer()
-                    .hover(|s| s.border_color(t.border_strong))
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_color(glyph_color).child(glyph))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_color(glyph_color).child(glyph))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(m.title.clone()),
-                            )
-                            .child(div().text_size(px(T_BODY)).text_color(t.fg_muted).child(format!("{done}/{total}"))),
+                        div().flex_1().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(m.title.clone()),
                     )
-                    .child(div().flex().child(ui::progress_bar(fraction, complete, 4.)))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .text_size(px(T_BODY))
-                            .text_color(t.fg_muted)
-                            .child(match left {
-                                0 => "all requirements closed".to_owned(),
-                                1 => "1 step left".to_owned(),
-                                n => format!("{n} steps left"),
-                            })
-                            .children(due),
-                    )
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.select(Some(id.clone()), true);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            );
-        }
-        out
+                    .child(div().text_size(px(T_BODY)).text_color(t.fg_muted).child(format!("{done}/{total}"))),
+            )
+            .child(div().flex().child(ui::progress_bar(fraction, complete, 4.)))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .text_size(px(T_BODY))
+                    .text_color(t.fg_muted)
+                    .child(match left {
+                        0 => "all requirements closed".to_owned(),
+                        1 => "1 step left".to_owned(),
+                        n => format!("{n} steps left"),
+                    })
+                    .children(due),
+            )
+            .on_click(cx.listener(move |app, _, _, cx| {
+                app.select(Some(id.clone()), true);
+                cx.notify();
+            }))
+            .into_any_element()
     }
 
     fn node_details(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {

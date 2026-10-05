@@ -183,3 +183,40 @@ Medians in milliseconds on the same machine (Apple M5, macOS arm64, release buil
 | :--- | :--- | :--- |
 | 14 px | 1.63 | 1.63 |
 | 28 px | 0.23 | 0.23 |
+
+
+## Large graph rendering follow-up (2026-10-06)
+
+Baseline: `4bbca9c`, using the same benchmark harness in an isolated source snapshot. Builds use Rust 1.96.0, release optimization, one test thread and 1360 × 860 logical pixels. Frame workloads use 40 samples; layout workloads use 10. Task counts in the frame fixtures exclude one additional milestone. The 5000-task independent fixture has no task dependencies and places every twentieth task in that milestone. The all-selected fixture selects every task and the extra milestone.
+
+### Rendering changes
+
+- The overview retains sorted row identities and renders only rows intersecting the viewport plus a small overscan. Priority, due-date, status and graph edits refresh its order and row measurements. All entries remain scrollable; row selection and status actions retain their existing behavior.
+- Multiple selection uses a virtual list beneath the selection summary and status controls. Selected IDs and their common status are refreshed when selection or graph metrics change.
+- Toolbar counts share immutable ID lists. Search highlighting shares a lookup set built with the search results; measuring a completion list's widest item happens when choices change. Camera and hover updates avoid cloning and sorting these full lists.
+- The first canvas frame uses the window as a conservative viewport until canvas bounds become available, preventing an initial construction of every offscreen card.
+- Memberships are indexed once during layout, avoiding a full graph scan for each milestone and tag band.
+- Dashed edges are flattened with a 0.2-pixel geometric tolerance, then clipped before generating stroke geometry. Hidden segments still advance the dash phase, preserving the pattern when the viewport moves. The renderer retains crossing segments and a stroke/antialiasing margin; arrowheads keep their existing geometry.
+
+### Measurement
+
+The benchmark reports both elapsed time (`PERF`) and, on macOS, rendering-thread CPU time (`PERF_CPU`, via `CLOCK_THREAD_CPUTIME_ID`). Elapsed samples include scheduler stalls; the CPU samples exclude time while the rendering thread is descheduled. File initialization, graph loading and layout are outside the steady-state frame samples. Earlier trials experienced host memory pressure. The reported table is a sequential rerun after the implementation and visual fixes; these measurements do not establish display FPS or input-to-display latency. The saved measurements include elapsed results as well as CPU results.
+
+```bash
+cargo test --locked -p topo-gui --release perf_tests:: -- --ignored --nocapture --test-threads=1
+# Run one frame fixture in a fresh process:
+TOPO_PERF_CASE=5000/0 cargo test --locked -p topo-gui --release responsiveness_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+Rendering-thread CPU time, median / p95 in milliseconds:
+
+| Workload | Before | After | Median reduction |
+| --- | --- | --- | --- |
+| nodes=5000 density=0 pan | 179.234 / 274.872 | 6.916 / 7.857 | 96.1% |
+| 5000 selected nodes pan | 171.820 / 463.472 | 2.379 / 2.527 | 98.6% |
+| nodes=20000 density=1 pan | 15.492 / 16.773 | 2.051 / 2.269 | 86.8% |
+| 10000 nodes 5000 milestones grouped=false layout | 415.408 / 439.612 | 10.796 / 11.260 | 97.4% |
+
+All elapsed and CPU measurements, including the small and dense fixtures: [gui-large-graphs-2026-10-06.json](performance/gui-large-graphs-2026-10-06.json). Results apply to the specified workloads on this host; the artifact retains every measured operation.
+
+Validation: 291 workspace tests pass; strict workspace Clippy with all targets and the screenshot feature, formatting, and diff checks pass. Tests cover scrolling to the last entry, selecting/completing tasks from virtual rows, priority reordering, inspector insets and row widths, and bounded dashed geometry with a stable phase. Native Metal rendering was checked for overview, multiple selection and search across all four palettes (12 captures), plus a 5000-task overview and all-selected view (2 captures). Screenshot rendering required access to macOS font/XPC services outside the shell sandbox.

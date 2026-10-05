@@ -78,6 +78,79 @@ const SAMPLE: &[(&str, Kind, &[&str], &[&str])] = &[
 ];
 
 #[gpui::test]
+fn virtual_inspector_rows_fill_the_panel_and_keep_its_inset(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let panel = ui.cx.debug_bounds("inspector").unwrap_or_else(|| {
+        let area = ui.read(|app| app.area.get());
+        gpui::Bounds::new(
+            point(area.right(), area.top()),
+            size(px(ui.read(|app| app.inspector_width())), area.size.height),
+        )
+    });
+    let milestone = ui.cx.debug_bounds("overview-m").expect("overview milestone");
+    assert!((milestone.left() - panel.left() - px(16.)).abs() < px(1.5), "milestone={milestone:?}, panel={panel:?}");
+    assert!((panel.right() - milestone.right() - px(16.)).abs() < px(1.5), "milestone={milestone:?}, panel={panel:?}");
+    ui.app.update(ui.cx, |app, cx| app.select_nodes(&[id("a"), id("b")], cx));
+    ui.redraw();
+    let row = ui.cx.debug_bounds("row-selected-a").expect("selected row");
+    assert!((row.left() - panel.left() - px(16.)).abs() < px(1.5), "row={row:?}, panel={panel:?}");
+    assert!((panel.right() - row.right() - px(16.)).abs() < px(1.5), "row={row:?}, panel={panel:?}");
+}
+
+#[gpui::test]
+fn large_overview_and_selection_lists_keep_all_rows_reachable(cx: &mut TestAppContext) {
+    let names: Vec<_> = (0..200).map(|i| format!("task{i:04}")).collect();
+    let nodes: Vec<_> = names.iter().map(|name| (name.as_str(), Kind::Task, &[][..], &[][..])).collect();
+    let mut ui = open(cx, &nodes);
+    assert!(ui.cx.debug_bounds("row-ready-task0000").is_some());
+    assert!(ui.cx.debug_bounds("row-ready-task0199").is_none());
+    // Scrolling reaches the final row; it retains the same click and status actions.
+    ui.app.update(ui.cx, |app, cx| {
+        app.graph_cache.overview.list.scroll_to_end();
+        cx.notify();
+    });
+    ui.redraw();
+    let last = ui.cx.debug_bounds("row-ready-task0199").expect("last ready task is visible");
+    assert!(ui.cx.debug_bounds("row-ready-task0000").is_none());
+    ui.click(last.center());
+    assert_eq!(ui.selected().as_deref(), Some("task0199"));
+    ui.keys("x");
+    ui.keys("escape");
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("row-ready-task0199").is_none(), "closed task leaves ready list");
+
+    // Metadata edits reorder the overview even though they retain canvas layout.
+    ui.app.update(ui.cx, |app, cx| {
+        app.mutate(cx, |graph| {
+            graph.edit(&id("task0198"), Edit { priority: Some(Some(Priority::High)), ..Default::default() })
+        });
+        app.graph_cache.overview.list.scroll_to(gpui::ListOffset { item_ix: 0, offset_in_item: px(0.) });
+        cx.notify();
+    });
+    ui.redraw();
+    let high = ui.cx.debug_bounds("row-ready-task0198").expect("high priority task moves to top");
+    let first = ui.cx.debug_bounds("row-ready-task0000").unwrap();
+    assert!(high.top() < first.top());
+
+    ui.app.update(ui.cx, |app, cx| {
+        let ids: Vec<_> = app.graph().nodes().map(|n| n.id.clone()).collect();
+        app.select_nodes(&ids, cx);
+        app.anim = None;
+    });
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("row-selected-task0199").is_none());
+    ui.app.update(ui.cx, |app, cx| {
+        app.graph_cache.selection_scroll.scroll_to_item(199, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    ui.redraw();
+    let last = ui.cx.debug_bounds("row-selected-task0199").expect("last selected task is visible");
+    assert!(ui.cx.debug_bounds("row-selected-task0000").is_none());
+    ui.click(last.center());
+    assert_eq!(ui.selection(), ["task0199"]);
+}
+
+#[gpui::test]
 fn camera_retargeting_keeps_velocity_and_disabling_motion_finishes_the_move(cx: &mut TestAppContext) {
     struct ResetMotion;
     impl Drop for ResetMotion {
@@ -431,7 +504,8 @@ fn search_emphasizes_every_match_and_jumps(cx: &mut TestAppContext) {
     let mut ui = open(cx, &nodes);
     ui.keys("/");
     ui.type_text("task");
-    assert_eq!(ui.app.read_with(ui.cx, |app, cx| app.search_matches(cx).map(|m| m.len())), Some(12));
+    assert_eq!(ui.app.read_with(ui.cx, |app, cx| app.palette.read(cx).choices().len()), 12);
+    assert!(ui.app.read_with(ui.cx, |app, cx| app.palette.read(cx).contains_key("task11")));
     // The list scrolls past the rows it shows at once.
     ui.keys("down down down down down down down down down down enter");
     assert_eq!(ui.selected().as_deref(), Some("task10"));

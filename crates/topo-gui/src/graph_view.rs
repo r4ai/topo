@@ -1,6 +1,7 @@
 //! The canvas: dot grid, edges, node cards and the gestures on them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, Bounds, Context, CursorStyle, ElementId, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -80,10 +81,12 @@ pub(crate) struct GraphCache {
     bands: Vec<layout::Band>,
     /// Rightmost column and bottom row, group headers included.
     extent: layout::Cell,
-    pub(crate) ready: Vec<NodeId>,
-    pub(crate) overdue: Vec<NodeId>,
+    pub(crate) ready: Rc<Vec<NodeId>>,
+    pub(crate) overdue: Rc<Vec<NodeId>>,
     today: Option<Date>,
-    pub(crate) doing: Vec<NodeId>,
+    pub(crate) doing: Rc<Vec<NodeId>>,
+    pub(crate) overview: crate::inspector::Overview,
+    overview_dirty: bool,
     pub(crate) task_count: usize,
     pub(crate) closed_count: usize,
     pub(crate) critical_paths: BTreeMap<NodeId, Vec<NodeId>>,
@@ -92,6 +95,9 @@ pub(crate) struct GraphCache {
     cells: BTreeMap<NodeId, layout::Cell>,
     order: Vec<NodeId>,
     selected: BTreeSet<NodeId>,
+    pub(crate) selected_ids: Vec<NodeId>,
+    pub(crate) selected_status: Option<Status>,
+    pub(crate) selection_scroll: gpui::UniformListScrollHandle,
     focus: Option<BTreeSet<NodeId>>,
     critical: BTreeSet<NodeId>,
     critical_edges: BTreeMap<NodeId, BTreeSet<NodeId>>,
@@ -117,10 +123,12 @@ impl Default for GraphCache {
             view: layout::View::default(),
             bands: Vec::new(),
             extent: (0, 0),
-            ready: Vec::new(),
-            overdue: Vec::new(),
+            ready: Rc::default(),
+            overdue: Rc::default(),
             today: None,
-            doing: Vec::new(),
+            doing: Rc::default(),
+            overview: crate::inspector::Overview::default(),
+            overview_dirty: true,
             task_count: 0,
             closed_count: 0,
             critical_paths: BTreeMap::new(),
@@ -129,6 +137,9 @@ impl Default for GraphCache {
             cells: BTreeMap::new(),
             order: Vec::new(),
             selected: BTreeSet::new(),
+            selected_ids: Vec::new(),
+            selected_status: None,
+            selection_scroll: gpui::UniformListScrollHandle::new(),
             focus: None,
             critical: BTreeSet::new(),
             critical_edges: BTreeMap::new(),
@@ -158,6 +169,8 @@ impl GraphCache {
 
     /// Classify changes at the mutation boundary; metadata edits keep layout and metrics.
     pub(crate) fn changed(&mut self, before: &Graph, after: &Graph) {
+        // Overview order and variable row heights also depend on metadata.
+        self.overview_dirty = true;
         let structure = before.nodes().count() != after.nodes().count()
             || after.nodes().any(|n| {
                 before.get(&n.id).is_none_or(|old| old.depends_on != n.depends_on || old.milestones != n.milestones)
@@ -390,17 +403,21 @@ impl GraphCache {
                 self.bands = layout.bands;
                 self.layout_dirty = false;
             }
-            self.ready = graph
-                .ready_tasks(None)
-                .into_iter()
-                .filter(|n| n.status == Status::Todo)
-                .map(|n| n.id.clone())
-                .collect();
-            self.doing = graph
-                .nodes()
-                .filter(|n| n.kind == Kind::Task && n.status == Status::Doing)
-                .map(|n| n.id.clone())
-                .collect();
+            self.ready = Rc::new(
+                graph
+                    .ready_tasks(None)
+                    .into_iter()
+                    .filter(|n| n.status == Status::Todo)
+                    .map(|n| n.id.clone())
+                    .collect(),
+            );
+            self.doing = Rc::new(
+                graph
+                    .nodes()
+                    .filter(|n| n.kind == Kind::Task && n.status == Status::Doing)
+                    .map(|n| n.id.clone())
+                    .collect(),
+            );
             self.task_count = graph.nodes().filter(|n| n.kind == Kind::Task).count();
             self.closed_count = graph.nodes().filter(|n| n.kind == Kind::Task && n.status.is_closed()).count();
             self.requirements = graph.nodes().map(|n| (n.id.clone(), n.depends_on.clone())).collect();
@@ -468,14 +485,26 @@ impl GraphCache {
         let today = dates::today();
         if !unchanged || self.today != Some(today) {
             self.today = Some(today);
-            self.overdue = graph
-                .nodes()
-                .filter(|n| !n.status.is_closed() && n.due.is_some_and(|d| d < today))
-                .map(|n| n.id.clone())
-                .collect();
+            self.overdue = Rc::new(
+                graph
+                    .nodes()
+                    .filter(|n| !n.status.is_closed() && n.due.is_some_and(|d| d < today))
+                    .map(|n| n.id.clone())
+                    .collect(),
+            );
+        }
+        if !unchanged || self.overview_dirty {
+            self.overview.refresh(graph, &self.ready, &self.doing);
+            self.overview_dirty = false;
         }
         if !unchanged || reselected {
             self.selected.clone_from(selected);
+            self.selected_ids = selected.iter().cloned().collect();
+            self.selected_status = selected
+                .first()
+                .and_then(|id| graph.get(id))
+                .map(|n| n.status)
+                .filter(|status| selected.iter().all(|id| graph.get(id).is_some_and(|n| n.status == *status)));
             self.active = active;
             self.cross = self.cross_band_edges(graph);
             self.focus = (!selected.is_empty()).then(|| {
@@ -619,25 +648,35 @@ impl TopoApp {
         cx.notify();
     }
 
-    pub(crate) fn graph_view(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn graph_view(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         self.ensure_graph_cache();
         let graph = &self.ws.graph;
         let cells = self.graph_cache.cells();
-        let viewport = Bounds::new(point(px(0.), px(0.)), self.area.get().size);
+        // The first frame has no canvas bounds yet. Use the window as a conservative
+        // bound rather than constructing every offscreen card before layout settles.
+        let area = self.area.get().size;
+        let viewport =
+            Bounds::new(point(px(0.), px(0.)), if area.width > px(0.) { area } else { window.viewport_size() });
         let today = dates::today();
         let z = self.zoom;
         let origin = self.area.get().origin;
 
         let focus = &self.graph_cache.focus;
-        let matches: Option<BTreeSet<NodeId>> = self.search_matches(cx).map(|ids| ids.into_iter().collect());
         let cursor = self.list_cursor(cx);
         let critical = &self.graph_cache.critical;
         let filtered = |id: &NodeId| self.passes_filter(graph.get(id).expect("graph invariant"));
-        let emphasized = |id: &NodeId| match (&matches, &focus) {
-            (Some(m), _) => m.contains(id),
-            (None, Some(f)) => f.contains(id) && filtered(id),
-            (None, None) => filtered(id),
+        let palette = self.palette.read(cx);
+        let matching = matches!(self.prompt, Some(crate::Prompt::Pick { .. }))
+            || (matches!(self.prompt, Some(crate::Prompt::Search)) && !palette.text(cx).trim().is_empty());
+        let matches = matching.then(|| palette.matching_keys());
+        let emphasized = |id: &NodeId| match (matching, &focus) {
+            (true, _) => {
+                matches.as_ref().is_some_and(|keys| keys.contains(id.as_str()))
+                    || matches!(&self.prompt, Some(crate::Prompt::Pick { node, .. }) if node == id)
+            }
+            (false, Some(f)) => f.contains(id) && filtered(id),
+            (false, None) => filtered(id),
         };
 
         let link = match &self.drag {
@@ -745,7 +784,7 @@ impl TopoApp {
                 let o = bounds.origin;
                 paint_grid(window, bounds, offset, z);
                 for e in edges {
-                    paint_edge(window, e.from + o, e.to + o, e.color, e.width, e.dashed, z);
+                    paint_edge(window, &e, o, bounds, z);
                 }
                 if let Some((from, mouse, color)) = pending {
                     let mut path = PathBuilder::stroke(px(2.)).dash_array(&[px(6.), px(4.)]);
@@ -1166,24 +1205,97 @@ fn paint_grid_at_density(window: &mut Window, bounds: Bounds<Pixels>, offset: Po
     }
 }
 
-fn paint_edge(
-    window: &mut Window,
-    from: Point<Pixels>,
-    to: Point<Pixels>,
-    color: Hsla,
-    width: f32,
-    dashed: bool,
-    zoom: f32,
-) {
+/// Flatten curves before dashing so offscreen dash geometry is never tessellated.
+/// Arc length still advances through hidden portions, keeping dashes anchored while panning.
+fn dashed_segments(curve: [Point<Pixels>; 4], viewport: Bounds<Pixels>) -> Vec<(Point<Pixels>, Point<Pixels>)> {
+    fn flatten(c: [Point<f64>; 4], depth: usize, points: &mut Vec<Point<f64>>) {
+        let distance = |a: Point<f64>, b: Point<f64>| (b.x - a.x).hypot(b.y - a.y);
+        let chord = distance(c[0], c[3]);
+        let polygon = distance(c[0], c[1]) + distance(c[1], c[2]) + distance(c[2], c[3]);
+        let deviation = |p: Point<f64>| {
+            if chord < 1e-9 {
+                return distance(c[0], p);
+            }
+            ((p.x - c[0].x) * (c[3].y - c[0].y) - (p.y - c[0].y) * (c[3].x - c[0].x)).abs() / chord
+        };
+        if depth == 20 || (deviation(c[1]).max(deviation(c[2])) <= 0.2 && polygon - chord <= 0.2) {
+            points.push(c[3]);
+            return;
+        }
+        let mid = |a: Point<f64>, b: Point<f64>| point((a.x + b.x) / 2., (a.y + b.y) / 2.);
+        let (a, b, d) = (mid(c[0], c[1]), mid(c[1], c[2]), mid(c[2], c[3]));
+        let (ab, bd) = (mid(a, b), mid(b, d));
+        let center = mid(ab, bd);
+        flatten([c[0], a, ab, center], depth + 1, points);
+        flatten([center, bd, d, c[3]], depth + 1, points);
+    }
+    let curve = curve.map(|p| point(f64::from(f32::from(p.x)), f64::from(f32::from(p.y))));
+    let mut points = vec![curve[0]];
+    flatten(curve, 0, &mut points);
+    let mut segments = Vec::new();
+    let mut phase = 0.;
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let length = dx.hypot(dy);
+        if length < 1e-9 {
+            continue;
+        }
+        let mut enter: f64 = 0.;
+        let mut exit: f64 = 1.;
+        // Include the stroke/antialiasing margin so clipped ends remain outside the canvas.
+        for (start, delta, min, max) in [
+            (a.x, dx, f64::from(f32::from(viewport.left())) - 4., f64::from(f32::from(viewport.right())) + 4.),
+            (a.y, dy, f64::from(f32::from(viewport.top())) - 4., f64::from(f32::from(viewport.bottom())) + 4.),
+        ] {
+            if delta.abs() < 1e-9 {
+                if start < min || start > max {
+                    exit = -1.;
+                }
+            } else {
+                let (lo, hi) = ((min - start) / delta, (max - start) / delta);
+                enter = enter.max(lo.min(hi));
+                exit = exit.min(lo.max(hi));
+            }
+        }
+        if enter < exit {
+            let mut position = enter * length;
+            let end = exit * length;
+            let at = |distance: f64| {
+                point(px((a.x + dx * distance / length) as f32), px((a.y + dy * distance / length) as f32))
+            };
+            while position < end {
+                let offset = (phase + position) % 9.;
+                let on = offset < 5.;
+                let next = (position + ((if on { 5. } else { 9. }) - offset).max(1e-6)).min(end);
+                if on {
+                    segments.push((at(position), at(next)));
+                }
+                position = next;
+            }
+        }
+        phase = (phase + length) % 9.;
+    }
+    segments
+}
+
+fn paint_edge(window: &mut Window, edge: &EdgePaint, origin: Point<Pixels>, viewport: Bounds<Pixels>, zoom: f32) {
+    let (from, to) = (edge.from + origin, edge.to + origin);
+    let color = edge.color;
     let head = (7. * zoom).clamp(4., 10.);
     let end = point(to.x - px(head), to.y);
     let dx = ((end.x - from.x) / 2.).max(px(24. * zoom));
-    let mut path = PathBuilder::stroke(px(width));
-    if dashed {
-        path = path.dash_array(&[px(5.), px(4.)]);
+    let controls = [from, point(from.x + dx, from.y), point(end.x - dx, end.y), end];
+    let mut path = PathBuilder::stroke(px(edge.width));
+    if edge.dashed {
+        for (from, to) in dashed_segments(controls, viewport) {
+            path.move_to(from);
+            path.line_to(to);
+        }
+    } else {
+        path.move_to(from);
+        path.cubic_bezier_to(end, controls[1], controls[2]);
     }
-    path.move_to(from);
-    path.cubic_bezier_to(end, point(from.x + dx, from.y), point(end.x - dx, end.y));
     if let Ok(path) = path.build() {
         window.paint_path(path, color);
     }
@@ -1200,6 +1312,47 @@ fn paint_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_dashed_curves_clip_geometry_and_keep_their_phase() {
+        let curve = [
+            point(px(0.), px(0.)),
+            point(px(100.), px(0.)),
+            point(px(100.), px(100000.)),
+            point(px(200.), px(100000.)),
+        ];
+        let viewport = Bounds::new(point(px(0.), px(50000.)), size(px(300.), px(800.)));
+        let clipped = dashed_segments(curve, viewport);
+        assert!(!clipped.is_empty() && clipped.len() < 200, "geometry scales with the viewport, not edge length");
+        for (a, b) in &clipped {
+            assert!(a.y >= viewport.top() - px(4.) && b.y <= viewport.bottom() + px(4.));
+            let length = f32::from(b.x - a.x).hypot(f32::from(b.y - a.y));
+            assert!(length <= 5.02);
+        }
+        let larger = Bounds::new(point(px(0.), px(49900.)), size(px(300.), px(1000.)));
+        let inner = |(a, b): &(Point<Pixels>, Point<Pixels>)| {
+            a.y > viewport.top() + px(10.) && b.y < viewport.bottom() - px(10.)
+        };
+        assert_eq!(
+            clipped.into_iter().filter(inner).collect::<Vec<_>>(),
+            dashed_segments(curve, larger).into_iter().filter(inner).collect::<Vec<_>>(),
+            "clipping never restarts the dash pattern"
+        );
+        let away = Bounds::new(point(px(500.), px(50000.)), size(px(300.), px(800.)));
+        assert!(dashed_segments(curve, away).is_empty());
+    }
+
+    #[test]
+    fn horizontal_dashes_retain_five_on_four_off_from_the_source() {
+        let curve = [point(px(0.), px(10.)), point(px(30.), px(10.)), point(px(60.), px(10.)), point(px(90.), px(10.))];
+        let viewport = Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)));
+        let segments = dashed_segments(curve, viewport);
+        assert_eq!(segments.len(), 10);
+        for (i, (from, to)) in segments.iter().enumerate() {
+            assert_eq!(*from, point(px(i as f32 * 9.), px(10.)));
+            assert_eq!(*to, point(px(i as f32 * 9. + 5.), px(10.)));
+        }
+    }
 
     fn fixture(count: usize) -> Graph {
         Graph::from_nodes((0..count).map(|i| {

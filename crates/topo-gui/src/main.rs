@@ -906,17 +906,6 @@ impl TopoApp {
         hits.into_iter().map(|(_, _, n)| n.id.clone()).collect()
     }
 
-    /// Nodes to emphasize while a list is open, or `None` when the whole graph is of interest.
-    fn search_matches(&self, cx: &App) -> Option<Vec<NodeId>> {
-        let ids =
-            || self.palette.read(cx).choices().iter().filter_map(|c| c.key.clone().map(NodeId)).collect::<Vec<_>>();
-        match &self.prompt {
-            Some(Prompt::Search) if !self.palette.read(cx).text(cx).trim().is_empty() => Some(ids()),
-            Some(Prompt::Pick { node, .. }) => Some(ids().into_iter().chain([node.clone()]).collect()),
-            _ => None,
-        }
-    }
-
     /// The node the highlighted list entry stands for.
     fn list_cursor(&self, cx: &App) -> Option<NodeId> {
         self.prompt.as_ref()?;
@@ -1507,7 +1496,7 @@ impl Render for TopoApp {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_drag_end))
             .child(self.toolbar(window, cx))
-            .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(cx)).child(self.inspector(cx)))
+            .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(window, cx)).child(self.inspector(cx)))
             .when(self.notes_ask.is_some(), |d| d.child(self.notes_dialog(cx)))
     }
 }

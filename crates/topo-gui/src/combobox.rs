@@ -26,7 +26,9 @@ use gpui::{
     HighlightStyle, MouseButton, Rgba, ScrollStrategy, Stateful, StyledText, UniformListScrollHandle, Window, anchored,
     canvas, deferred, div, fill, point, prelude::*, px, size, uniform_list,
 };
+use std::collections::HashSet;
 use std::ops::Range;
+use std::rc::Rc;
 
 use crate::animation::{self, Motion as _};
 use crate::text_input::{InputEvent, TextInput};
@@ -84,6 +86,8 @@ pub(crate) struct Combobox {
     /// The finished values of a field of several, or `None` for a field of one.
     chips: Option<Vec<String>>,
     choices: Vec<Choice>,
+    keys: Rc<HashSet<String>>,
+    widest: Option<usize>,
     scroll: UniformListScrollHandle,
     /// The choice Enter takes.
     highlight: Option<usize>,
@@ -111,6 +115,8 @@ impl Combobox {
             initial: String::new(),
             chips: None,
             choices: Vec::new(),
+            keys: Rc::default(),
+            widest: None,
             scroll: UniformListScrollHandle::new(),
             highlight: None,
             picked: None,
@@ -130,6 +136,8 @@ impl Combobox {
         self.initial = text.to_owned();
         self.chips = chips;
         self.choices.clear();
+        self.keys = Rc::default();
+        self.widest = None;
         (self.highlight, self.picked, self.dismissed, self.error) = (None, None, false, None);
         cx.notify();
     }
@@ -181,9 +189,19 @@ impl Combobox {
         }
     }
 
-    /// The existing query results, shared with canvas highlighting.
+    #[cfg(test)]
     pub fn choices(&self) -> &[Choice] {
         &self.choices
+    }
+
+    #[cfg(test)]
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.keys.contains(key)
+    }
+
+    /// Share query results with canvas highlighting without rebuilding a set per frame.
+    pub fn matching_keys(&self) -> Rc<HashSet<String>> {
+        self.keys.clone()
     }
 
     #[cfg(test)]
@@ -206,6 +224,9 @@ impl Combobox {
     /// Nothing typed highlights nothing, so Enter on an emptied field clears
     /// the value; a palette always highlights its first choice.
     pub fn set_choices(&mut self, choices: Vec<Choice>, cx: &mut Context<Self>) {
+        self.keys = Rc::new(choices.iter().filter_map(|choice| choice.key.clone()).collect());
+        self.widest =
+            (0..choices.len()).max_by_key(|&i| choices[i].value.chars().count() + choices[i].detail.chars().count());
         let text = self.text(cx);
         self.highlight = match () {
             _ if self.palette => (!choices.is_empty()).then_some(0),
@@ -411,8 +432,7 @@ impl Combobox {
         }
         let palette = self.palette;
         // The floating list is as wide as its widest entry, which is the only one measured.
-        let widest =
-            (0..choices.len()).max_by_key(|&i| choices[i].value.chars().count() + choices[i].detail.chars().count());
+        let widest = self.widest;
         let rows = (!choices.is_empty()).then(|| {
             let count = choices.len();
             let rows = uniform_list("combo-rows", count, cx.processor(|this, range, _, cx| this.rows(range, cx)))

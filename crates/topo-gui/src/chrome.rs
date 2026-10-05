@@ -54,7 +54,7 @@ impl TopoApp {
         icon: &'static str,
         text: String,
         color: Rgba,
-        ids: Vec<NodeId>,
+        ids: std::rc::Rc<Vec<NodeId>>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let t = theme::current();
