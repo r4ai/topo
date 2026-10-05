@@ -15,15 +15,18 @@
 //! the empty field removes the last.
 //!
 //! The list floats over what is below the field, so opening it moves nothing.
+//! It holds every choice and scrolls, with the highlight kept in view.
 //!
 //! [`Combobox::palette`] is the same field as a command palette: the list is
 //! part of it instead of floating, its first entry is highlighted even before
 //! anything is typed, and Escape cancels at once.
 
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle,
-    MouseButton, Rgba, StyledText, Window, anchored, deferred, div, prelude::*, px,
+    AnyElement, App, Bounds, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    HighlightStyle, MouseButton, Rgba, ScrollStrategy, Stateful, StyledText, UniformListScrollHandle, Window, anchored,
+    canvas, deferred, div, fill, point, prelude::*, px, size, uniform_list,
 };
+use std::ops::Range;
 
 use crate::animation::{self, Motion as _};
 use crate::text_input::{InputEvent, TextInput};
@@ -61,8 +64,12 @@ pub(crate) enum ComboEvent {
     Previous,
 }
 
-/// Entries of the list shown at once; the rest scrolls with the highlight.
+/// Entries the list shows at once; it scrolls through the rest.
 const ROWS: usize = 8;
+/// The width of the bar that shows how far the list is scrolled.
+const SCROLLBAR: f32 = 3.;
+/// The shortest that bar gets, however long the list.
+const THUMB_MIN: f32 = 16.;
 /// Characters that finish a chip.
 const SEPARATORS: [char; 3] = [',', ' ', '　'];
 
@@ -77,6 +84,7 @@ pub(crate) struct Combobox {
     /// The finished values of a field of several, or `None` for a field of one.
     chips: Option<Vec<String>>,
     choices: Vec<Choice>,
+    scroll: UniformListScrollHandle,
     /// The choice Enter takes.
     highlight: Option<usize>,
     /// The choice that was taken as the text, until the text changes again.
@@ -103,6 +111,7 @@ impl Combobox {
             initial: String::new(),
             chips: None,
             choices: Vec::new(),
+            scroll: UniformListScrollHandle::new(),
             highlight: None,
             picked: None,
             dismissed: false,
@@ -205,6 +214,7 @@ impl Combobox {
             _ => Some(0),
         };
         self.choices = choices;
+        self.reveal_highlight();
         self.show_completion(cx);
     }
 
@@ -212,6 +222,11 @@ impl Combobox {
     pub fn set_feedback(&mut self, preview: (String, Rgba), error: Option<String>, cx: &mut Context<Self>) {
         (self.preview, self.error) = (preview, error);
         cx.notify();
+    }
+
+    /// Scrolls the highlighted choice into view, or back to the top when there is none.
+    fn reveal_highlight(&self) {
+        self.scroll.scroll_to_item(self.highlight.unwrap_or(0), ScrollStrategy::Nearest);
     }
 
     /// Completes the highlighted choice after the typed text, when it continues it.
@@ -294,6 +309,7 @@ impl Combobox {
                     (_, Some(0) | None, _) => None,
                     (_, Some(i), _) => Some(i - 1),
                 };
+                self.reveal_highlight();
                 self.show_completion(cx);
                 cx.emit(ComboEvent::Highlighted);
             }
@@ -337,27 +353,18 @@ impl Combobox {
         StyledText::new(value.to_owned()).with_highlights(range.map(|range| (range, style)))
     }
 
-    /// The list: the choices, then the preview or the error.
-    fn list(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The height of an entry of the list.
+    fn row_height(&self) -> f32 {
+        if self.palette { 32. } else { 24. }
+    }
+
+    /// The entries `range` of the list.
+    fn rows(&self, range: Range<usize>, cx: &mut Context<Self>) -> Vec<Stateful<Div>> {
         let t = theme::current();
-        let note = match (&self.error, self.highlight) {
-            (Some(error), _) => Some((error.clone(), t.danger)),
-            (None, None) if !self.preview.0.is_empty() => Some(self.preview.clone()),
-            _ => None,
-        };
-        let choices = if self.dismissed { &[][..] } else { &self.choices[..] };
-        if choices.is_empty() && note.is_none() {
-            return None;
-        }
         let palette = self.palette;
-        // The window of rows that keeps the highlighted one in view.
-        let first = (self.highlight.unwrap_or(0) + 1).saturating_sub(ROWS);
-        let rows: Vec<_> = choices
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(ROWS)
-            .map(|(index, choice)| {
+        range
+            .map(|index| {
+                let choice = &self.choices[index];
                 let highlighted = self.highlight == Some(index);
                 let current = !self.initial.is_empty() && choice.value == self.initial;
                 let mark = match choice.icon {
@@ -372,7 +379,9 @@ impl Combobox {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .when_else(palette, |d| d.h(px(32.)).px_3().rounded(px(metrics::R_MD)), |d| d.h(px(24.)).px_1p5())
+                    .w_full()
+                    .h(px(self.row_height()))
+                    .when_else(palette, |d| d.px_3().rounded(px(metrics::R_MD)), |d| d.px_1p5())
                     .text_color(t.fg)
                     .whitespace_nowrap()
                     .child(mark.flex_shrink_0())
@@ -385,7 +394,49 @@ impl Combobox {
                     .child(div().flex_shrink_0().text_xs().text_color(t.fg_muted).child(choice.detail.clone()))
                     .on_click(cx.listener(move |combo, _, _, cx| combo.pick(index, cx)))
             })
-            .collect();
+            .collect()
+    }
+
+    /// The list: the choices, which scroll, then the preview or the error.
+    fn list(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let t = theme::current();
+        let note = match (&self.error, self.highlight) {
+            (Some(error), _) => Some((error.clone(), t.danger)),
+            (None, None) if !self.preview.0.is_empty() => Some(self.preview.clone()),
+            _ => None,
+        };
+        let choices = if self.dismissed { &[][..] } else { &self.choices[..] };
+        if choices.is_empty() && note.is_none() {
+            return None;
+        }
+        let palette = self.palette;
+        // The floating list is as wide as its widest entry, which is the only one measured.
+        let widest =
+            (0..choices.len()).max_by_key(|&i| choices[i].value.chars().count() + choices[i].detail.chars().count());
+        let rows = (!choices.is_empty()).then(|| {
+            let count = choices.len();
+            let rows = uniform_list("combo-rows", count, cx.processor(|this, range, _, cx| this.rows(range, cx)))
+                .track_scroll(&self.scroll)
+                .with_width_from_item(widest)
+                .h(px(self.row_height() * count.min(ROWS) as f32));
+            // Painted after the list is laid out, so it shows where a move of the highlight scrolled to.
+            let scroll = self.scroll.clone();
+            let scrollbar = canvas(
+                |_, _, _| (),
+                move |track, (), window, _| {
+                    let scrolled = -scroll.0.borrow().base_handle.offset().y / (track.size.height / ROWS as f32);
+                    let (top, height) = scroll_thumb(count, scrolled, track.size.height.into());
+                    let thumb = Bounds::new(track.origin + point(px(0.), px(top)), size(track.size.width, px(height)));
+                    window.paint_quad(fill(thumb, t.fg_faint).corner_radii(track.size.width / 2.));
+                },
+            )
+            .absolute()
+            .top_0()
+            .right(px(2.))
+            .w(px(SCROLLBAR))
+            .h_full();
+            div().relative().child(rows).when(count > ROWS, |d| d.child(scrollbar))
+        });
         let faint = |text: String, color: Rgba| {
             div()
                 .when_else(palette, |d| d.px_3().py_1p5(), |d| d.px_1p5().py_1())
@@ -394,15 +445,13 @@ impl Combobox {
                 .text_color(color)
                 .child(text)
         };
-        let more = (choices.len() > ROWS)
-            .then(|| faint(format!("{}–{} of {}", first + 1, first + rows.len(), choices.len()), t.fg_faint));
-        let separate = !rows.is_empty() && !palette;
+        let separate = rows.is_some() && !palette;
         let note = note.map(|(text, color)| {
             faint(text, color)
                 .debug_selector(|| "combo-note".to_owned())
                 .when(separate, |d| d.mt_0p5().border_t_1().border_color(t.hairline))
         });
-        let list = div().flex().flex_col().children(rows).children(more).children(note);
+        let list = div().flex().flex_col().children(rows).children(note);
         Some(match palette {
             true => list.w_full().p_1().text_sm().into_any_element(),
             false => ui::glass(ui::Elevation::Popover)
@@ -417,6 +466,14 @@ impl Combobox {
                 .rise_in("combo-list-motion", animation::FAST),
         })
     }
+}
+
+/// Where the thumb of the scrollbar starts and how tall it is, in a track of `track` pixels
+/// beside a list of `count` entries scrolled down by `scrolled` of them.
+fn scroll_thumb(count: usize, scrolled: f32, track: f32) -> (f32, f32) {
+    let height = (track * ROWS as f32 / count as f32).max(THUMB_MIN);
+    let hidden = count.saturating_sub(ROWS).max(1) as f32;
+    ((track - height) * (scrolled / hidden).clamp(0., 1.), height)
 }
 
 impl Focusable for Combobox {
@@ -485,5 +542,20 @@ impl Render for Combobox {
                     .mt_1()
                     .child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(list)).with_priority(1))
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_scroll_thumb_spans_the_track_as_the_list_scrolls() {
+        // Twice the rows: the thumb is half the track, and ends where the track does.
+        assert_eq!(scroll_thumb(2 * ROWS, 0., 192.), (0., 96.));
+        assert_eq!(scroll_thumb(2 * ROWS, ROWS as f32, 192.), (96., 96.));
+        // A long list keeps a thumb that can be seen, and overscroll keeps it on the track.
+        assert_eq!(scroll_thumb(1000, 2000., 192.), (192. - THUMB_MIN, THUMB_MIN));
+        assert_eq!(scroll_thumb(1000, -5., 192.), (0., THUMB_MIN));
     }
 }

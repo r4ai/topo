@@ -435,6 +435,42 @@ fn search_emphasizes_every_match_and_jumps(cx: &mut TestAppContext) {
     // The list scrolls past the rows it shows at once.
     ui.keys("down down down down down down down down down down enter");
     assert_eq!(ui.selected().as_deref(), Some("task10"));
+
+    // Only the rows in view exist, and the highlight stays among them.
+    ui.keys("/");
+    ui.type_text("task");
+    assert!(ui.cx.debug_bounds("choice-11").is_none());
+    ui.keys("down down down down down down down down down down down");
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("choice-11").is_some(), "the list scrolled to the highlight");
+    assert!(ui.cx.debug_bounds("choice-0").is_none());
+}
+
+#[gpui::test]
+fn a_field_list_scrolls_through_every_choice(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let tags: Vec<String> = (0..12).map(|i| format!("tag{i:02}")).collect();
+    ui.app.update(ui.cx, |app, cx| {
+        let edit = Edit { tags: Some(tags), ..Edit::default() };
+        app.mutate(cx, |graph| graph.edit(&id("c"), edit));
+    });
+    ui.select("a");
+    ui.keys("t");
+    ui.redraw();
+    let count = |ui: &mut Ui| ui.app.read_with(ui.cx, |app, cx| app.combo.read(cx).choices().len());
+    assert_eq!(count(&mut ui), 12, "nothing is cut off");
+    let list = ui.cx.debug_bounds("combo-list").expect("the list is open");
+    assert!(ui.cx.debug_bounds("choice-7").is_some() && ui.cx.debug_bounds("choice-8").is_none());
+    // Down past the last visible entry scrolls it into view.
+    ui.keys("down down down down down down down down down down down down");
+    ui.redraw();
+    let last = ui.cx.debug_bounds("choice-11").expect("the highlighted choice is rendered");
+    assert!(last.top() >= list.top() && last.bottom() <= list.bottom(), "and within the list");
+    assert!(ui.cx.debug_bounds("choice-0").is_none());
+    // Typing starts over at the top.
+    ui.type_text("tag0");
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("choice-0").is_some());
 }
 
 #[gpui::test]

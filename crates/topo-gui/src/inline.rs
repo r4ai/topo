@@ -35,8 +35,6 @@ pub(crate) struct InlineEdit {
     pub error: Option<String>,
 }
 
-/// Entries of the list shown at once.
-const CHOICES: usize = 6;
 /// The most rows the inspector shows a title in, whether shown or edited.
 pub(crate) const TITLE_ROWS: usize = 3;
 /// The fields in the order Tab visits them.
@@ -125,7 +123,7 @@ impl Field {
     fn choices(self, typed: &str, chips: &[String], graph: &Graph, today: Date) -> Vec<Choice> {
         let typed = typed.trim().trim_start_matches('#').to_lowercase();
         let choice = |value: String, detail: String| Choice::new(value, detail);
-        let mut choices: Vec<Choice> = match self {
+        let choices: Vec<Choice> = match self {
             Field::Priority => Priority::ALL
                 .into_iter()
                 .rev()
@@ -163,7 +161,6 @@ impl Field {
             }
             Field::Title | Field::Pr => Vec::new(),
         };
-        choices.truncate(CHOICES);
         choices
     }
 }

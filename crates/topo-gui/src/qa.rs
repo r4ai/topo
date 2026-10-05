@@ -94,7 +94,7 @@ fn id(value: &str) -> NodeId {
     NodeId(value.into())
 }
 
-fn editor_states() -> [EditorState; 22] {
+fn editor_states() -> [EditorState; 23] {
     [
         EditorState { name: "default", fixture: Fixture::Rich, shape: |_, _, _| {}, refit: false },
         EditorState { name: "select", fixture: Fixture::Rich, shape: select_api, refit: false },
@@ -106,6 +106,7 @@ fn editor_states() -> [EditorState; 22] {
         EditorState { name: "priority-filter", fixture: Fixture::Rich, shape: priority_filter, refit: false },
         EditorState { name: "notes", fixture: Fixture::Rich, shape: notes_open, refit: false },
         EditorState { name: "inline-edit", fixture: Fixture::Rich, shape: inline_edit, refit: false },
+        EditorState { name: "inline-edit-long", fixture: Fixture::Rich, shape: inline_edit_long, refit: false },
         EditorState { name: "unsaved-dialog", fixture: Fixture::Rich, shape: unsaved_dialog, refit: false },
         EditorState { name: "search", fixture: Fixture::Rich, shape: search, refit: false },
         EditorState { name: "help", fixture: Fixture::Rich, shape: help, refit: false },
@@ -165,6 +166,15 @@ fn inline_edit(app: &mut TopoApp, window: &mut Window, cx: &mut Context<TopoApp>
     app.select(Some(id(API)), false);
     app.start_inline(Field::Tags, window, cx);
     app.combo().update(cx, |combo, cx| combo.set_text("#backend", cx));
+}
+
+/// A tag list longer than the rows it shows, with one wide entry.
+fn inline_edit_long(app: &mut TopoApp, window: &mut Window, cx: &mut Context<TopoApp>) {
+    let tags: Vec<String> =
+        (1..=14).map(|i| format!("area-{i:02}")).chain(["cross-team-coordination".into()]).collect();
+    app.mutate(cx, |graph| graph.edit(&id(DESIGN), topo_core::Edit { tags: Some(tags), ..Default::default() }));
+    app.select(Some(id(API)), false);
+    app.start_inline(Field::Tags, window, cx);
 }
 
 fn unsaved_dialog(app: &mut TopoApp, window: &mut Window, cx: &mut Context<TopoApp>) {
