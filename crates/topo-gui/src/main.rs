@@ -17,6 +17,7 @@ mod dates;
 mod gesture;
 mod glass;
 mod graph_view;
+mod icons;
 mod inline;
 mod inspector;
 mod layout;
@@ -704,7 +705,8 @@ impl TopoApp {
     // ---- prompt --------------------------------------------------------
 
     fn open_prompt(&mut self, prompt: Prompt, window: &mut Window, cx: &mut Context<Self>) {
-        let (placeholder, lead) = (prompt.placeholder(), if matches!(prompt, Prompt::Create(_)) { "+" } else { "⌕" });
+        let (placeholder, lead) =
+            (prompt.placeholder(), if matches!(prompt, Prompt::Create(_)) { ui::Icon::Plus } else { ui::Icon::Search });
         self.palette.update(cx, |palette, cx| {
             palette.set_lead(lead);
             palette.open("", placeholder, None, cx);
@@ -1554,38 +1556,40 @@ fn menus(mode: theme::ThemeMode, monotone: bool) -> Vec<Menu> {
 
 fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
     let title: SharedString = "topo — Open repository".into();
-    Application::with_platform(gpui_platform::current_platform(false)).run(move |cx: &mut App| {
-        branding::set_app_icon();
-        text_input::bind_keys(cx);
-        repository::bind_keys(cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-w", CloseWindow, None),
-            KeyBinding::new("cmd-o", repository::OpenRepository, None),
-            KeyBinding::new("ctrl-o", repository::OpenRepository, None),
-        ]);
-        theme::set_translucent(window_background() != WindowBackgroundAppearance::Opaque);
-        theme::init(cx);
-        theme::apply(config.theme, config.monotone, cx.window_appearance());
-        cx.set_menus(menus(config.theme, config.monotone));
-        let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
-        let options = WindowOptions {
-            app_id: Some("dev.r4ai.topo".into()),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(titlebar(title)),
-            window_background: window_background(),
-            window_min_size: Some(size(px(720.), px(480.))),
-            ..Default::default()
-        };
-        cx.open_window(options, |window, cx| {
-            glass::install(window);
-            cx.new(|cx| repository::RepositoryWindow::new(start, config, window, cx))
-        })
-        .expect("failed to open window");
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
-        cx.activate(true);
-    });
+    Application::with_platform(gpui_platform::current_platform(false)).with_assets(icons::Assets).run(
+        move |cx: &mut App| {
+            branding::set_app_icon();
+            text_input::bind_keys(cx);
+            repository::bind_keys(cx);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.bind_keys([
+                KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("cmd-w", CloseWindow, None),
+                KeyBinding::new("cmd-o", repository::OpenRepository, None),
+                KeyBinding::new("ctrl-o", repository::OpenRepository, None),
+            ]);
+            theme::set_translucent(window_background() != WindowBackgroundAppearance::Opaque);
+            theme::init(cx);
+            theme::apply(config.theme, config.monotone, cx.window_appearance());
+            cx.set_menus(menus(config.theme, config.monotone));
+            let bounds = Bounds::centered(None, size(px(1360.), px(860.)), cx);
+            let options = WindowOptions {
+                app_id: Some("dev.r4ai.topo".into()),
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(titlebar(title)),
+                window_background: window_background(),
+                window_min_size: Some(size(px(720.), px(480.))),
+                ..Default::default()
+            };
+            cx.open_window(options, |window, cx| {
+                glass::install(window);
+                cx.new(|cx| repository::RepositoryWindow::new(start, config, window, cx))
+            })
+            .expect("failed to open window");
+            cx.on_window_closed(|cx, _| cx.quit()).detach();
+            cx.activate(true);
+        },
+    );
     Ok(())
 }
 

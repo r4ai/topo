@@ -22,7 +22,7 @@
 
 use gpui::{
     AnyElement, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, HighlightStyle,
-    MouseButton, Rgba, SharedString, StyledText, Window, anchored, deferred, div, prelude::*, px,
+    MouseButton, Rgba, StyledText, Window, anchored, deferred, div, prelude::*, px,
 };
 
 use crate::text_input::{InputEvent, TextInput};
@@ -70,7 +70,7 @@ pub(crate) struct Combobox {
     /// A command palette rather than a form field.
     palette: bool,
     /// A glyph before the field of a palette.
-    lead: SharedString,
+    lead: ui::Icon,
     /// The text the field opened with: the current value, which is not a query.
     initial: String,
     /// The finished values of a field of several, or `None` for a field of one.
@@ -98,7 +98,7 @@ impl Combobox {
         Self {
             input,
             palette: false,
-            lead: SharedString::default(),
+            lead: ui::Icon::Search,
             initial: String::new(),
             chips: None,
             choices: Vec::new(),
@@ -134,9 +134,9 @@ impl Combobox {
         self.input.update(cx, |input, cx| input.set_max_rows(rows, cx));
     }
 
-    /// Sets the glyph before the field of a palette.
-    pub fn set_lead(&mut self, glyph: &'static str) {
-        self.lead = glyph.into();
+    /// Sets the icon before the field of a palette.
+    pub fn set_lead(&mut self, icon: ui::Icon) {
+        self.lead = icon;
     }
 
     /// Replaces the typed text, as if it had been typed.
@@ -362,7 +362,9 @@ impl Combobox {
                 let mark = match choice.icon {
                     Some((glyph, color)) => div().w(px(14.)).text_color(color).child(glyph),
                     // The value the field has now.
-                    None => div().w(px(10.)).text_color(t.success).when(current, |d| d.child("✓")),
+                    None => {
+                        div().w(px(12.)).when(current, |d| d.child(ui::icon(ui::Icon::Check, t.success).size(px(12.))))
+                    }
                 };
                 ui::list_row(format!("choice-{index}"), highlighted)
                     .debug_selector(move || format!("choice-{index}"))
@@ -430,15 +432,7 @@ impl Render for Combobox {
         let field = div().flex_1().min_w(px(64.)).child(self.input.clone());
         if self.palette {
             // The owner draws the card around it; the list follows the field in the flow.
-            let lead = div()
-                .w(px(20.))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(metrics::T_ICON))
-                .text_color(t.accent)
-                .child(self.lead.clone());
+            let lead = ui::icon(self.lead, t.accent).size(px(metrics::ICON_LG));
             return div()
                 .id("combobox")
                 .w_full()
@@ -456,9 +450,13 @@ impl Render for Combobox {
                     div()
                         .id(ElementId::Name(format!("chip-{index}-remove").into()))
                         .debug_selector(move || format!("chip-{index}-remove"))
+                        .group("chip-remove")
                         .cursor_pointer()
-                        .hover(|s| s.text_color(t.fg))
-                        .child("×")
+                        .child(
+                            ui::icon(ui::Icon::Close, t.fg_muted)
+                                .size(px(10.))
+                                .group_hover("chip-remove", |s| s.text_color(t.fg)),
+                        )
                         .on_click(cx.listener(move |combo, _, _, cx| combo.remove_chip(index, cx))),
                 )
             })

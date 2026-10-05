@@ -892,7 +892,10 @@ impl TopoApp {
             .whitespace_nowrap()
             .cursor_pointer()
             .hover(|s| s.border_color(t.border_strong))
-            .child(if collapsed { "▸" } else { "▾" })
+            .child(
+                ui::icon(if collapsed { ui::Icon::ChevronRight } else { ui::Icon::ChevronDown }, t.fg_faint)
+                    .size(px(12. * z)),
+            )
             .child(div().text_color(t.fg).child(group.label()))
             .child(div().text_color(t.fg_muted).child(count.to_string()))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))

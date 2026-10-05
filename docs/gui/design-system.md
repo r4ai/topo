@@ -127,7 +127,9 @@ All in `ui.rs`. A view composes these instead of styling a `div` by hand.
 | Component | Notes |
 | :--- | :--- |
 | `button` | Variants: plain (`control`), primary (`emphasis` fill), danger (`danger` text and tint), ghost (no fill until hover). Height `H_BUTTON`, radius `R_MD` |
-| `icon_button` | `H_ICON` square, ghost |
+| `button_icon`, `button_primary_icon`, `button_ghost_icon` | A `button`, `button_primary` or `button_ghost` led by an `icon`; an empty label leaves the icon alone |
+| `icon_button`, `icon_button_svg` | `H_ICON` square, ghost; showing a text glyph or an `icon` |
+| `icon` | One of the app's own SVGs (`assets/icons/`, the `Icon` enum in `icons.rs`): a 16 point grid with a 1.5 point round stroke, drawn at `ICON` (14) beside a label and `ICON_LG` (16) leading a palette, in a theme color. Every control and status mark in the chrome uses one; node status and kind marks, and keys in `kbd`, stay text. Add an icon as an SVG file and an `Icon` variant rather than a Unicode glyph, whose size and baseline vary with the fallback font |
 | `segmented` | One `control` track, the chosen segment in `control_active`; a segment's label may be any element, so a glyph can carry its own colour |
 | `switch` | An on/off toggle: `accent` track with an `on_accent` knob when on, `control` track with an `fg_muted` knob when off |
 | `input_frame` | `field` fill, hairline; `accent` border on focus, `danger` on error |

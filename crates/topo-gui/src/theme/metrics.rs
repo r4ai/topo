@@ -26,9 +26,11 @@ pub const T_SMALL: f32 = 11.;
 pub const T_BODY: f32 = 12.;
 pub const T_BODY_LG: f32 = 13.;
 pub const T_TITLE: f32 = 15.;
-/// The size a single icon glyph is drawn at, larger than body text so it reads as an icon.
-pub const T_ICON: f32 = 17.;
 pub const T_HEADING: f32 = 18.;
+
+/// The side of an icon beside a label or in an icon button, and of one that leads a palette.
+pub const ICON: f32 = 14.;
+pub const ICON_LG: f32 = 16.;
 
 pub const H_ICON: f32 = 22.;
 pub const H_BUTTON: f32 = 26.;

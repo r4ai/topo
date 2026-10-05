@@ -15,7 +15,7 @@ use topo_jev::organize::Proposal;
 use crate::inline::Field;
 use crate::theme::metrics::{R_LG, R_MD, R_SM, R_XS, T_BODY, T_BODY_LG, T_HEADING, T_SMALL};
 use crate::theme::{self, metrics};
-use crate::ui::{self, button, icon_button, kbd, section_label};
+use crate::ui::{self, Icon, button, button_icon, icon_button_svg, kbd, section_label};
 use crate::{Drag, Relation, TopoApp, dates};
 
 type Remove = fn(&mut Graph, &NodeId, &NodeId) -> Result<(), topo_core::Error>;
@@ -88,7 +88,7 @@ impl TopoApp {
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(format!("{} nodes selected", nodes.len())),
                 )
-                .child(icon_button("deselect", "×").on_click(cx.listener(|app, _, _, cx| {
+                .child(icon_button_svg("deselect", Icon::Close).on_click(cx.listener(|app, _, _, cx| {
                     app.select(None, false);
                     cx.notify();
                 })))
@@ -180,7 +180,7 @@ impl TopoApp {
             )
             .children(detail.map(|d| div().flex_shrink_0().text_size(px(T_BODY)).text_color(t.fg_faint).child(d)))
             .children(remove.map(|(a, b, remove)| {
-                icon_button(ElementId::Name(format!("{group}-remove").into()).to_string(), "×")
+                icon_button_svg(ElementId::Name(format!("{group}-remove").into()).to_string(), Icon::Close)
                     .opacity(0.)
                     .group_hover(group.clone(), |s| s.opacity(1.))
                     .on_click(cx.listener(move |app, _, _, cx| {
@@ -329,7 +329,7 @@ impl TopoApp {
                 .child(ui::chip_outline(if milestone { "MILESTONE" } else { "TASK" }))
                 .child(id.to_string())
                 .child(div().flex_1())
-                .child(icon_button("deselect", "×").on_click(cx.listener(|app, _, _, cx| {
+                .child(icon_button_svg("deselect", Icon::Close).on_click(cx.listener(|app, _, _, cx| {
                     app.select(None, false);
                     cx.notify();
                 })))
@@ -469,7 +469,7 @@ impl TopoApp {
                 0 => label.to_owned(),
                 n => format!("{label} · {n}"),
             };
-            let add_button = icon_button(format!("add-{label}"), "+")
+            let add_button = icon_button_svg(format!("add-{label}"), Icon::Plus)
                 .on_click(cx.listener(move |app, _, window, cx| app.prompt_pick(add, window, cx)));
             let header = div().flex().items_end().justify_between().child(section_label(heading)).child(add_button);
             let rows =
@@ -509,7 +509,7 @@ impl TopoApp {
                 .gap_2()
                 .pt_4()
                 .when(!milestone, |d| {
-                    d.child(button("add-follow", "+ Follow-up").child(kbd("Tab")).on_click(cx.listener(
+                    d.child(button_icon("add-follow", Icon::Plus, "Follow-up").child(kbd("Tab")).on_click(cx.listener(
                         move |app, _, window, cx| {
                             app.select(Some(follow_id.clone()), false);
                             app.prompt_create(Kind::Task, Some(crate::Direction::Right), window, cx);
@@ -517,12 +517,14 @@ impl TopoApp {
                     )))
                 })
                 .when(!milestone, |d| {
-                    d.child(button("add-pre", "+ Prerequisite").child(kbd("⇧Tab")).on_click(cx.listener(
-                        |app, _, window, cx| app.prompt_create(Kind::Task, Some(crate::Direction::Left), window, cx),
-                    )))
+                    d.child(button_icon("add-pre", Icon::Plus, "Prerequisite").child(kbd("⇧Tab")).on_click(
+                        cx.listener(|app, _, window, cx| {
+                            app.prompt_create(Kind::Task, Some(crate::Direction::Left), window, cx)
+                        }),
+                    ))
                 })
                 .when(milestone, |d| {
-                    d.child(button("add-member", "+ Task").child(kbd("N")).on_click(cx.listener(
+                    d.child(button_icon("add-member", Icon::Plus, "Task").child(kbd("N")).on_click(cx.listener(
                         |app, _, window, cx| {
                             app.prompt_create(Kind::Task, None, window, cx);
                         },
@@ -594,8 +596,12 @@ impl TopoApp {
     fn notes_section(&self, node: &Node, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let t = theme::current();
         let editing = self.notes.as_ref() == Some(&node.id);
-        let action = |id: &'static str, label: &'static str, key: &'static str| {
-            ui::button_ghost(id, label).h(px(metrics::H_ICON)).px_1().mb_0p5().child(kbd(key))
+        let action = |id: &'static str, lead: Option<Icon>, label: &'static str, key: &'static str| {
+            let button = match lead {
+                Some(lead) => ui::button_ghost_icon(id, lead, label),
+                None => ui::button_ghost(id, label),
+            };
+            button.h(px(metrics::H_ICON)).px_1().mb_0p5().child(kbd(key))
         };
         let file_id = node.id.clone();
         let actions = div()
@@ -603,13 +609,13 @@ impl TopoApp {
             .items_center()
             .gap_1()
             .when(!editing, |d| {
-                d.child(action("edit-notes", "Edit", "E").on_click(cx.listener(|app, _, window, cx| {
+                d.child(action("edit-notes", None, "Edit", "E").on_click(cx.listener(|app, _, window, cx| {
                     app.start_notes(window, cx);
                 })))
             })
             .when(self.ws.remote().is_none(), |d| {
                 d.child(
-                    action("open-file", "File ↗", "O")
+                    action("open-file", Some(Icon::External), "File", "O")
                         .on_click(cx.listener(move |app, _, _, cx| app.open_file(&file_id, cx))),
                 )
             });
@@ -672,11 +678,11 @@ impl TopoApp {
             0 => "PULL REQUESTS".to_owned(),
             n => format!("PULL REQUESTS · {n}"),
         };
-        let add = div().flex().items_center().gap_1().child(kbd("G")).child(icon_button("add-pr", "+").on_click(
-            cx.listener(|app, _, window, cx| {
+        let add = div().flex().items_center().gap_1().child(kbd("G")).child(
+            icon_button_svg("add-pr", Icon::Plus).on_click(cx.listener(|app, _, window, cx| {
                 app.start_inline(Field::Pr, window, cx);
-            }),
-        ));
+            })),
+        );
         let mut out = vec![
             div().flex().items_end().justify_between().child(section_label(heading)).child(add).into_any_element(),
         ];
@@ -692,7 +698,7 @@ impl TopoApp {
                     .gap_2()
                     .min_h(px(30.))
                     .mx_neg_2()
-                    .child(div().flex_shrink_0().text_color(t.fg_muted).child("↗"))
+                    .child(ui::icon(Icon::External, t.fg_muted))
                     .child(
                         div()
                             .flex_1()
@@ -703,7 +709,7 @@ impl TopoApp {
                             .child(pr_label(url)),
                     )
                     .child(
-                        icon_button(format!("{group}-remove"), "×")
+                        icon_button_svg(format!("{group}-remove"), Icon::Close)
                             .opacity(0.)
                             .group_hover(group.clone(), |s| s.opacity(1.))
                             .on_click(cx.listener(move |app, _, _, cx| {
@@ -772,16 +778,16 @@ impl TopoApp {
                         .child(div().flex_1())
                         .when(!duplicate, |d| {
                             d.child(
-                                ui::button_primary(format!("accept-{index}"), "✓")
+                                ui::button_primary_icon(format!("accept-{index}"), Icon::Check, "")
                                     .on_click(cx.listener(move |app, _, _, cx| app.accept(vec![index], cx))),
                             )
                         })
-                        .child(ui::button_ghost(format!("reject-{index}"), "×").on_click(cx.listener(
-                            move |app, _, _, cx| {
+                        .child(ui::button_ghost_icon(format!("reject-{index}"), Icon::Close, "").on_click(
+                            cx.listener(move |app, _, _, cx| {
                                 app.proposals.remove(index);
                                 cx.notify();
-                            },
-                        ))),
+                            }),
+                        )),
                 )
                 .child(div().min_w(px(0.)).truncate().text_size(px(T_BODY)).text_color(t.fg).child(text))
         });
@@ -798,7 +804,7 @@ impl TopoApp {
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(div().text_color(t.fg_muted).child("✦"))
+                                .child(ui::icon(Icon::Sparkle, t.fg_muted))
                                 .child(
                                     div()
                                         .flex_1()

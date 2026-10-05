@@ -163,8 +163,8 @@ Both toggles are in the bottom bar and are remembered across app restarts (user 
 
 ### AI Organizing (Jev)
 
-- The toolbar shows "✦ Suggest links" and "✦ Place tasks" only when the workspace opts into a Jev-compatible decision model with a `[jev]` table in `.topo/config.toml`; without it the controls are hidden. An edit to the file is picked up when the window is activated again
-- "✦ Suggest links" proposes missing dependencies and "✦ Place tasks" proposes milestone placements; the proposals appear in the inspector to accept or dismiss
+- The toolbar shows "Suggest links" and "Place tasks" only when the workspace opts into a Jev-compatible decision model with a `[jev]` table in `.topo/config.toml`; without it the controls are hidden. An edit to the file is picked up when the window is activated again
+- "Suggest links" proposes missing dependencies and "Place tasks" proposes milestone placements; the proposals appear in the inspector to accept or dismiss
 - It uses the same model as the CLI's `topo organize` (see the command reference). A request that fails is reported as a toast
 
 ### Node Operations

@@ -1,7 +1,8 @@
 //! Shared components of the design system; views compose these instead of styling a `div` by hand.
 
-use gpui::{Div, FontWeight, Rgba, SharedString, Stateful, Styled, div, prelude::*, px, relative};
+use gpui::{Div, FontWeight, Rgba, SharedString, Stateful, Styled, Svg, div, prelude::*, px, relative};
 
+pub use crate::icons::{Icon, icon};
 use crate::theme::{
     alpha, current,
     metrics::{self, H_BUTTON, H_ICON, H_INPUT, R_LG, R_MD, R_SM, R_XL, R_XS, S1, S3, S4, S5, S6, T_BODY, T_CAPTION},
@@ -14,8 +15,8 @@ pub enum Elevation {
     Dialog,
 }
 
-/// The common frame of a text button; the variants set colors.
-fn base_button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+/// The common frame of a text button; the variants set colors. An empty label leaves the lead alone.
+fn base_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Stateful<Div> {
     let id = id.into();
     div()
         .id(id.clone())
@@ -31,14 +32,24 @@ fn base_button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> S
         .border_1()
         .text_size(px(T_BODY))
         .cursor_pointer()
-        .child(label.into())
+        .children(lead)
+        .children(Some(label.into()).filter(|label: &SharedString| !label.is_empty()))
 }
 
 /// A small text button.
 pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    plain_button(id, None, label)
+}
+
+/// A [`button`] led by an icon.
+pub fn button_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Stateful<Div> {
+    plain_button(id, Some(icon(lead, current().fg_muted)), label)
+}
+
+fn plain_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Stateful<Div> {
     let t = current();
     let (hover, hover_border, active) = (t.control_hover, t.border_strong, t.control_active);
-    base_button(id, label)
+    base_button(id, lead, label)
         .bg(t.control)
         .border_color(t.hairline)
         .text_color(t.fg)
@@ -48,8 +59,17 @@ pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> St
 
 /// The primary action: filled with the emphasis color.
 pub fn button_primary(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+    primary_button(id, None, label)
+}
+
+/// A [`button_primary`] led by an icon.
+pub fn button_primary_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Stateful<Div> {
+    primary_button(id, Some(icon(lead, current().on_emphasis)), label)
+}
+
+fn primary_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Stateful<Div> {
     let t = current();
-    base_button(id, label)
+    base_button(id, lead, label)
         .bg(t.emphasis)
         .border_color(t.emphasis)
         .text_color(t.on_emphasis)
@@ -61,7 +81,7 @@ pub fn button_primary(id: impl Into<SharedString>, label: impl Into<SharedString
 pub fn button_danger(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
     let t = current();
     let danger = t.danger;
-    base_button(id, label)
+    base_button(id, None, label)
         .bg(t.control)
         .border_color(t.hairline)
         .text_color(danger)
@@ -72,7 +92,19 @@ pub fn button_danger(id: impl Into<SharedString>, label: impl Into<SharedString>
 pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
     let t = current();
     let (hover, fg) = (t.control_hover, t.fg);
-    base_button(id, label)
+    base_button(id, None, label)
+        .border_color(gpui::transparent_black())
+        .text_color(t.fg_muted)
+        .hover(move |s| s.bg(hover).text_color(fg))
+}
+
+/// A [`button_ghost`] led by an icon.
+pub fn button_ghost_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Stateful<Div> {
+    let t = current();
+    let (hover, fg) = (t.control_hover, t.fg);
+    let lead = icon(lead, t.fg_muted).group_hover("button", move |s| s.text_color(fg));
+    base_button(id, Some(lead), label)
+        .group("button")
         .border_color(gpui::transparent_black())
         .text_color(t.fg_muted)
         .hover(move |s| s.bg(hover).text_color(fg))
@@ -80,6 +112,19 @@ pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>)
 
 /// A borderless square button showing a single glyph.
 pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) -> Stateful<Div> {
+    icon_frame(id).child(glyph.into())
+}
+
+/// An [`icon_button`] showing one of the app's icons.
+pub fn icon_button_svg(id: impl Into<SharedString>, shown: Icon) -> Stateful<Div> {
+    let t = current();
+    let fg = t.fg;
+    icon_frame(id)
+        .group("icon-button")
+        .child(icon(shown, t.fg_muted).group_hover("icon-button", move |s| s.text_color(fg)))
+}
+
+fn icon_frame(id: impl Into<SharedString>) -> Stateful<Div> {
     let id = id.into();
     let t = current();
     let (hover, fg) = (t.control_hover, t.fg);
@@ -96,7 +141,6 @@ pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) 
         .text_sm()
         .hover(move |s| s.bg(hover).text_color(fg))
         .cursor_pointer()
-        .child(glyph.into())
 }
 
 /// A small on/off switch. `on` fills the track with the accent and moves the knob to the end.

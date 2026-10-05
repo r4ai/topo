@@ -23,7 +23,7 @@ use crate::{TopoApp, text_input};
 pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
     apply_theme(options);
     let platform = gpui_platform::current_platform(false);
-    let mut cx = VisualTestAppContext::new(platform);
+    let mut cx = VisualTestAppContext::with_asset_source(platform, std::sync::Arc::new(crate::icons::Assets));
     cx.update(text_input::bind_keys);
 
     let requested = size(px(options.width as f32), px(options.height as f32));
@@ -150,7 +150,7 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
 pub fn render_shell(path: &Path, options: &Args) -> Result<()> {
     apply_theme(options);
     let platform = gpui_platform::current_platform(false);
-    let mut cx = VisualTestAppContext::new(platform);
+    let mut cx = VisualTestAppContext::with_asset_source(platform, std::sync::Arc::new(crate::icons::Assets));
     cx.update(text_input::bind_keys);
 
     let config = UserConfig { recent_workspaces: options.recent.clone(), ..Default::default() };

@@ -102,13 +102,13 @@ impl TopoApp {
             .map_or("workspace".into(), |n| n.to_string_lossy().into_owned());
 
         let organize = |id: &'static str, label: &'static str, what: OrganizeKind, cx: &mut Context<Self>| {
-            stop_click(ui::button_ghost(id, if self.busy { "✦ Thinking…" } else { label }))
+            stop_click(ui::button_ghost_icon(id, ui::Icon::Sparkle, if self.busy { "Thinking…" } else { label }))
                 .when(self.busy, |b| b.opacity(0.6).cursor_default())
                 .on_click(cx.listener(move |app, _, _, cx| app.run_organize(what, cx)))
         };
-        let history = |id: &'static str, glyph: &'static str, undo: bool, enabled: bool, cx: &mut Context<Self>| {
+        let history = |id: &'static str, icon: ui::Icon, undo: bool, enabled: bool, cx: &mut Context<Self>| {
             stop_click(match enabled {
-                true => ui::icon_button(id, glyph),
+                true => ui::icon_button_svg(id, icon),
                 false => div()
                     .id(id)
                     .debug_selector(|| id.to_owned())
@@ -117,9 +117,7 @@ impl TopoApp {
                     .items_center()
                     .justify_center()
                     .size(px(H_ICON))
-                    .text_sm()
-                    .text_color(t.fg_faint)
-                    .child(glyph),
+                    .child(ui::icon(icon, t.fg_faint)),
             })
             .on_click(cx.listener(move |app, _, _, cx| app.restore(undo, cx)))
         };
@@ -177,7 +175,7 @@ impl TopoApp {
                             ui::button_ghost("repository", "")
                                 .text_color(t.fg)
                                 .child(div().min_w(px(0.)).truncate().child(name))
-                                .child("▾"),
+                                .child(ui::icon(ui::Icon::ChevronDown, t.fg_muted).size(px(12.))),
                         )
                         // The button is `flex_shrink_0` by default; this one gives way, down to a stub.
                         .flex_shrink(1.)
@@ -246,17 +244,17 @@ impl TopoApp {
             )
             .child(div().flex_1())
             .child(
-                stop_click(ui::button("search", "⌕ Search"))
+                stop_click(ui::button_icon("search", ui::Icon::Search, "Search"))
                     .when(!self.compact, |b| b.child(ui::kbd("⌘K")))
                     .on_click(cx.listener(|app, _, window, cx| app.open_prompt(Prompt::Search, window, cx))),
             )
             .child(
-                stop_click(ui::button("new-task", "+ Task"))
+                stop_click(ui::button_icon("new-task", ui::Icon::Plus, "Task"))
                     .when(!self.compact, |b| b.child(ui::kbd("N")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Task, None, window, cx))),
             )
             .child(
-                stop_click(ui::button("new-milestone", "+ Milestone"))
+                stop_click(ui::button_icon("new-milestone", ui::Icon::Plus, "Milestone"))
                     .when(!self.compact, |b| b.child(ui::kbd("M")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx))),
             )
@@ -277,26 +275,26 @@ impl TopoApp {
                         .flex_shrink(100.)
                         .child(organize(
                             "org-deps",
-                            if self.compact { "✦ Links" } else { "✦ Suggest links" },
+                            if self.compact { "Links" } else { "Suggest links" },
                             OrganizeKind::Deps,
                             cx,
                         ))
                         .child(organize(
                             "org-place",
-                            if self.compact { "✦ Place" } else { "✦ Place tasks" },
+                            if self.compact { "Place" } else { "Place tasks" },
                             OrganizeKind::Place,
                             cx,
                         ))
                         .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline)),
                 )
             })
-            .child(history("undo", "↩\u{fe0e}", true, !self.undo.is_empty(), cx))
-            .child(history("redo", "↪\u{fe0e}", false, !self.redo.is_empty(), cx))
+            .child(history("undo", ui::Icon::Undo, true, !self.undo.is_empty(), cx))
+            .child(history("redo", ui::Icon::Redo, false, !self.redo.is_empty(), cx))
             .child(
                 div()
                     .relative()
                     .flex_shrink_0()
-                    .child(stop_click(ui::icon_button("theme", theme_glyph(theme::mode()))).on_click(cx.listener(
+                    .child(stop_click(ui::icon_button_svg("theme", theme_icon(theme::mode()))).on_click(cx.listener(
                         |app, _, _, cx| {
                             app.theme_menu = !app.theme_menu;
                             cx.notify();
@@ -304,7 +302,7 @@ impl TopoApp {
                     )))
                     .when(self.theme_menu, |d| d.child(self.theme_menu_popover(cx))),
             )
-            .child(stop_click(ui::icon_button("help", "?")).on_click(cx.listener(|app, _, _, cx| {
+            .child(stop_click(ui::icon_button_svg("help", ui::Icon::Help)).on_click(cx.listener(|app, _, _, cx| {
                 app.show_help = !app.show_help;
                 cx.notify();
             })))
@@ -472,7 +470,7 @@ impl TopoApp {
                 pill()
                     .id("zoom")
                     .debug_selector(|| "zoom".to_owned())
-                    .child(ui::icon_button("zoom-out", "−").on_click(cx.listener(|app, _, _, cx| {
+                    .child(ui::icon_button_svg("zoom-out", ui::Icon::Minus).on_click(cx.listener(|app, _, _, cx| {
                         app.zoom_by(0.8, app.canvas_center(), true);
                         cx.notify();
                     })))
@@ -492,12 +490,12 @@ impl TopoApp {
                                 cx.notify();
                             })),
                     )
-                    .child(ui::icon_button("zoom-in", "+").on_click(cx.listener(|app, _, _, cx| {
+                    .child(ui::icon_button_svg("zoom-in", ui::Icon::Plus).on_click(cx.listener(|app, _, _, cx| {
                         app.zoom_by(1.25, app.canvas_center(), true);
                         cx.notify();
                     })))
                     .child(div().w(px(1.)).h(px(14.)).mx_0p5().bg(t.hairline))
-                    .child(ui::icon_button("fit", "⤢").on_click(cx.listener(|app, _, _, cx| {
+                    .child(ui::icon_button_svg("fit", ui::Icon::Fit).on_click(cx.listener(|app, _, _, cx| {
                         app.fit(false);
                         cx.notify();
                     }))),
@@ -631,7 +629,7 @@ impl TopoApp {
     pub(crate) fn toast_view(&self) -> Option<impl IntoElement> {
         let t = theme::current();
         let toast = self.toast.as_ref()?;
-        let (icon, color) = if toast.error { ("⚠", t.danger) } else { ("✓", t.success) };
+        let (icon, color) = if toast.error { (ui::Icon::Warning, t.danger) } else { (ui::Icon::Check, t.success) };
         Some(
             div().absolute().bottom(px(58.)).left_0().right_0().flex().justify_center().child(
                 ui::toast_frame()
@@ -642,7 +640,7 @@ impl TopoApp {
                     .max_w(px(640.))
                     .text_size(px(T_BODY_LG))
                     .text_color(t.fg)
-                    .child(div().flex_shrink_0().text_color(color).child(icon))
+                    .child(ui::icon(icon, color))
                     .child(
                         div()
                             .flex_1()
@@ -683,11 +681,13 @@ impl TopoApp {
                         .gap_2()
                         .pt_2()
                         .child(
-                            ui::button_primary("empty-milestone", "+ Milestone").child(on_primary_kbd("M")).on_click(
-                                cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx)),
-                            ),
+                            ui::button_primary_icon("empty-milestone", ui::Icon::Plus, "Milestone")
+                                .child(on_primary_kbd("M"))
+                                .on_click(cx.listener(|app, _, window, cx| {
+                                    app.prompt_create(Kind::Milestone, None, window, cx)
+                                })),
                         )
-                        .child(ui::button("empty-task", "+ Task").child(ui::kbd("N")).on_click(
+                        .child(ui::button_icon("empty-task", ui::Icon::Plus, "Task").child(ui::kbd("N")).on_click(
                             cx.listener(|app, _, window, cx| app.prompt_create(Kind::Task, None, window, cx)),
                         )),
                 ),
@@ -913,11 +913,11 @@ pub(crate) fn on_primary_kbd(keys: &'static str) -> Div {
 }
 
 /// The toolbar glyph that shows `mode`.
-fn theme_glyph(mode: theme::ThemeMode) -> &'static str {
+fn theme_icon(mode: theme::ThemeMode) -> ui::Icon {
     match mode {
-        theme::ThemeMode::System => "◐",
-        theme::ThemeMode::Light => "☀",
-        theme::ThemeMode::Dark => "☾",
+        theme::ThemeMode::System => ui::Icon::System,
+        theme::ThemeMode::Light => ui::Icon::Sun,
+        theme::ThemeMode::Dark => ui::Icon::Moon,
     }
 }
 
