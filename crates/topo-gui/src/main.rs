@@ -298,8 +298,14 @@ impl TopoApp {
             cx.subscribe_in(&palette, window, Self::on_palette_event),
             cx.subscribe_in(&notes_input, window, Self::on_notes_event),
             cx.subscribe_in(&combo, window, Self::on_combo_event),
-            cx.observe_window_activation(window, |app, window, _| {
+            cx.observe_window_activation(window, |app, window, cx| {
                 app.set_poll_active(window.is_window_active());
+                // The config is edited outside the app; coming back to the window picks it up.
+                let jev_enabled = topo_jev::Config::configured(app.ws.dir());
+                if window.is_window_active() && jev_enabled != app.jev_enabled {
+                    app.jev_enabled = jev_enabled;
+                    cx.notify();
+                }
             }),
         ];
         let focus = cx.focus_handle();

@@ -163,7 +163,7 @@ Capture a state in a theme with the screenshot build (macOS):
 cargo run -p topo-gui --features screenshot -- <workspace> --screenshot out.png --theme <dark|light> [--monotone] ...
 ```
 
-Capture each of the eight states in both themes, and in both with `--monotone`:
+Capture each of these states in both themes, and in both with `--monotone`:
 
 | State | Flags |
 | :--- | :--- |

@@ -180,6 +180,8 @@ pub struct TextInput {
     wrap: bool,
     /// When wrapping, the most rows the field keeps; longer text scrolls to the cursor.
     max_rows: Option<usize>,
+    /// How far a capped field is scrolled up.
+    row_scroll: Pixels,
     /// Whether the caret is in its visible half of the blink.
     caret_on: bool,
     /// Drives the caret blink while the field is focused; cancelled when it is not.
@@ -231,6 +233,7 @@ impl TextInput {
             reveal: false,
             wrap: false,
             max_rows: None,
+            row_scroll: px(0.),
             caret_on: true,
             blink: None,
             layout: None,
@@ -281,16 +284,23 @@ impl TextInput {
             return;
         }
         if self.blink.is_none() {
-            self.blink = Some(cx.spawn(async move |this, cx| {
+            self.blink = Some(cx.spawn_in(window, async move |this, cx| {
                 loop {
                     cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
-                    if this
-                        .update(cx, |input, cx| {
-                            input.caret_on = !input.caret_on;
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
+                    // A field that lost the focus is not always drawn again, so the blink ends itself.
+                    let focused = this.update_in(cx, |input, window, cx| {
+                        if !input.focus_handle.is_focused(window) {
+                            input.caret_on = true;
+                            if let Some(blink) = input.blink.take() {
+                                blink.detach();
+                            }
+                            return false;
+                        }
+                        input.caret_on = !input.caret_on;
+                        cx.notify();
+                        true
+                    });
+                    if !matches!(focused, Ok(true)) {
                         break;
                     }
                 }
@@ -318,6 +328,7 @@ impl TextInput {
         self.undo.clear();
         self.redo.clear();
         self.typing = false;
+        self.row_scroll = px(0.);
         self.caret_on = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
@@ -961,6 +972,22 @@ fn underlined(runs: Vec<TextRun>, marked: &Range<usize>) -> Vec<TextRun> {
 }
 
 /// Scrolls `scroll` as little as it takes to bring `caret` into view, with a line to spare.
+/// Whether the caret is drawn: never over a selection, solid while composing, otherwise in the
+/// visible half of its blink.
+fn caret_shown(selection_empty: bool, composing: bool, caret_on: bool) -> bool {
+    selection_empty && (composing || caret_on)
+}
+
+/// How far a field of `view` height is scrolled up over `content`: `scrolled` as it was, moved
+/// just enough to show the row at `cursor_top` when the cursor asks to be revealed.
+fn scroll_rows(scrolled: Pixels, cursor_top: Option<Pixels>, row: Pixels, view: Pixels, content: Pixels) -> Pixels {
+    let scrolled = match cursor_top {
+        Some(top) => scrolled.max(top + row - view).min(top),
+        None => scrolled,
+    };
+    scrolled.min(content - view).max(px(0.))
+}
+
 fn reveal(scroll: &ScrollHandle, caret: Bounds<Pixels>, window: &mut Window) {
     let view = scroll.bounds();
     let margin = caret.size.height;
@@ -1062,12 +1089,14 @@ impl Element for TextElement {
         let lines = shape(text, &runs, font_size(window), input.wrap.then_some(bounds.size.width), window);
         let mut layout = Layout { lines, line_height: window.line_height(), origin: bounds.origin };
         let cursor_width = px(2.);
-        // A capped field scrolls up so the cursor's row stays in view.
-        if let Some(rows) = input.max_rows {
-            let max_height = layout.line_height * rows as f32;
-            let below = layout.position(cursor).y + layout.line_height - max_height;
-            layout.origin.y -= below.max(px(0.));
-        }
+        let reveal_now = input.reveal;
+        // A capped field scrolls only as far as a moved cursor needs, so opening it shows its first rows.
+        let row_scroll = input.max_rows.map(|rows| {
+            let view = layout.line_height * rows as f32;
+            let top = reveal_now.then(|| layout.position(cursor).y);
+            scroll_rows(input.row_scroll, top, layout.line_height, view, layout.height())
+        });
+        layout.origin.y -= row_scroll.unwrap_or_default();
         // One line moves left so that the cursor of a long text stays inside the field.
         let overflow = (layout.position(cursor).x + cursor_width - bounds.size.width).max(px(0.));
         if !input.wrap {
@@ -1075,16 +1104,18 @@ impl Element for TextElement {
         }
         let caret = Bounds::new(layout.origin + layout.position(cursor), size(cursor_width, layout.line_height));
         let selection = layout.selection(&selected, bounds.size.width);
-        let reveal_now = input.reveal;
         let scroll = input.scroll.clone().filter(|_| reveal_now);
         if reveal_now {
-            self.input.update(cx, |input, _| input.reveal = false);
+            self.input.update(cx, |input, _| {
+                input.reveal = false;
+                input.row_scroll = row_scroll.unwrap_or_default();
+            });
         }
         if let Some(scroll) = scroll {
             reveal(&scroll, caret, window);
         }
-        // The caret is solid while composing or selected text; otherwise it blinks.
-        let cursor = (selected.is_empty() && !composing && caret_on).then(|| fill(caret, theme::current().accent));
+        let cursor =
+            caret_shown(selected.is_empty(), composing, caret_on).then(|| fill(caret, theme::current().accent));
         PrepaintState {
             cursor,
             selection: selection.into_iter().map(|row| fill(row, theme::current().selection)).collect(),
@@ -1235,6 +1266,30 @@ mod tests {
         );
         // Nothing marked, nothing underlined.
         assert!(underlined(vec![run(4)], &(0..0)).iter().all(|run| run.underline.is_none()));
+    }
+
+    #[test]
+    fn the_caret_is_solid_while_composing_and_hidden_over_a_selection() {
+        assert!(caret_shown(true, false, true));
+        assert!(!caret_shown(true, false, false), "the hidden half of the blink");
+        assert!(caret_shown(true, true, false), "a composition never blinks out");
+        assert!(!caret_shown(false, true, true));
+        assert!(!caret_shown(false, false, true));
+    }
+
+    #[test]
+    fn a_capped_field_scrolls_only_as_far_as_the_cursor_needs() {
+        let (row, view, content) = (px(20.), px(60.), px(120.));
+        // Opened with the cursor at the end but nothing revealed: the first rows stay.
+        assert_eq!(scroll_rows(px(0.), None, row, view, content), px(0.));
+        // A cursor below the view pulls its row to the bottom, one above to the top.
+        assert_eq!(scroll_rows(px(0.), Some(px(100.)), row, view, content), px(60.));
+        assert_eq!(scroll_rows(px(60.), Some(px(20.)), row, view, content), px(20.));
+        // A cursor already in view moves nothing.
+        assert_eq!(scroll_rows(px(20.), Some(px(40.)), row, view, content), px(20.));
+        // Text that shrank, or fits, leaves no gap under it.
+        assert_eq!(scroll_rows(px(60.), None, row, view, px(80.)), px(20.));
+        assert_eq!(scroll_rows(px(60.), None, row, view, px(40.)), px(0.));
     }
 
     #[gpui::test]
