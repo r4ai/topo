@@ -22,7 +22,7 @@ use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollHandle,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point,
+    SharedString, Style, Task, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point,
     prelude::*, px, relative, size,
 };
 use smallvec::SmallVec;
@@ -180,6 +180,10 @@ pub struct TextInput {
     wrap: bool,
     /// When wrapping, the most rows the field keeps; longer text scrolls to the cursor.
     max_rows: Option<usize>,
+    /// Whether the caret is in its visible half of the blink.
+    caret_on: bool,
+    /// Drives the caret blink while the field is focused; cancelled when it is not.
+    blink: Option<Task<()>>,
     /// The shaped text of the last frame and where it was painted.
     layout: Option<Layout>,
     is_selecting: bool,
@@ -227,6 +231,8 @@ impl TextInput {
             reveal: false,
             wrap: false,
             max_rows: None,
+            caret_on: true,
+            blink: None,
             layout: None,
             is_selecting: false,
             undo: Vec::new(),
@@ -258,6 +264,40 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Runs the caret blink while the field is focused. Tests and captures keep the caret solid
+    /// so their frames stay deterministic.
+    #[cfg(any(test, feature = "screenshot"))]
+    fn sync_blink(&mut self, _window: &Window, _cx: &mut Context<Self>) {
+        let _ = self.blink.take();
+        self.caret_on = true;
+    }
+
+    #[cfg(all(not(test), not(feature = "screenshot")))]
+    fn sync_blink(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !self.focus_handle.is_focused(window) {
+            if self.blink.take().is_some() {
+                self.caret_on = true;
+            }
+            return;
+        }
+        if self.blink.is_none() {
+            self.blink = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
+                    if this
+                        .update(cx, |input, cx| {
+                            input.caret_on = !input.caret_on;
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }));
+        }
+    }
+
     pub fn text(&self) -> &str {
         &self.content
     }
@@ -278,6 +318,7 @@ impl TextInput {
         self.undo.clear();
         self.redo.clear();
         self.typing = false;
+        self.caret_on = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -327,6 +368,7 @@ impl TextInput {
         self.marked_range = None;
         self.typing = false;
         self.reveal = true;
+        self.caret_on = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -342,6 +384,7 @@ impl TextInput {
         self.marked_range = None;
         self.typing = typing;
         self.reveal = true;
+        self.caret_on = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -524,6 +567,7 @@ impl TextInput {
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.typing = false;
         self.reveal = true;
+        self.caret_on = true;
         self.selected_range = offset..offset;
         cx.notify()
     }
@@ -559,6 +603,7 @@ impl TextInput {
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.reveal = true;
+        self.caret_on = true;
         match self.selection_reversed {
             true => self.selected_range.start = offset,
             false => self.selected_range.end = offset,
@@ -685,6 +730,7 @@ impl EntityInputHandler for TextInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
         self.reveal = true;
+        self.caret_on = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -714,6 +760,7 @@ impl EntityInputHandler for TextInput {
         self.selected_range =
             range.start + utf8_offset(new_text, within.start)..range.start + utf8_offset(new_text, within.end);
         self.reveal = true;
+        self.caret_on = true;
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -1011,6 +1058,7 @@ impl Element for TextElement {
         let (text, runs) = self.display(window, cx);
         let input = self.input.read(cx);
         let (selected, cursor) = (input.selected_range.clone(), input.cursor_offset());
+        let (caret_on, composing) = (input.caret_on, input.marked_range.is_some());
         let lines = shape(text, &runs, font_size(window), input.wrap.then_some(bounds.size.width), window);
         let mut layout = Layout { lines, line_height: window.line_height(), origin: bounds.origin };
         let cursor_width = px(2.);
@@ -1027,13 +1075,18 @@ impl Element for TextElement {
         }
         let caret = Bounds::new(layout.origin + layout.position(cursor), size(cursor_width, layout.line_height));
         let selection = layout.selection(&selected, bounds.size.width);
-        let scroll = input.scroll.clone().filter(|_| input.reveal);
-        if let Some(scroll) = scroll {
-            reveal(&scroll, caret, window);
+        let reveal_now = input.reveal;
+        let scroll = input.scroll.clone().filter(|_| reveal_now);
+        if reveal_now {
             self.input.update(cx, |input, _| input.reveal = false);
         }
+        if let Some(scroll) = scroll {
+            reveal(&scroll, caret, window);
+        }
+        // The caret is solid while composing or selected text; otherwise it blinks.
+        let cursor = (selected.is_empty() && !composing && caret_on).then(|| fill(caret, theme::current().accent));
         PrepaintState {
-            cursor: selected.is_empty().then(|| fill(caret, theme::current().accent)),
+            cursor,
             selection: selection.into_iter().map(|row| fill(row, theme::current().selection)).collect(),
             layout: Some(layout),
         }
@@ -1074,7 +1127,8 @@ impl Element for TextElement {
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_blink(window, cx);
         div()
             .flex()
             .w_full()

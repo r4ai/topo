@@ -246,7 +246,7 @@ impl TopoApp {
             )
             .child(div().flex_1())
             .child(
-                stop_click(ui::button("search", "Search"))
+                stop_click(ui::button("search", "⌕ Search"))
                     .when(!self.compact, |b| b.child(ui::kbd("⌘K")))
                     .on_click(cx.listener(|app, _, window, cx| app.open_prompt(Prompt::Search, window, cx))),
             )
