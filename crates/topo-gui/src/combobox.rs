@@ -129,6 +129,11 @@ impl Combobox {
         self.input.update(cx, |input, cx| input.set_wrap(wrap, cx));
     }
 
+    /// Caps a wrapping field at `rows` rows.
+    pub fn set_max_rows(&mut self, rows: Option<usize>, cx: &mut Context<Self>) {
+        self.input.update(cx, |input, cx| input.set_max_rows(rows, cx));
+    }
+
     /// Sets the glyph before the field of a palette.
     pub fn set_lead(&mut self, glyph: &'static str) {
         self.lead = glyph.into();

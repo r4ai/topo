@@ -178,6 +178,8 @@ pub struct TextInput {
     reveal: bool,
     /// The text wraps to the width of the field instead of scrolling sideways.
     wrap: bool,
+    /// When wrapping, the most rows the field keeps; longer text scrolls to the cursor.
+    max_rows: Option<usize>,
     /// The shaped text of the last frame and where it was painted.
     layout: Option<Layout>,
     is_selecting: bool,
@@ -224,6 +226,7 @@ impl TextInput {
             scroll: None,
             reveal: false,
             wrap: false,
+            max_rows: None,
             layout: None,
             is_selecting: false,
             undo: Vec::new(),
@@ -246,6 +249,12 @@ impl TextInput {
     /// Makes one line of text wrap into rows as wide as the field, or scroll sideways.
     pub fn set_wrap(&mut self, wrap: bool, cx: &mut Context<Self>) {
         self.wrap = wrap || self.multiline;
+        cx.notify();
+    }
+
+    /// Caps a wrapping field at `rows` rows; longer text scrolls to keep the cursor in view.
+    pub fn set_max_rows(&mut self, rows: Option<usize>, cx: &mut Context<Self>) {
+        self.max_rows = rows.filter(|rows| *rows > 0);
         cx.notify();
     }
 
@@ -970,6 +979,7 @@ impl Element for TextElement {
         // The height follows from the rows the text wraps into at the width it is given.
         let (text, runs) = self.display(window, cx);
         let (line_height, font_size) = (window.line_height(), font_size(window));
+        let max_rows = self.input.read(cx).max_rows;
         let measure = move |known: gpui::Size<Option<Pixels>>,
                             available: gpui::Size<gpui::AvailableSpace>,
                             window: &mut Window,
@@ -980,7 +990,11 @@ impl Element for TextElement {
             });
             let lines = shape(text.clone(), &runs, font_size, width, window);
             let layout = Layout { lines, line_height, origin: Point::default() };
-            size(width.unwrap_or_default(), layout.height())
+            let height = match max_rows {
+                Some(rows) => layout.height().min(line_height * rows as f32),
+                None => layout.height(),
+            };
+            size(width.unwrap_or_default(), height)
         };
         (window.request_measured_layout(style, measure), ())
     }
@@ -1000,6 +1014,12 @@ impl Element for TextElement {
         let lines = shape(text, &runs, font_size(window), input.wrap.then_some(bounds.size.width), window);
         let mut layout = Layout { lines, line_height: window.line_height(), origin: bounds.origin };
         let cursor_width = px(2.);
+        // A capped field scrolls up so the cursor's row stays in view.
+        if let Some(rows) = input.max_rows {
+            let max_height = layout.line_height * rows as f32;
+            let below = layout.position(cursor).y + layout.line_height - max_height;
+            layout.origin.y -= below.max(px(0.));
+        }
         // One line moves left so that the cursor of a long text stays inside the field.
         let overflow = (layout.position(cursor).x + cursor_width - bounds.size.width).max(px(0.));
         if !input.wrap {

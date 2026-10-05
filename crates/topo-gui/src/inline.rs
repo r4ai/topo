@@ -37,6 +37,8 @@ pub(crate) struct InlineEdit {
 
 /// Entries of the list shown at once.
 const CHOICES: usize = 6;
+/// The most rows the inspector shows a title in, whether shown or edited.
+pub(crate) const TITLE_ROWS: usize = 3;
 /// The fields in the order Tab visits them.
 const ORDER: [Field; 6] = [Field::Title, Field::Priority, Field::Assignee, Field::Due, Field::Tags, Field::Pr];
 
@@ -195,8 +197,9 @@ impl TopoApp {
         let chips = (field == Field::Tags).then(|| node.tags.clone());
         self.combo.update(cx, |combo, cx| {
             combo.open(&initial, field.placeholder(), chips, cx);
-            // A title is as long as it is; it keeps its rows while it is edited.
+            // A title keeps the rows the panel shows it in: three at most, then it scrolls to the cursor.
             combo.set_wrap(field == Field::Title, cx);
+            combo.set_max_rows((field == Field::Title).then_some(TITLE_ROWS), cx);
         });
         self.inline = Some(InlineEdit { node: id, field, error: None });
         self.show_help = false;

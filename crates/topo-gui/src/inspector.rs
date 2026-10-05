@@ -877,7 +877,7 @@ fn title_text(title: impl Into<SharedString>) -> Stateful<Div> {
         .py_0p5()
         .border_1()
         .border_color(theme::alpha(t.fg, 0.))
-        .line_clamp(3)
+        .line_clamp(crate::inline::TITLE_ROWS)
         .text_ellipsis()
         .text_size(px(T_HEADING))
         .font_weight(FontWeight::SEMIBOLD)

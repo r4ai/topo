@@ -1146,7 +1146,11 @@ fn editing_the_title_keeps_its_bounds_and_the_details_still(cx: &mut TestAppCont
     ui.select("a");
     for width in [1360., 800.] {
         ui.resize(width, 860.);
-        for title in ["Alpha", "日本語タイトルの折り返しを確認するための少し長い名前"] {
+        for title in [
+            "Alpha",
+            "日本語タイトルの折り返しを確認するための少し長い名前",
+            "非常に長いタイトルでも編集中に右パネルの行数と幅が変わらないことを確認するための、折り返しが四行以上になる十分な長さを持たせたタイトルです。",
+        ] {
             ui.app.update(ui.cx, |app, cx| {
                 app.mutate(cx, |graph| graph.edit(&id("a"), Edit { title: Some(title.into()), ..Edit::default() }));
             });
