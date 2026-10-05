@@ -19,8 +19,9 @@ fn stop_click<E: InteractiveElement>(element: E) -> E {
 }
 
 const TOOLBAR_H: f32 = 46.;
-/// Room for the macOS traffic lights at the toolbar's left edge.
-const TRAFFIC_LIGHTS: f32 = 78.;
+/// The macOS traffic lights occupy the leftmost part of the toolbar. The wordmark keeps clear of
+/// them with this much room, so the two never crowd each other on a real window.
+const TRAFFIC_LIGHTS: f32 = 94.;
 
 /// Space the toolbar and the repository chooser leave for the macOS traffic lights; zero when there are none
 /// (other platforms, fullscreen) and under test, so layout tests do not depend on the host.
