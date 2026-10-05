@@ -20,7 +20,7 @@ use topo_jev::organize::Proposal;
 
 use crate::args::Args;
 use crate::config::UserConfig;
-use crate::repository::{RepositoryWindow, startup_target};
+use crate::repository::{RepositoryWindow, Selection};
 use crate::theme::{self, ThemeMode};
 use crate::{Field, Prompt, TopoApp, layout, notes, screenshot, text_input};
 
@@ -67,6 +67,27 @@ enum ShellState {
     Uninitialized,
     /// The switcher over a loaded workspace, with a missing recent.
     Switcher,
+}
+
+impl ShellState {
+    fn start(self, fixtures: &Fixtures) -> (Selection, UserConfig, bool) {
+        // These are exact fixture folders. Startup's ancestor discovery would
+        // find the user's workspace when the output directory is inside one.
+        match self {
+            Self::Welcome => (fixtures.plain.clone().into(), UserConfig::default(), true),
+            Self::Uninitialized => {
+                let config = UserConfig { recent_workspaces: vec![fixtures.rich_dir()], ..Default::default() };
+                (fixtures.plain.clone().into(), config, false)
+            }
+            Self::Switcher => {
+                let config = UserConfig {
+                    recent_workspaces: vec![fixtures.rich_dir(), fixtures.missing_dir()],
+                    ..Default::default()
+                };
+                (fixtures.rich_folder().into(), config, true)
+            }
+        }
+    }
 }
 
 fn id(value: &str) -> NodeId {
@@ -321,26 +342,7 @@ fn render_shell(
     path: &Path,
 ) -> Result<()> {
     let requested = size(px(options.width as f32), px(options.height as f32));
-    let cwd = std::env::current_dir()?;
-    let (start, config, present) = match state {
-        ShellState::Welcome => {
-            let start = startup_target(None, Some(fixtures.plain.clone()), &UserConfig::default(), cwd);
-            (start, UserConfig::default(), true)
-        }
-        ShellState::Uninitialized => {
-            let config = UserConfig { recent_workspaces: vec![fixtures.rich_dir()], ..Default::default() };
-            let start = startup_target(None, Some(fixtures.plain.clone()), &config, cwd);
-            (start, config, false)
-        }
-        ShellState::Switcher => {
-            let config = UserConfig {
-                recent_workspaces: vec![fixtures.rich_dir(), fixtures.missing_dir()],
-                ..Default::default()
-            };
-            let start = startup_target(None, Some(fixtures.rich_folder()), &config, cwd);
-            (start, config, true)
-        }
-    };
+    let (start, config, present) = state.start(fixtures);
     let handle = cx.open_offscreen_window(requested, |window, cx| {
         cx.new(|cx| RepositoryWindow::capture(start, config, window, cx))
     })?;
@@ -388,6 +390,9 @@ impl Fixtures {
             std::fs::remove_dir_all(&root).with_context(|| format!("cannot clear {}", root.display()))?;
         }
         std::fs::create_dir_all(&root)?;
+        // History and the installed editor must identify the same workspace,
+        // including relative output paths and symlinked parent directories.
+        let root = root.canonicalize().context("cannot resolve the fixture directory")?;
         let plain = root.join("plain");
         std::fs::create_dir_all(&plain)?;
         Ok(Self {
@@ -550,4 +555,55 @@ fn write_index(out: &Path, entries: &[Entry]) -> Result<()> {
     }
     std::fs::write(out.join("index.html"), html).context("cannot write index.html")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn bare_shell_states_ignore_an_ancestor_workspace(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        Workspace::init(dir.path()).unwrap();
+        let fixtures = Fixtures::build(&dir.path().join("qa")).unwrap();
+
+        for state in [ShellState::Welcome, ShellState::Uninitialized] {
+            let (start, config, present) = state.start(&fixtures);
+            let expected = config.clone();
+            let (shell, cx) = cx.add_window_view(|window, cx| RepositoryWindow::capture(start, config, window, cx));
+            cx.run_until_parked();
+            if present {
+                shell.update_in(cx, |app, window, cx| app.present(window, cx));
+                cx.run_until_parked();
+            }
+            shell.read_with(cx, |app, _| {
+                assert!(app.editor.is_none(), "a bare shell must not load the ancestor workspace");
+                assert_eq!(app.config, expected);
+            });
+            assert!(!fixtures.plain.join(topo_core::store::DIR_NAME).exists());
+        }
+    }
+
+    #[gpui::test]
+    fn a_relative_output_keeps_the_current_workspace_out_of_recents(cx: &mut TestAppContext) {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let target = cwd.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let dir = tempfile::tempdir_in(&target).unwrap();
+        let out = dir.path().strip_prefix(&cwd).unwrap().join("qa");
+        assert!(out.is_relative());
+        let fixtures = Fixtures::build(&out).unwrap();
+        let (start, config, present) = ShellState::Switcher.start(&fixtures);
+        let (shell, cx) = cx.add_window_view(|window, cx| RepositoryWindow::capture(start, config, window, cx));
+        cx.run_until_parked();
+        assert!(present);
+        shell.update_in(cx, |app, window, cx| app.present(window, cx));
+        cx.run_until_parked();
+        shell.read_with(cx, |app, cx| {
+            let editor = app.editor.as_ref().expect("the rich fixture is loaded");
+            assert_eq!(editor.read(cx).ws.dir(), fixtures.rich_dir().canonicalize().unwrap());
+            assert_eq!(app.config.recent_workspaces, [fixtures.rich_dir(), fixtures.missing_dir()]);
+        });
+    }
 }
