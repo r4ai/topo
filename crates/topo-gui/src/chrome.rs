@@ -362,23 +362,20 @@ impl TopoApp {
         )
     }
 
+    /// The save status as a floating overlay, so showing it never moves the canvas.
     pub(crate) fn persistence_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         let failed = self.persistence.error.is_some();
-        ui::panel()
+        let bar = ui::toast_frame()
             .debug_selector(|| "save-status".into())
             .flex()
-            .flex_shrink_0()
+            .flex_wrap()
             .items_center()
+            .justify_center()
             .gap_2()
-            .h(px(30.))
-            .px_3()
-            .border_b_1()
-            .border_color(t.hairline)
             .text_size(px(T_SMALL))
             .text_color(if failed { t.danger } else { t.warn })
             .child(if failed { "Changes need confirmation" } else { "Saving changes…" })
-            .child(div().flex_1())
             .when(failed, |d| {
                 d.child(
                     ui::button("retry-save", "Retry")
@@ -390,7 +387,8 @@ impl TopoApp {
                         .debug_selector(|| "discard-save".into())
                         .on_click(cx.listener(|app, _, _, cx| app.discard_pending(cx))),
                 )
-            })
+            });
+        div().absolute().top(px(12.)).left_0().right_0().flex().justify_center().px_3().child(stop_click(bar))
     }
 
     pub(crate) fn zoom_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {

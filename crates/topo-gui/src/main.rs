@@ -1441,7 +1441,6 @@ impl Render for TopoApp {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_drag_end))
             .child(self.toolbar(window, cx))
-            .when(self.persistence.pending_count() > 0, |d| d.child(self.persistence_bar(cx)))
             .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(cx)).child(self.inspector(cx)))
             .when(self.notes_ask.is_some(), |d| d.child(self.notes_dialog(cx)))
     }

@@ -73,6 +73,10 @@ pub struct Args {
     #[arg(long, requires = "screenshot")]
     pub theme_menu: bool,
 
+    /// Capture with the save-status overlay shown in this state
+    #[arg(long, requires = "screenshot", value_enum, value_name = "STATE")]
+    pub save_status: Option<CaptureSave>,
+
     /// Capture with done and dropped nodes hidden; never read from the saved preference
     #[arg(long, requires = "screenshot")]
     pub hide_completed: bool,
@@ -109,6 +113,15 @@ pub struct Args {
 pub enum CaptureTheme {
     Dark,
     Light,
+}
+
+/// The save-status states a capture can show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CaptureSave {
+    /// In flight: "Saving changes…".
+    Saving,
+    /// Failed: "Changes need confirmation", with Retry and Discard.
+    Error,
 }
 
 /// A length in whole points that the renderer can allocate a texture for.
@@ -175,6 +188,18 @@ mod tests {
         assert!(!parse(&["--screenshot", "o.png"]).unwrap().monotone);
         assert!(parse(&["--screenshot", "o.png", "--monotone"]).unwrap().monotone);
         assert!(parse(&["--monotone"]).is_err());
+    }
+
+    #[test]
+    fn the_save_status_capture_needs_a_capture_and_a_state() {
+        let error = parse(&["--screenshot", "o.png", "--save-status", "error"]).unwrap();
+        assert_eq!(error.save_status, Some(CaptureSave::Error));
+        assert_eq!(
+            parse(&["--screenshot", "o.png", "--save-status", "saving"]).unwrap().save_status,
+            Some(CaptureSave::Saving)
+        );
+        assert!(parse(&["--save-status", "error"]).is_err());
+        assert!(parse(&["--screenshot", "o.png", "--save-status", "bogus"]).is_err());
     }
 
     #[test]

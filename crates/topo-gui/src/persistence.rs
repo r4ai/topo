@@ -84,6 +84,19 @@ impl Persistence {
     pub(crate) fn unsettled(&self) -> bool {
         !self.pending.is_empty()
     }
+
+    /// Shows the save-status overlay in a capture without any I/O.
+    #[cfg(feature = "screenshot")]
+    pub(crate) fn show_for_capture(&mut self, error: bool) {
+        self.pending.push_back(Patch {
+            ops: Vec::new(),
+            key: "capture".into(),
+            additions: BTreeMap::new(),
+            committed: false,
+            minimum_version: None,
+        });
+        self.error = error.then(|| "the capture shows the failure state".to_owned());
+    }
 }
 
 enum Work {
@@ -567,12 +580,18 @@ mod tests {
         let ws = Workspace::open_remote(dir.path().to_owned(), remote.clone()).unwrap();
         let (app, cx) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
         cx.run_until_parked();
+        cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(600.)));
+        app.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        let zoom = cx.debug_bounds("zoom").unwrap();
         remote.offline.store(true, Ordering::SeqCst);
         app.update(cx, |app, cx| {
             app.mutate(cx, |g| g.set_status(&id("a"), Status::Done));
         });
         cx.run_until_parked();
         assert!(app.read_with(cx, |app, _| app.persistence.error.is_some()));
+        // The save status is an overlay: it does not resize the canvas under it.
+        assert_eq!(cx.debug_bounds("zoom"), Some(zoom));
         cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(480.)));
         app.update(cx, |_, cx| cx.notify());
         cx.run_until_parked();

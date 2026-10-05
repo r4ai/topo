@@ -808,6 +808,8 @@ impl TopoApp {
             })
             .children(link_label)
             .child(self.zoom_controls(cx))
+            // The save status floats over the canvas, so showing it never moves the graph.
+            .when(self.persistence.pending_count() > 0, |d| d.child(self.persistence_bar(cx)))
             .children(self.prompt_overlay())
             .children(self.toast_view())
             .when(self.show_help, |d| d.child(self.help_overlay(cx)))
