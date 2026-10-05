@@ -174,6 +174,7 @@ Capture each of the eight states in both themes, and in both with `--monotone`:
 | Theme popover | `--theme-menu` (add `--monotone` to capture the switch on) |
 | Save status | `--save-status saving` |
 | Save failure | `--save-status error` |
+| Toast | `--toast <text>` |
 | Search | `--search <query>` |
 | Notes | `--select <id> --edit-notes` |
 | Inline edit | `--select <id> --edit tags --type <text>` |

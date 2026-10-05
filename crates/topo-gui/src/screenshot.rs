@@ -64,6 +64,9 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
             if let Some(status) = options.save_status {
                 app.persistence.show_for_capture(status == crate::args::CaptureSave::Error);
             }
+            if let Some(text) = &options.toast {
+                app.toast(text.clone(), true, cx);
+            }
             app.view = crate::layout::View {
                 hide_completed: options.hide_completed,
                 group_by_tag: options.group_by_tag,

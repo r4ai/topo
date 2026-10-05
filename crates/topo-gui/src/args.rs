@@ -77,6 +77,10 @@ pub struct Args {
     #[arg(long, requires = "screenshot", value_enum, value_name = "STATE")]
     pub save_status: Option<CaptureSave>,
 
+    /// Capture with an error toast showing this text
+    #[arg(long, requires = "screenshot", value_name = "TEXT")]
+    pub toast: Option<String>,
+
     /// Capture with done and dropped nodes hidden; never read from the saved preference
     #[arg(long, requires = "screenshot")]
     pub hide_completed: bool,

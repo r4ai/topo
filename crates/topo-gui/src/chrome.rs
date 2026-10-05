@@ -259,34 +259,36 @@ impl TopoApp {
                     .when(!self.compact, |b| b.child(ui::kbd("M")))
                     .on_click(cx.listener(|app, _, window, cx| app.prompt_create(Kind::Milestone, None, window, cx))),
             )
-            .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline))
-            // Next to give way, the same way as the stats but later.
-            .child(
-                div()
-                    .debug_selector(|| "toolbar-organize".into())
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .items_center()
-                    .gap_2()
-                    .h(px(H_BUTTON))
-                    .min_w(px(0.))
-                    .overflow_hidden()
-                    .flex_shrink(100.)
-                    .child(organize(
-                        "org-deps",
-                        if self.compact { "✦ Links" } else { "✦ Suggest links" },
-                        OrganizeKind::Deps,
-                        cx,
-                    ))
-                    .child(organize(
-                        "org-place",
-                        if self.compact { "✦ Place" } else { "✦ Place tasks" },
-                        OrganizeKind::Place,
-                        cx,
-                    ))
-                    .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline)),
-            )
+            // Next to give way, the same way as the stats but later. Shown only when the workspace
+            // opts into a Jev model (a `[jev]` table in `.topo/config.toml`).
+            .when(self.jev_enabled, |d| {
+                d.child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline)).child(
+                    div()
+                        .debug_selector(|| "toolbar-organize".into())
+                        .flex()
+                        .flex_wrap()
+                        .content_start()
+                        .items_center()
+                        .gap_2()
+                        .h(px(H_BUTTON))
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .flex_shrink(100.)
+                        .child(organize(
+                            "org-deps",
+                            if self.compact { "✦ Links" } else { "✦ Suggest links" },
+                            OrganizeKind::Deps,
+                            cx,
+                        ))
+                        .child(organize(
+                            "org-place",
+                            if self.compact { "✦ Place" } else { "✦ Place tasks" },
+                            OrganizeKind::Place,
+                            cx,
+                        ))
+                        .child(div().flex_shrink_0().w(px(1.)).h(px(20.)).bg(t.hairline)),
+                )
+            })
             .child(history("undo", "↩\u{fe0e}", true, !self.undo.is_empty(), cx))
             .child(history("redo", "↪\u{fe0e}", false, !self.redo.is_empty(), cx))
             .child(
@@ -639,8 +641,14 @@ impl TopoApp {
                     .max_w(px(640.))
                     .text_size(px(T_BODY_LG))
                     .text_color(t.fg)
-                    .child(div().text_color(color).child(icon))
-                    .child(toast.text.clone()),
+                    .child(div().flex_shrink_0().text_color(color).child(icon))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .debug_selector(|| "toast-text".to_owned())
+                            .child(toast.text.clone()),
+                    ),
             ),
         )
     }

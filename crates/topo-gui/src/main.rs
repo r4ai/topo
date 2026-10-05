@@ -224,6 +224,8 @@ struct TopoApp {
     redo: Vec<Graph>,
     proposals: Vec<Proposal>,
     busy: bool,
+    /// The workspace opted into a Jev model, so the organize controls are shown.
+    jev_enabled: bool,
     toast: Option<Toast>,
     toast_serial: u64,
     /// Watches the Markdown files. A cloud workspace is polled instead.
@@ -302,6 +304,7 @@ impl TopoApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let jev_enabled = topo_jev::Config::configured(ws.dir());
         Self {
             persistence: persistence::Persistence::new(ws.clone()),
             ws,
@@ -338,6 +341,7 @@ impl TopoApp {
             redo: Vec::new(),
             proposals: Vec::new(),
             busy: false,
+            jev_enabled,
             toast: None,
             toast_serial: 0,
             _watcher: watcher,

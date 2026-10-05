@@ -24,11 +24,20 @@ struct Ui<'a> {
 
 /// Opens a window on a workspace with the given `(id, kind, depends_on, milestones)` nodes.
 fn open<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])]) -> Ui<'a> {
-    open_named(cx, nodes, "")
+    open_full(cx, nodes, "", false)
 }
 
-/// Like [`open`], in a repository directory called `name` (a random one when empty).
-fn open_named<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])], name: &str) -> Ui<'a> {
+/// Like [`open`], with a `[jev]` table written so the organize controls are shown.
+fn open_jev<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&str])]) -> Ui<'a> {
+    open_full(cx, nodes, "", true)
+}
+
+fn open_full<'a>(
+    cx: &'a mut TestAppContext,
+    nodes: &[(&str, Kind, &[&str], &[&str])],
+    name: &str,
+    jev: bool,
+) -> Ui<'a> {
     let dir = tempfile::tempdir().unwrap();
     let root = match name {
         "" => dir.path().to_owned(),
@@ -47,6 +56,9 @@ fn open_named<'a>(cx: &'a mut TestAppContext, nodes: &[(&str, Kind, &[&str], &[&
     });
     ws.graph = Graph::from_nodes(nodes).unwrap();
     ws.save().unwrap();
+    if jev {
+        std::fs::write(ws.dir().join("config.toml"), "[jev]\nbase_url = \"http://127.0.0.1:8000\"\n").unwrap();
+    }
     cx.update(|cx| {
         text_input::bind_keys(cx);
         theme::init(cx);
@@ -332,7 +344,7 @@ fn clicking_away_from_a_prompt_only_closes_it(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn the_toolbar_fits_the_smallest_window(cx: &mut TestAppContext) {
-    let mut ui = open(cx, SAMPLE);
+    let mut ui = open_jev(cx, SAMPLE);
     // Work in progress and overdue work add their counters to the toolbar.
     ui.app.update(ui.cx, |app, cx| {
         let overdue = Edit { due: Some(Some(jiff::civil::date(2020, 1, 1))), ..Edit::default() };
@@ -357,6 +369,25 @@ fn the_toolbar_fits_the_smallest_window(cx: &mut TestAppContext) {
         assert!(bounds.right() <= px(720.), "{selector} ends at {:?}", bounds.right());
         assert!(bounds.size.height <= px(26.), "{selector} is {:?} high", bounds.size.height);
     }
+}
+
+#[gpui::test]
+fn the_organize_controls_show_only_with_a_jev_config(cx: &mut TestAppContext) {
+    // A workspace without a `[jev]` table hides the Jev-backed controls.
+    {
+        let mut ui = open(cx, SAMPLE);
+        ui.redraw();
+        assert!(ui.cx.debug_bounds("toolbar-organize").is_none());
+        assert!(ui.cx.debug_bounds("org-deps").is_none());
+        assert!(ui.cx.debug_bounds("org-place").is_none());
+    }
+
+    // One that opts into a model shows them.
+    let mut ui = open_jev(cx, SAMPLE);
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("toolbar-organize").is_some());
+    assert!(ui.cx.debug_bounds("org-deps").is_some());
+    assert!(ui.cx.debug_bounds("org-place").is_some());
 }
 
 #[gpui::test]
@@ -2125,6 +2156,19 @@ fn the_toolbar_button_opens_a_menu_that_sets_the_mode_and_monotone(cx: &mut Test
     assert!(!ui.read(|app| app.show_help));
 }
 
+#[gpui::test]
+fn a_long_error_toast_wraps_inside_the_window(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let message = "request to http://127.0.0.1:8000/v1/systemone failed (is a Jev-compatible server running? see `jev.base_url` in .topo/config.toml)";
+    ui.app.update(ui.cx, |app, cx| app.toast(message, true, cx));
+    ui.redraw();
+    let frame = ui.cx.debug_bounds("toast").expect("the toast is drawn");
+    let text = ui.cx.debug_bounds("toast-text").expect("the toast text is drawn");
+    assert!(frame.right() <= px(1360.), "the toast stays in the window");
+    assert!(text.right() <= frame.right(), "the text wraps inside the toast");
+    assert!(frame.size.height > px(20.), "the long text takes more than one row");
+}
+
 /// Drives the app through its main states and returns each state's name with a selector that must be drawn.
 fn drive_states(ui: &mut Ui) -> Vec<(&'static str, &'static str)> {
     let mut seen = Vec::new();
@@ -2209,7 +2253,7 @@ fn nothing_in_the_toolbar_overlaps_at_any_width(cx: &mut TestAppContext) {
     doing.status = Status::Doing;
     let mut overdue = Node::new(id("o"), Kind::Task, "o".into());
     overdue.due = Some("2000-01-01".parse().unwrap());
-    let mut ui = open_named(cx, SAMPLE, "a-repository-with-a-really-very-long-name-indeed");
+    let mut ui = open_full(cx, SAMPLE, "a-repository-with-a-really-very-long-name-indeed", true);
     ui.app.update(ui.cx, |app, cx| {
         app.mutate(cx, |graph| {
             graph.insert(doing)?;

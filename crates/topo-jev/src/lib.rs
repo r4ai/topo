@@ -73,6 +73,20 @@ impl Config {
             Err(e) => Err(err(e.to_string())),
         }
     }
+
+    /// Whether the workspace opted into a Jev model: its `config.toml` has a `[jev]` table.
+    /// An unreadable or malformed file counts as not configured, so the GUI hides its controls.
+    pub fn configured(topo_dir: &Path) -> bool {
+        #[derive(Deserialize)]
+        struct File {
+            #[serde(default)]
+            jev: Option<toml::Value>,
+        }
+        match topo_core::files::read(topo_dir, "config.toml") {
+            Ok(text) => toml::from_str::<File>(&text).is_ok_and(|file| file.jev.is_some()),
+            Err(_) => false,
+        }
+    }
 }
 
 /// A typed question. Each variant maps to one Jev question type.
@@ -168,5 +182,35 @@ impl Client {
         let body = Request { model: self.config.model.as_deref(), state, questions };
         let response: Response = request.send_json(&body).map_err(http)?.body_mut().read_json().map_err(http)?;
         Ok(Answers(response.answers))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "topo-jev-config-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn configured_needs_a_jev_table_in_the_workspace_config() {
+        let dir = temp();
+        assert!(!Config::configured(&dir), "a missing config file is not configured");
+        fs::write(dir.join("config.toml"), "[cloud]\nurl = \"https://topo.example\"\n").unwrap();
+        assert!(!Config::configured(&dir), "a config without a [jev] table is not configured");
+        fs::write(dir.join("config.toml"), "[jev]\nbase_url = \"http://127.0.0.1:8000\"\n").unwrap();
+        assert!(Config::configured(&dir), "an explicit [jev] table is configured");
+        fs::write(dir.join("config.toml"), "[jev\n").unwrap();
+        assert!(!Config::configured(&dir), "a malformed config is not configured");
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
