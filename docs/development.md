@@ -134,6 +134,19 @@ cargo run -p topo-gui --features screenshot -- \
   --screenshot qa.png --width 1360 --height 860 --select <node-id>
 ```
 
+To capture every state in one process, across both themes and both Monotone finishes, with a contact sheet to review them:
+
+```bash
+# 25 states x 4 variants = 100 PNGs, plus index.html
+cargo run -p topo-gui --features screenshot -- --screenshot-all qa/
+
+# List the state names, or render only some of them
+cargo run -p topo-gui --features screenshot -- --list-states
+cargo run -p topo-gui --features screenshot -- --screenshot-all qa/ --state default,search,help
+```
+
+`--screenshot-all` builds its own fixture workspace under `<dir>/_fixtures/` (a milestone, tasks with tags, priorities, due dates, statuses and notes, plus an empty and an untagged one), so it needs no workspace argument and takes one Metal context for the whole run.
+
 Key options:
 - `--select <id>`: Select specific node(s) on initial load (comma-separated)
 - `--inspector-width <px>`: Set inspector panel width

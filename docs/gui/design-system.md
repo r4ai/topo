@@ -159,18 +159,26 @@ On macOS 26 and later, `TOPO_GLASS=1` swaps the blur for AppKit's `NSGlassEffect
 
 ## Visual QA
 
-Capture a state in a theme with the screenshot build (macOS):
+Capture one state in a theme with the screenshot build (macOS):
 
 ```bash
 cargo run -p topo-gui --features screenshot -- <workspace> --screenshot out.png --theme <dark|light> [--monotone] ...
 ```
 
-Capture each of these states in both themes, and in both with `--monotone`:
+Or capture the whole table below in both themes and both Monotone finishes in one process, generating its own fixture workspace, and write a contact sheet:
+
+```bash
+cargo run -p topo-gui --features screenshot -- --screenshot-all qa/
+cargo run -p topo-gui --features screenshot -- --list-states   # the names below, plus the shell states
+```
+
+The table lives in `crates/topo-gui/src/qa.rs`: `--screenshot-all` walks it, and `--list-states` prints every name, so a new state is added in one place. Beyond the states below it also captures the multi-selection inspector, the priority filter, the Jev suggestions and busy toolbar, an empty workspace, an untagged grouping, and the three shell states (welcome, uninitialized folder, switcher with a missing recent).
 
 | State | Flags |
 | :--- | :--- |
 | Default | none |
 | Select | `--select <id>` |
+| Milestone | `--select <milestone-id>` |
 | Milestone, grouped | `--select <milestone-id> --group-by-tag` |
 | Help | `--help-overlay` |
 | Theme popover | `--theme-menu` (add `--monotone` to capture the switch on) |

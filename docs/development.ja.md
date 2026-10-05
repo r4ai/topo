@@ -134,6 +134,19 @@ cargo run -p topo-gui --features screenshot -- \
   --screenshot qa.png --width 1360 --height 860 --select <node-id>
 ```
 
+全状態を1プロセスでまとめて撮影し、両テーマ・両Monotoneを網羅したコンタクトシートを作る場合：
+
+```bash
+# 25状態 × 4バリアント = 100枚のPNGと index.html
+cargo run -p topo-gui --features screenshot -- --screenshot-all qa/
+
+# 状態名の一覧、または一部だけを描画
+cargo run -p topo-gui --features screenshot -- --list-states
+cargo run -p topo-gui --features screenshot -- --screenshot-all qa/ --state default,search,help
+```
+
+`--screenshot-all` は `<dir>/_fixtures/` に専用のfixtureワークスペース（マイルストーン、タグ・優先度・期限・ステータス・ノートを持つタスク、空ワークスペース、未タグのワークスペース）を生成するため、ワークスペース引数は不要で、実行全体で1つのMetalコンテキストを共有する。
+
 主要オプション：
 - `--select <id>`: 特定ノードを選択した状態で描画（カンマ区切りで複数指定可能）
 - `--inspector-width <px>`: 右パネルの幅を指定

@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 
 /// The largest window side in points. The offscreen texture is twice that in
 /// pixels, which stays well inside Metal's 32768-pixel limit.
@@ -14,6 +14,7 @@ const MAX_SIDE: i64 = 8192;
 /// Desktop editor for a topo workspace
 #[derive(Debug, Parser)]
 #[command(name = "topo-gui", version)]
+#[command(group(ArgGroup::new("capture").args(["screenshot", "screenshot_all"]).multiple(false)))]
 #[cfg_attr(not(feature = "screenshot"), allow(dead_code))]
 pub struct Args {
     /// Directory to search for a `.topo` workspace (default: the current directory)
@@ -24,17 +25,33 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub screenshot: Option<PathBuf>,
 
+    /// Render every QA state into this directory in one headless run, covering
+    /// both themes and Monotone, and write an index.html to review them
+    /// (needs a build with the `screenshot` feature)
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["workspace", "theme", "monotone"])]
+    pub screenshot_all: Option<PathBuf>,
+
+    /// Only render these states with `--screenshot-all` (repeatable or
+    /// comma-separated; the default is every state named by `--list-states`)
+    #[arg(long = "state", requires = "screenshot_all", value_name = "NAME", value_delimiter = ',')]
+    pub states: Vec<String>,
+
+    /// Print the QA state names `--screenshot-all` renders, then exit
+    /// (needs a build with the `screenshot` feature)
+    #[arg(long)]
+    pub list_states: bool,
+
     /// Captured window width in points
-    #[arg(long, requires = "screenshot", value_name = "POINTS", default_value_t = 1360, value_parser = points())]
+    #[arg(long, requires = "capture", value_name = "POINTS", default_value_t = 1360, value_parser = points())]
     pub width: u32,
 
     /// Captured window height in points
-    #[arg(long, requires = "screenshot", value_name = "POINTS", default_value_t = 860, value_parser = points())]
+    #[arg(long, requires = "capture", value_name = "POINTS", default_value_t = 860, value_parser = points())]
     pub height: u32,
 
     /// Captured inspector width in points; derived from the window when
     /// omitted, never read from the saved preference, so a capture is reproducible
-    #[arg(long, requires = "screenshot", value_name = "POINTS", value_parser = points())]
+    #[arg(long, requires = "capture", value_name = "POINTS", value_parser = points())]
     pub inspector_width: Option<u32>,
 
     /// Ids or unique id prefixes of the nodes to select before capturing
@@ -214,6 +231,33 @@ mod tests {
         assert!(!parse(&["--screenshot", "o.png"]).unwrap().chooser);
         assert!(parse(&["--chooser"]).is_err());
         assert!(parse(&["--recent", "a"]).is_err());
+    }
+
+    #[test]
+    fn the_batch_capture_is_its_own_kind_of_capture() {
+        let args =
+            parse(&["--screenshot-all", "out", "--state", "default,help", "--state=search", "--width", "800"]).unwrap();
+        assert_eq!(args.screenshot_all, Some("out".into()));
+        assert_eq!(args.screenshot, None);
+        assert_eq!(args.states, ["default", "help", "search"]);
+        assert_eq!(args.width, 800);
+        // The two capture modes are exclusive, and so are a workspace argument
+        // and a theme/finish (the batch always covers them all).
+        assert!(parse(&["--screenshot", "o.png", "--screenshot-all", "out"]).is_err());
+        assert!(parse(&["--screenshot-all", "out", "dir"]).is_err());
+        assert!(parse(&["--screenshot-all", "out", "--theme", "light"]).is_err());
+        assert!(parse(&["--screenshot-all", "out", "--monotone"]).is_err());
+        // `--state` and `--list-states` mean nothing without the batch capture.
+        assert!(parse(&["--state", "default"]).is_err());
+        assert_eq!(parse(&["--screenshot-all", "o"]).unwrap().states, Vec::<String>::new());
+    }
+
+    #[test]
+    fn listing_the_states_stands_alone() {
+        assert!(parse(&["--list-states"]).unwrap().list_states);
+        assert!(!parse(&[]).unwrap().list_states);
+        // It needs no capture, but it is still an option the parser accepts.
+        assert!(parse(&["--list-states", "--width", "800"]).is_err());
     }
 
     #[test]

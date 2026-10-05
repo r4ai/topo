@@ -27,6 +27,8 @@ mod notes;
 mod perf_tests;
 mod persistence;
 mod polling;
+#[cfg(feature = "screenshot")]
+mod qa;
 mod repository;
 #[cfg(feature = "screenshot")]
 mod screenshot;
@@ -1489,10 +1491,22 @@ fn open_workspace(start: Option<&Path>) -> Result<Workspace> {
 fn main() -> Result<()> {
     let args = <args::Args as clap::Parser>::parse();
     #[cfg(not(feature = "screenshot"))]
-    if args.screenshot.is_some() {
+    if args.screenshot.is_some() || args.screenshot_all.is_some() || args.list_states {
         anyhow::bail!(
-            "--screenshot needs a build with the `screenshot` feature (cargo build -p topo-gui --features screenshot)"
+            "--screenshot, --screenshot-all and --list-states need a build with the `screenshot` feature \
+             (cargo build -p topo-gui --features screenshot)"
         );
+    }
+    #[cfg(feature = "screenshot")]
+    if args.list_states {
+        for name in qa::state_names() {
+            println!("{name}");
+        }
+        return Ok(());
+    }
+    #[cfg(feature = "screenshot")]
+    if let Some(dir) = &args.screenshot_all {
+        return qa::render_all(dir, &args, &args.states);
     }
     #[cfg(feature = "screenshot")]
     if let Some(path) = &args.screenshot {

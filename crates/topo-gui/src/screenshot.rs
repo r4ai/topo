@@ -187,7 +187,7 @@ fn apply_theme(options: &Args) {
     theme::apply(mode, options.monotone, gpui::WindowAppearance::default());
 }
 
-fn write_png(image: &image::RgbaImage, path: &Path) -> Result<()> {
+pub(crate) fn write_png(image: &image::RgbaImage, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
