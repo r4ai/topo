@@ -2093,6 +2093,8 @@ fn the_toolbar_button_opens_a_menu_that_sets_the_mode_and_monotone(cx: &mut Test
     assert!(ui.cx.debug_bounds("theme-menu").is_none());
     ui.click_on("theme");
     assert!(ui.cx.debug_bounds("theme-menu").is_some());
+    // The Monotone choice is a switch, not a check mark.
+    assert!(ui.cx.debug_bounds("theme-monotone-switch").is_some());
     ui.click_on("theme-light");
     assert_eq!((theme::mode(), theme::current()), (theme::ThemeMode::Light, &theme::LIGHT));
     assert!(ui.cx.debug_bounds("theme-menu").is_some(), "choosing a mode keeps the menu open");

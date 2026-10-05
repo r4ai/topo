@@ -167,8 +167,6 @@ impl TopoApp {
                             .flex()
                             .flex_shrink_0()
                             .items_center()
-                            .gap_2()
-                            .child(div().text_color(t.milestone).child("◆"))
                             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).text_sm().child("topo")),
                     )
                     // The workspace name is the first thing to give way in a narrow window.
@@ -311,7 +309,6 @@ impl TopoApp {
 
     /// The popover under the theme button: the mode, and the Monotone switch.
     fn theme_menu_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = theme::current();
         let mut modes = ui::segmented();
         for (id, mode) in [
             ("theme-system", theme::ThemeMode::System),
@@ -352,7 +349,7 @@ impl TopoApp {
                     .justify_between()
                     .h(px(H_BUTTON))
                     .child("Monotone")
-                    .child(div().text_color(t.fg_muted).child(if monotone { "✓" } else { "" }))
+                    .child(div().debug_selector(|| "theme-monotone-switch".to_owned()).child(ui::switch(monotone)))
                     .on_click(cx.listener(|app, _, _, cx| {
                         let on = !theme::monotone();
                         theme::set_monotone(on, cx);

@@ -25,13 +25,13 @@ The previous look, audited before the redesign:
 Three modes: **System** (default, follows the OS appearance live), **Light**, **Dark**. Each has a hued palette (`DARK`, `LIGHT`) and a monotone one (`DARK_MONO`, `LIGHT_MONO`) that differ only in the signal roles.
 
 - **Storage.** `theme` in the per-user `topo-gui/config.toml` (`UserConfig`), as `"system"`, `"light"` or `"dark"`, and `monotone` as a boolean. Defaults are omitted from the file. Neither is ever stored in a repository's `.topo/`.
-- **Switching.** `View > Appearance` in the native menu: System, Light, Dark, then a checkable Monotone item. The theme button in the toolbar toggles a popover (Escape or a click outside closes it) holding the three modes as a segmented control and a Monotone row. Choosing a mode names it in a toast. A switch repaints every window at once and is saved immediately.
+- **Switching.** `View > Appearance` in the native menu: System, Light, Dark, then a checkable Monotone item. The theme button in the toolbar toggles a popover (Escape or a click outside closes it) holding the three modes as a segmented control and a Monotone switch. Choosing a mode names it in a toast. A switch repaints every window at once and is saved immediately.
 - **Implementation.** The active theme is a `&'static Theme` in a thread-local cell, read with `theme::current()`. `theme::apply(mode, monotone, appearance)` sets it and `theme::set_mode` / `theme::set_monotone` also save and refresh the windows. Views take `let t = theme::current();` once per render function.
 - **Screenshots and tests** never read the saved choice. They render Dark and hued unless `--theme light` or `--monotone` is given, and are always opaque.
 
 ### Monotone
 
-An opt-in option, off by default and independent of the mode. It maps every signal role to a neutral (the table below), leaving only the alarms `danger`, `warn` and `success` coloured. It is stored as `monotone` in the user config and toggled from `View > Appearance` or the toolbar theme menu.
+An opt-in option, off by default and independent of the mode. It maps every signal role to a neutral (the table below), leaving only the alarms `danger`, `warn` and `success` coloured. It is stored as `monotone` in the user config and toggled from `View > Appearance` or the toolbar theme popover's switch.
 
 ## Colour roles
 
@@ -129,6 +129,7 @@ All in `ui.rs`. A view composes these instead of styling a `div` by hand.
 | `button` | Variants: plain (`control`), primary (`emphasis` fill), danger (`danger` text and tint), ghost (no fill until hover). Height `H_BUTTON`, radius `R_MD` |
 | `icon_button` | `H_ICON` square, ghost |
 | `segmented` | One `control` track, the chosen segment in `control_active`; a segment's label may be any element, so a glyph can carry its own colour |
+| `switch` | An on/off toggle: `accent` track with an `on_accent` knob when on, `control` track with an `fg_muted` knob when off |
 | `input_frame` | `field` fill, hairline; `accent` border on focus, `danger` on error |
 | `list_row` | Hover `control_hover`, selected `control_active` |
 | `panel` | `chrome` fill with a hairline on the content side |
@@ -170,6 +171,7 @@ Capture each of the eight states in both themes, and in both with `--monotone`:
 | Select | `--select <id>` |
 | Milestone, grouped | `--select <milestone-id> --group-by-tag` |
 | Help | `--help-overlay` |
+| Theme popover | `--theme-menu` (add `--monotone` to capture the switch on) |
 | Search | `--search <query>` |
 | Notes | `--select <id> --edit-notes` |
 | Inline edit | `--select <id> --edit tags --type <text>` |

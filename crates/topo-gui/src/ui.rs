@@ -99,6 +99,24 @@ pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) 
         .child(glyph.into())
 }
 
+/// A small on/off switch. `on` fills the track with the accent and moves the knob to the end.
+pub fn switch(on: bool) -> Div {
+    let t = current();
+    div()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .w(px(30.))
+        .h(px(17.))
+        .px(px(2.))
+        .rounded_full()
+        .border_1()
+        .border_color(if on { t.accent } else { t.border_strong })
+        .bg(if on { t.accent } else { t.control })
+        .map(|d| if on { d.justify_end() } else { d.justify_start() })
+        .child(div().size(px(11.)).rounded_full().bg(if on { t.on_accent } else { t.fg_muted }))
+}
+
 /// The track that holds a row of segments.
 pub fn segmented() -> Div {
     let t = current();

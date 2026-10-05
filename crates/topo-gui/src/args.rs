@@ -69,6 +69,10 @@ pub struct Args {
     #[arg(long, requires = "screenshot")]
     pub help_overlay: bool,
 
+    /// Capture with the theme popover (mode and Monotone switch) open
+    #[arg(long, requires = "screenshot")]
+    pub theme_menu: bool,
+
     /// Capture with done and dropped nodes hidden; never read from the saved preference
     #[arg(long, requires = "screenshot")]
     pub hide_completed: bool,
@@ -154,6 +158,7 @@ mod tests {
         // Capture options mean nothing without a capture.
         assert!(parse(&["--width", "800"]).is_err());
         assert!(parse(&["--help-overlay"]).is_err());
+        assert!(parse(&["--theme-menu"]).is_err());
         assert!(parse(&["--screenshot", "o.png", "--select", "a,,b"]).is_err());
     }
 
