@@ -223,6 +223,7 @@ fn jev_busy(app: &mut TopoApp, _: &mut Window, _: &mut Context<TopoApp>) {
 /// `only` filters the state names; an unknown name is an error that lists the
 /// known ones, so a typo never passes for an empty run.
 pub(crate) fn render_all(out: &Path, options: &Args, only: &[String]) -> Result<()> {
+    crate::animation::set_enabled(false);
     let names = state_names();
     for requested in only {
         anyhow::ensure!(

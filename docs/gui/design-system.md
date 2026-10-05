@@ -157,6 +157,10 @@ On macOS 26 and later, `TOPO_GLASS=1` swaps the blur for AppKit's `NSGlassEffect
 - GPUI cannot set the window's native appearance, so choosing Light on a dark OS leaves the blur material dark. `glass_alpha` is high enough to keep the theme legible.
 - The offscreen renderer cannot capture the OS blur, so screenshots and tests are always opaque.
 
+## Motion
+
+Surfaces settle in with a short, non-bouncy spring; opacity arrives sooner than position, and backdrops fade independently of their cards. The timing, camera continuity, reduced-motion and headless rules are in [motion.md](motion.md). Motion preserves layout, margins and hierarchy; hover, press and focus remain instant.
+
 ## Visual QA
 
 Capture one state in a theme with the screenshot build (macOS):

@@ -25,6 +25,7 @@ use gpui::{
     MouseButton, Rgba, StyledText, Window, anchored, deferred, div, prelude::*, px,
 };
 
+use crate::animation::{self, Motion as _};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, metrics};
 use crate::ui;
@@ -413,7 +414,7 @@ impl Combobox {
                 .text_xs()
                 .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
                 .child(list)
-                .into_any_element(),
+                .rise_in("combo-list-motion", animation::FAST),
         })
     }
 }

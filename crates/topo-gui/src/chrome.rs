@@ -6,6 +6,7 @@ use gpui::{
 };
 use topo_core::{Kind, NodeId, Priority};
 
+use crate::animation::{self, Motion as _};
 use crate::theme::{
     self,
     metrics::{H_BUTTON, H_ICON, R_LG, R_SM, R_XL, T_BODY, T_BODY_LG, T_HEADING, T_SMALL, T_TITLE},
@@ -358,8 +359,13 @@ impl TopoApp {
                     })),
             );
         div().absolute().right(px(0.)).top_full().mt_1().child(
-            deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(menu))
-                .with_priority(1),
+            deferred(
+                anchored()
+                    .anchor(Anchor::TopRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(menu.rise_in("theme-menu-motion", animation::STANDARD)),
+            )
+            .with_priority(1),
         )
     }
 
@@ -389,7 +395,15 @@ impl TopoApp {
                         .on_click(cx.listener(|app, _, _, cx| app.discard_pending(cx))),
                 )
             });
-        div().absolute().top(px(12.)).left_0().right_0().flex().justify_center().px_3().child(stop_click(bar))
+        div()
+            .absolute()
+            .top(px(12.))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .px_3()
+            .child(stop_click(bar).rise_in("save-status-motion", animation::STANDARD))
     }
 
     pub(crate) fn zoom_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -621,7 +635,7 @@ impl TopoApp {
                 .right_0()
                 .flex()
                 .justify_center()
-                .child(stop_click(card.occlude()))
+                .child(stop_click(card.occlude()).rise_in("prompt-motion", animation::SLOW))
                 .into_any_element(),
         )
     }
@@ -647,7 +661,8 @@ impl TopoApp {
                             .min_w(px(0.))
                             .debug_selector(|| "toast-text".to_owned())
                             .child(toast.text.clone()),
-                    ),
+                    )
+                    .rise_in("toast-motion", animation::STANDARD),
             ),
         )
     }
@@ -901,8 +916,10 @@ impl TopoApp {
                                     .child(group(notes))
                                     .child(group(mouse)),
                             ),
-                    ),
+                    )
+                    .rise_in("help-card-motion", animation::SLOW),
             )
+            .fade_background("help-motion", t.scrim)
     }
 }
 

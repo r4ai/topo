@@ -7,6 +7,7 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod animation;
 mod args;
 mod branding;
 mod chrome;
@@ -163,7 +164,43 @@ struct Toast {
 struct Anim {
     from: (Point<Pixels>, f32),
     to: (Point<Pixels>, f32),
+    /// Position and zoom velocity at the instant this move was retargeted.
+    velocity: (Point<Pixels>, f32),
     start: Instant,
+}
+
+impl Anim {
+    fn sample(&self, elapsed: Duration) -> ((Point<Pixels>, f32), (Point<Pixels>, f32)) {
+        let seconds = elapsed.as_secs_f32();
+        let (x, vx) = animation::spring_state(
+            f32::from(self.from.0.x),
+            f32::from(self.to.0.x),
+            f32::from(self.velocity.0.x),
+            seconds,
+        );
+        let (y, vy) = animation::spring_state(
+            f32::from(self.from.0.y),
+            f32::from(self.to.0.y),
+            f32::from(self.velocity.0.y),
+            seconds,
+        );
+        let (zoom, vz) = animation::spring_state(self.from.1, self.to.1, self.velocity.1, seconds);
+        let clamped_zoom = zoom.clamp(f32::MIN_POSITIVE, MAX_ZOOM);
+        // A long reveal needs a little more settling time than a nearby zoom.
+        // End only once the remaining error is subpixel, instead of snapping a
+        // distant destination at a fixed deadline.
+        if elapsed >= animation::CAMERA
+            && (x - f32::from(self.to.0.x)).abs() <= 0.25
+            && (y - f32::from(self.to.0.y)).abs() <= 0.25
+            && (clamped_zoom - self.to.1).abs() <= 0.0001
+            && vx.abs() <= 5.
+            && vy.abs() <= 5.
+            && vz.abs() <= 0.001
+        {
+            return (self.to, (point(px(0.), px(0.)), 0.));
+        }
+        ((point(px(x), px(y)), clamped_zoom), (point(px(vx), px(vy)), if zoom == clamped_zoom { vz } else { 0. }))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -957,21 +994,36 @@ impl TopoApp {
     }
 
     fn animate_to(&mut self, offset: Point<Pixels>, zoom: f32) {
-        self.anim = Some(Anim { from: (self.offset, self.zoom), to: (offset, zoom), start: Instant::now() });
+        match animation::enabled() {
+            true => {
+                let now = Instant::now();
+                let velocity = match &self.anim {
+                    Some(anim) => {
+                        let (position, velocity) = anim.sample(now.duration_since(anim.start));
+                        (self.offset, self.zoom) = position;
+                        velocity
+                    }
+                    None => (point(px(0.), px(0.)), 0.),
+                };
+                self.anim = Some(Anim { from: (self.offset, self.zoom), to: (offset, zoom), velocity, start: now })
+            }
+            false => {
+                self.anim = None;
+                (self.offset, self.zoom) = (offset, zoom);
+            }
+        }
     }
 
     /// Advances the camera animation; returns whether it needs another frame.
     fn step_anim(&mut self) -> bool {
         let Some(anim) = &self.anim else { return false };
-        let t = (anim.start.elapsed().as_secs_f32() / 0.22).min(1.0);
-        let ease = 1.0 - (1.0 - t).powi(3);
-        let (from, to) = (anim.from, anim.to);
-        self.offset = from.0 + (to.0 - from.0) * ease;
-        self.zoom = from.1 + (to.1 - from.1) * ease;
-        if t >= 1.0 {
+        let (position, velocity) = anim.sample(anim.start.elapsed());
+        let done = !animation::enabled() || (position == anim.to && velocity == (point(px(0.), px(0.)), 0.));
+        (self.offset, self.zoom) = if done { anim.to } else { position };
+        if done {
             self.anim = None;
         }
-        t < 1.0
+        !done
     }
 
     /// Frames the whole graph in the canvas. The initial framing keeps text
@@ -1583,6 +1635,7 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
                 KeyBinding::new("ctrl-o", repository::OpenRepository, None),
             ]);
             theme::set_translucent(window_background() != WindowBackgroundAppearance::Opaque);
+            animation::set_enabled(true);
             theme::init(cx);
             theme::apply(config.theme, config.monotone, cx.window_appearance());
             cx.set_menus(menus(config.theme, config.monotone));
@@ -1636,6 +1689,20 @@ mod ui_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_camera_move_settles_without_a_large_final_snap() {
+        let anim = Anim {
+            from: (point(px(0.), px(0.)), 1.),
+            to: (point(px(100_000.), px(-100_000.)), 0.5),
+            velocity: (point(px(0.), px(0.)), 0.),
+            start: Instant::now(),
+        };
+        let (position, velocity) = anim.sample(animation::CAMERA);
+        assert_ne!(position, anim.to);
+        assert!(velocity.0.x > px(0.));
+        assert_eq!(anim.sample(Duration::from_secs(2)), (anim.to, (point(px(0.), px(0.)), 0.)));
+    }
 
     #[test]
     fn tags_are_split_stripped_and_deduplicated() {

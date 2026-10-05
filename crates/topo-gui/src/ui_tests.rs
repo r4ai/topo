@@ -77,6 +77,39 @@ const SAMPLE: &[(&str, Kind, &[&str], &[&str])] = &[
     ("m", Kind::Milestone, &[], &[]),
 ];
 
+#[gpui::test]
+fn camera_retargeting_keeps_velocity_and_disabling_motion_finishes_the_move(cx: &mut TestAppContext) {
+    struct ResetMotion;
+    impl Drop for ResetMotion {
+        fn drop(&mut self) {
+            crate::animation::set_enabled(false);
+        }
+    }
+    let ui = open(cx, SAMPLE);
+    let _reset = ResetMotion;
+    crate::animation::set_enabled(true);
+    ui.app.update(ui.cx, |app, _| {
+        app.anim = None;
+        app.offset = point(px(0.), px(0.));
+        app.zoom = 1.;
+        app.animate_to(point(px(1000.), px(400.)), 1.5);
+        // Retarget between rendered frames, while the first move has velocity.
+        app.anim.as_mut().unwrap().start -= std::time::Duration::from_millis(80);
+        app.animate_to(point(px(-100.), px(50.)), 0.75);
+        let next = app.anim.as_ref().unwrap();
+        assert!(next.from.0.x > px(0.) && next.from.0.x < px(1000.));
+        assert!(next.velocity.0.x > px(0.));
+        assert!(next.velocity.1 > 0.);
+        assert_eq!(next.sample(std::time::Duration::ZERO).0, next.from);
+
+        crate::animation::set_enabled(false);
+        assert!(!app.step_anim());
+        assert!(app.anim.is_none());
+        assert_eq!(app.offset, point(px(-100.), px(50.)));
+        assert_eq!(app.zoom, 0.75);
+    });
+}
+
 impl Ui<'_> {
     fn resize(&mut self, width: f32, height: f32) {
         self.cx.simulate_resize(size(px(width), px(height)));

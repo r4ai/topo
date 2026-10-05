@@ -21,6 +21,7 @@ use crate::{TopoApp, text_input};
 ///
 /// Must run on the macOS main thread, like every AppKit interaction.
 pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
+    crate::animation::set_enabled(false);
     apply_theme(options);
     let platform = gpui_platform::current_platform(false);
     let mut cx = VisualTestAppContext::with_asset_source(platform, std::sync::Arc::new(crate::icons::Assets));
@@ -148,6 +149,7 @@ pub fn render(ws: Workspace, path: &Path, options: &Args) -> Result<()> {
 /// The start is found as at launch from `TOPO_DIR`, the argument and the current directory, never from the saved
 /// history; the recents are the ones given.
 pub fn render_shell(path: &Path, options: &Args) -> Result<()> {
+    crate::animation::set_enabled(false);
     apply_theme(options);
     let platform = gpui_platform::current_platform(false);
     let mut cx = VisualTestAppContext::with_asset_source(platform, std::sync::Arc::new(crate::icons::Assets));

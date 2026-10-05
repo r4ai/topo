@@ -16,6 +16,7 @@ use gpui::{
 use topo_core::{Edit, NodeId};
 
 use crate::TopoApp;
+use crate::animation::{self, Motion as _};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::metrics::{T_BODY_LG, T_TITLE};
 use crate::theme::{self, alpha};
@@ -210,8 +211,10 @@ impl TopoApp {
                             .child(choice(ui::button_danger("notes-discard", "Discard"), kbd("D"), Some(false)))
                             .child(choice(ui::button_ghost("notes-keep", "Keep editing"), kbd("Esc"), None))
                             .child(choice(ui::button_primary("notes-save", "Save"), on_primary, Some(true))),
-                    ),
+                    )
+                    .rise_in("notes-card-motion", animation::SLOW),
             )
+            .fade_background("notes-motion", t.scrim)
     }
 
     pub(crate) fn on_notes_event(

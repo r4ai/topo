@@ -8,6 +8,7 @@ use gpui::{
 };
 
 use super::{RecentInfo, RepositoryWindow, folder_name, folder_of};
+use crate::animation::{self, Motion as _};
 use crate::chrome::on_primary_kbd;
 use crate::theme::{
     self,
@@ -98,7 +99,20 @@ impl RepositoryWindow {
             }
             None => div().absolute().size_full().flex(),
         };
-        layer.items_start().justify_center().px(px(S6)).pt(px(top)).child(self.card(window, height - top - S6, cx))
+        layer
+            .items_start()
+            .justify_center()
+            .px(px(S6))
+            .pt(px(top))
+            .child(self.card(window, height - top - S6, cx))
+            .fade_background(
+                "switcher-motion",
+                if self.editor.is_some() {
+                    theme::current().scrim
+                } else {
+                    theme::alpha(theme::current().scrim, 0.).into()
+                },
+            )
     }
 
     fn card(&self, window: &Window, max_height: f32, cx: &mut Context<Self>) -> impl IntoElement {
@@ -124,6 +138,7 @@ impl RepositoryWindow {
                 false => self.list(&rows, path_budget(width), cx).into_any_element(),
             })
             .child(self.footer(cx))
+            .rise_in("repository-switcher-motion", animation::SLOW)
     }
 
     /// Nothing is open and nothing was opened before.
