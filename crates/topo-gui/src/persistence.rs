@@ -315,7 +315,7 @@ impl TopoApp {
                     app.redo.clear();
                     app.prune_selection();
                 }
-                if changed && app.prompt.is_some() {
+                if changed && app.prompt.get().is_some() {
                     app.refresh_palette(cx);
                 }
                 if saving || changed {

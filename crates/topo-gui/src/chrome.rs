@@ -1,15 +1,15 @@
 //! Everything around the graph: toolbar, prompt, toasts, zoom controls and help.
 
 use gpui::{
-    Anchor, AnyElement, App, Context, Div, MouseButton, Pixels, Rgba, SharedString, Stateful, Window,
-    WindowControlArea, anchored, deferred, div, prelude::*, px,
+    Anchor, AnyElement, App, Bounds, Context, Div, Hsla, MouseButton, Pixels, Rgba, SharedString, Stateful, Window,
+    WindowControlArea, anchored, canvas, deferred, div, fill, point, prelude::*, px, size,
 };
 use topo_core::{Kind, NodeId, Priority};
 
-use crate::animation::{self, Motion as _};
+use crate::animation::{self, Pivot, Surface, preset};
 use crate::theme::{
     self,
-    metrics::{H_BUTTON, H_ICON, R_LG, R_SM, R_XL, T_BODY, T_BODY_LG, T_HEADING, T_SMALL, T_TITLE},
+    metrics::{H_BUTTON, H_ICON, R_LG, R_MD, R_SM, R_XL, S1, T_BODY, T_BODY_LG, T_HEADING, T_SMALL, T_TITLE},
 };
 use crate::ui::{self, Elevation};
 use crate::{NewNode, OrganizeKind, Prompt, TopoApp};
@@ -87,7 +87,7 @@ impl TopoApp {
         }
     }
 
-    pub(crate) fn toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         let ready = self.graph_cache.ready.clone();
         let doing = self.graph_cache.doing.clone();
@@ -110,15 +110,17 @@ impl TopoApp {
         let history = |id: &'static str, icon: ui::Icon, undo: bool, enabled: bool, cx: &mut Context<Self>| {
             stop_click(match enabled {
                 true => ui::icon_button_svg(id, icon),
-                false => div()
-                    .id(id)
-                    .debug_selector(|| id.to_owned())
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_center()
-                    .size(px(H_ICON))
-                    .child(ui::icon(icon, t.fg_faint)),
+                false => ui::Pressable::unpressable(
+                    div()
+                        .id(id)
+                        .debug_selector(|| id.to_owned())
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .size(px(H_ICON))
+                        .child(ui::icon(icon, t.fg_faint)),
+                ),
             })
             .on_click(cx.listener(move |app, _, _, cx| app.restore(undo, cx)))
         };
@@ -301,7 +303,7 @@ impl TopoApp {
                             cx.notify();
                         },
                     )))
-                    .when(self.theme_menu, |d| d.child(self.theme_menu_popover(cx))),
+                    .children(self.theme_menu_popover(window, cx)),
             )
             .child(stop_click(ui::icon_button_svg("help", ui::Icon::Help)).on_click(cx.listener(|app, _, _, cx| {
                 app.show_help = !app.show_help;
@@ -309,22 +311,62 @@ impl TopoApp {
             })))
     }
 
-    /// The popover under the theme button: the mode, and the Monotone switch.
-    fn theme_menu_popover(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut modes = ui::segmented();
-        for (id, mode) in [
+    /// The popover under the theme button: the mode, and the Monotone switch. It stays drawn,
+    /// inert, while it shrinks back into the button.
+    fn theme_menu_popover(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let t = theme::current();
+        let open = self.theme_menu;
+        let [opacity, travel] = animation::presence(window, cx, "theme-menu-motion", open, preset::SNAPPY)?;
+        // Called only while the menu is drawn, so it opens with the thumb and knob already in place.
+        let targets = [theme::mode().index() as f32, f32::from(theme::monotone())];
+        let [progress, monotone] =
+            animation::springs(window, cx, "theme-menu-selection", None, targets, Some(preset::SNAPPY));
+        // A thumb that slides between the three equal-width segments, drawn behind
+        // the labels so it reads as a single moving selection.
+        let thumb = canvas(
+            |_, _, _| (),
+            move |bounds, (), window, _| {
+                let pad = S1;
+                let gap = S1;
+                let count = 3.;
+                let inner = f32::from(bounds.size.width) - pad * 2.;
+                let seg_w = (inner - gap * (count - 1.)) / count;
+                let left = pad + progress * (seg_w + gap);
+                let thumb = Bounds::new(
+                    bounds.origin + point(px(left), px(pad)),
+                    size(px(seg_w), px(f32::from(bounds.size.height) - pad * 2.)),
+                );
+                window.paint_quad(fill(thumb, t.control_active).corner_radii(px(R_SM)));
+            },
+        );
+        let mut modes = div()
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(S1))
+            .p(px(S1))
+            .rounded(px(R_MD))
+            .bg(t.control)
+            .border_1()
+            .border_color(t.hairline)
+            // The thumb is painted first so the labels stay on top of it.
+            .child(thumb.absolute().left(px(0.)).top(px(0.)).size_full());
+        for (i, (id, mode)) in [
             ("theme-system", theme::ThemeMode::System),
             ("theme-light", theme::ThemeMode::Light),
             ("theme-dark", theme::ThemeMode::Dark),
-        ] {
-            modes = modes.child(ui::segment(id, mode.label(), theme::mode() == mode).flex_1().on_click(cx.listener(
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let color = animation::lerp(t.fg_muted, t.fg, (1. - (progress - i as f32).abs()).clamp(0., 1.));
+            modes = modes.child(ui::segment(id, mode.label(), false).text_color(color).flex_1().on_click(cx.listener(
                 move |app, _, _, cx| {
                     theme::set_mode(mode, cx);
                     app.toast(format!("Theme: {}", mode.label()), false, cx);
                 },
             )));
         }
-        let monotone = theme::monotone();
         let menu = ui::glass(Elevation::Popover)
             .id("theme-menu")
             .debug_selector(|| "theme-menu".to_owned())
@@ -338,9 +380,12 @@ impl TopoApp {
             .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
             // A click away only closes the menu; it does not reach what is under it.
             .on_mouse_down_out(cx.listener(|app, _, _, cx| {
-                app.theme_menu = false;
-                cx.stop_propagation();
-                cx.notify();
+                // Once closed, the menu is on its way out and leaves the click to what is under it.
+                if app.theme_menu {
+                    app.theme_menu = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
             }))
             .child(modes)
             .child(
@@ -358,21 +403,44 @@ impl TopoApp {
                         app.toast(format!("Monotone {}", if on { "on" } else { "off" }), false, cx);
                     })),
             );
-        div().absolute().right(px(0.)).top_full().mt_1().child(
-            deferred(
-                anchored()
-                    .anchor(Anchor::TopRight)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(menu.rise_in("theme-menu-motion", animation::STANDARD)),
-            )
-            .with_priority(1),
+        // The surface sits inside the anchored element, which would otherwise draw it away from its pivot.
+        let menu = animation::surface(menu).scale(0.92 + 0.08 * travel, Pivot::TopRight).opacity(opacity).inert(!open);
+        Some(
+            div().absolute().right(px(0.)).top_full().mt_1().child(
+                deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(menu))
+                    .with_priority(1),
+            ),
         )
     }
 
+    /// The surfaces floating over the canvas, in stacking order.
+    pub(crate) fn overlays(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        [
+            self.persistence_bar(window, cx).map(IntoElement::into_any_element),
+            self.prompt_overlay(window, cx),
+            self.toast_view(window, cx).map(IntoElement::into_any_element),
+            self.help_overlay(window, cx).map(IntoElement::into_any_element),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
     /// The save status as a floating overlay, so showing it never moves the canvas.
-    pub(crate) fn persistence_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// It stays drawn, inert, while it leaves, and keeps saying what it said when it was last needed.
+    pub(crate) fn persistence_bar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        match self.persistence.pending_count() > 0 {
+            true => self.save_bar.show(self.persistence.error.is_some()),
+            false => self.save_bar.hide(),
+        }
+        let [opacity, travel] = self.save_bar.progress(window, cx, "save-bar", preset::SNAPPY)?;
+        let open = self.save_bar.get().is_some();
+        let failed = *self.save_bar.shown()?;
         let t = theme::current();
-        let failed = self.persistence.error.is_some();
         let bar = ui::toast_frame()
             .debug_selector(|| "save-status".into())
             .flex()
@@ -395,15 +463,11 @@ impl TopoApp {
                         .on_click(cx.listener(|app, _, _, cx| app.discard_pending(cx))),
                 )
             });
-        div()
-            .absolute()
-            .top(px(12.))
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .px_3()
-            .child(stop_click(bar).rise_in("save-status-motion", animation::STANDARD))
+        let bar = animation::surface(stop_click(bar))
+            .offset(point(px(0.), px(-8. * (1. - travel))))
+            .opacity(opacity)
+            .inert(!open);
+        Some(div().absolute().top(px(12.)).left_0().right_0().flex().justify_center().px_3().child(bar))
     }
 
     pub(crate) fn zoom_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -565,9 +629,12 @@ impl TopoApp {
             .child(div().truncate().text_color(t.fg).child(self.title_of(id)))
     }
 
-    pub(crate) fn prompt_overlay(&self) -> Option<AnyElement> {
+    /// The prompt card, which stays drawn, inert, while it leaves.
+    pub(crate) fn prompt_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let progress = self.prompt.progress(window, cx, "prompt", preset::SMOOTH)?;
+        let open = self.prompt.get().is_some();
         let t = theme::current();
-        let prompt = self.prompt.as_ref()?;
+        let prompt = self.prompt.shown()?;
         let mut context: Vec<Div> = Vec::new();
         match prompt {
             Prompt::Create(NewNode { milestones, depends_on, required_by, .. }) => {
@@ -635,34 +702,44 @@ impl TopoApp {
                 .right_0()
                 .flex()
                 .justify_center()
-                .child(stop_click(card.occlude()).rise_in("prompt-motion", animation::SLOW))
+                .child(dialog_motion(stop_click(card.occlude()), progress).inert(!open))
                 .into_any_element(),
         )
     }
 
-    pub(crate) fn toast_view(&self) -> Option<impl IntoElement> {
+    /// The toast, which rises into place and sinks back out. A new text replaces the old one in place.
+    pub(crate) fn toast_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let [opacity, travel] = self.toast.progress(window, cx, "toast", preset::SNAPPY)?;
         let t = theme::current();
-        let toast = self.toast.as_ref()?;
+        let toast = self.toast.shown()?;
         let (icon, color) = if toast.error { (ui::Icon::Warning, t.danger) } else { (ui::Icon::Check, t.success) };
         Some(
             div().absolute().bottom(px(58.)).left_0().right_0().flex().justify_center().child(
-                ui::toast_frame()
-                    .debug_selector(|| "toast".to_owned())
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .max_w(px(640.))
-                    .text_size(px(T_BODY_LG))
-                    .text_color(t.fg)
-                    .child(ui::icon(icon, color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .debug_selector(|| "toast-text".to_owned())
-                            .child(toast.text.clone()),
-                    )
-                    .rise_in("toast-motion", animation::STANDARD),
+                animation::surface(
+                    ui::toast_frame()
+                        .debug_selector(|| "toast".to_owned())
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .max_w(px(640.))
+                        .text_size(px(T_BODY_LG))
+                        .text_color(t.fg)
+                        .child(ui::icon(icon, color))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .debug_selector(|| "toast-text".to_owned())
+                                .child(toast.text.clone()),
+                        ),
+                )
+                .offset(point(px(0.), px(12. * (1. - travel))))
+                .scale(0.96 + 0.04 * travel, Pivot::Bottom)
+                .opacity(opacity),
             ),
         )
     }
@@ -736,7 +813,10 @@ impl TopoApp {
         ))
     }
 
-    pub(crate) fn help_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The shortcut sheet, which stays drawn, inert, while it fades out.
+    pub(crate) fn help_overlay(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let open = self.show_help;
+        let progress = animation::presence(window, cx, "help", open, preset::SMOOTH)?;
         let t = theme::current();
         let groups: [(&'static str, &'static [(&'static str, &'static str)]); 8] = [
             (
@@ -849,8 +929,9 @@ impl TopoApp {
             )
         };
         let [create, edit, connect, nav, view, notes, standard, mouse] = groups;
-        ui::scrim()
+        let scrim = ui::scrim()
             .id("help")
+            .bg(dimming(progress[0]))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, _, _, cx| {
@@ -859,7 +940,7 @@ impl TopoApp {
                     cx.notify();
                 }),
             )
-            .child(
+            .child(dialog_motion(
                 ui::dialog()
                     .id("help-card")
                     .debug_selector(|| "help-card".to_owned())
@@ -916,11 +997,25 @@ impl TopoApp {
                                     .child(group(notes))
                                     .child(group(mouse)),
                             ),
-                    )
-                    .rise_in("help-card-motion", animation::SLOW),
-            )
-            .fade_background("help-motion", t.scrim)
+                    ),
+                progress,
+            ));
+        Some(animation::surface(scrim).inert(!open))
     }
+}
+
+/// A dialog card at `[opacity, travel]` of its entrance: it rises 8pt, grows from 0.96 and fades in.
+pub(crate) fn dialog_motion(card: impl IntoElement, [opacity, travel]: [f32; 2]) -> Surface {
+    animation::surface(card)
+        .offset(point(px(0.), px(8. * (1. - travel))))
+        .scale(0.96 + 0.04 * travel, Pivot::Center)
+        .opacity(opacity)
+}
+
+/// The scrim colour of a modal that is `opacity` of the way in.
+pub(crate) fn dimming(opacity: f32) -> Hsla {
+    let scrim = theme::current().scrim;
+    theme::alpha(scrim, scrim.a * opacity)
 }
 
 /// A shortcut hint that stays legible on the primary fill.

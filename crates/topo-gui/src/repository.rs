@@ -269,7 +269,7 @@ impl RepositoryWindow {
                     app.notes_input.focus_handle(cx)
                 } else if app.inline.is_some() {
                     app.combo.focus_handle(cx)
-                } else if app.prompt.is_some() {
+                } else if app.prompt.get().is_some() {
                     app.palette.focus_handle(cx)
                 } else {
                     app.focus.clone()
@@ -563,6 +563,7 @@ impl Render for RepositoryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         let switcher = self.switcher_open();
+        let card = self.switcher(window, cx);
         div()
             .size_full()
             .relative()
@@ -587,7 +588,8 @@ impl Render for RepositoryWindow {
                 }
             }))
             .children(self.editor.clone())
-            .when(switcher, |d| d.on_key_down(cx.listener(Self::key_down)).child(self.switcher(window, cx)))
+            .when(switcher, |d| d.on_key_down(cx.listener(Self::key_down)))
+            .children(card)
             // Above the scrim, so the titlebar still moves the window.
             .when(switcher && chrome::titlebar_inset(window) > px(0.), |d| {
                 d.child(chrome::drag_strip().absolute().top_0().left_0())
@@ -661,7 +663,7 @@ mod tests {
         new.read_with(cx, |app, _| {
             assert!(app.undo.is_empty() && app.redo.is_empty());
             assert!(app.selected_nodes.is_empty());
-            assert!(app.prompt.is_none() && app.notes.is_none() && app.inline.is_none());
+            assert!(app.prompt.get().is_none() && app.notes.is_none() && app.inline.is_none());
             assert_eq!(app.graph().get(&NodeId("same".into())).unwrap().title, "second");
             assert_eq!(app.graph().get(&NodeId("same".into())).unwrap().status, Status::Todo);
         });
@@ -706,7 +708,7 @@ mod tests {
         // Changed notes are settled before the chooser covers the editor.
         shell.update_in(cx, |app, window, cx| app.show_chooser(window, cx));
         assert!(!shell.read_with(cx, |app, _| app.chooser));
-        assert!(editor.read_with(cx, |app, _| app.notes_ask.is_some()));
+        assert!(editor.read_with(cx, |app, _| app.notes_ask.get().is_some()));
         editor.update_in(cx, |app, window, cx| app.answer_notes(None, window, cx));
         editor.read_with(cx, |app, cx| assert_eq!(app.notes_input.read(cx).text(), "unsaved draft"));
         // The editor stays open while the chooser comes and goes, once it has nothing unsaved.
@@ -735,7 +737,7 @@ mod tests {
         assert!(!uninitialized.path().join(".topo").exists());
         assert!(shell.read_with(cx, |app, _| !app.loading && app.error.is_none() && app.pending.is_none()));
         editor.update_in(cx, |app, window, cx| {
-            assert!(app.notes_ask.is_some());
+            assert!(app.notes_ask.get().is_some());
             app.answer_notes(None, window, cx);
             assert!(app.notes.is_some());
             assert_eq!(app.notes_input.read(cx).text(), "unsaved draft");
@@ -912,6 +914,36 @@ mod tests {
 
     fn editor_dir(shell: &Entity<RepositoryWindow>, cx: &mut gpui::VisualTestContext) -> PathBuf {
         shell.read_with(cx, |app, cx| app.current_dir(cx).unwrap())
+    }
+
+    #[gpui::test]
+    fn the_switcher_fades_out_inert_over_the_editor(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, px, size};
+        use std::time::Duration;
+        bind(cx);
+        crate::animation::set_enabled(true);
+        let dir = tempfile::tempdir().unwrap();
+        workspace(dir.path(), "only");
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            RepositoryWindow::new(dir.path().to_owned(), UserConfig::default(), window, cx)
+        });
+        cx.simulate_resize(size(px(720.), px(480.)));
+        let step = |cx: &mut VisualTestContext, milliseconds| {
+            cx.executor().advance_clock(Duration::from_millis(milliseconds));
+            shell.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+        };
+        cx.dispatch_action(OpenRepository);
+        step(cx, 3000);
+        assert!(cx.debug_bounds("repository-switcher").is_some());
+        cx.simulate_keystrokes("escape");
+        step(cx, 30);
+        assert!(cx.debug_bounds("repository-switcher").is_some(), "the card is still drawn while it fades");
+        // The scrim takes no click while it leaves: the toolbar button below opens the switcher again.
+        let button = cx.debug_bounds("repository").expect("the editor is visible").center();
+        cx.simulate_click(button, Modifiers::none());
+        assert!(shell.read_with(cx, |app, _| app.chooser), "a leaving switcher is inert");
+        crate::animation::set_enabled(false);
     }
 
     #[gpui::test]

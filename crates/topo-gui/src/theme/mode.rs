@@ -26,6 +26,15 @@ impl ThemeMode {
         }
     }
 
+    /// The index of this mode among the theme menu's System/Light/Dark segments.
+    pub fn index(self) -> usize {
+        match self {
+            ThemeMode::System => 0,
+            ThemeMode::Light => 1,
+            ThemeMode::Dark => 2,
+        }
+    }
+
     /// The theme this mode draws with when the OS is in `appearance`; `monotone` drops the signal hues.
     pub fn resolve(self, appearance: WindowAppearance, monotone: bool) -> &'static Theme {
         let light = match self {

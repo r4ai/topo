@@ -7,6 +7,8 @@ use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 pub enum Gesture {
     /// Relative zoom step: the new scale is `1 + magnification` times the old one.
     Pinch(f32),
+    /// The fingers of a pinch lifted, or the system took the gesture away.
+    PinchEnd,
     SmartZoom,
 }
 
@@ -38,14 +40,17 @@ pub fn watch() -> (UnboundedReceiver<Gesture>, Monitor) {
 
     const MAGNIFY: u64 = 30;
     const SMART_MAGNIFY: u64 = 32;
+    /// `NSEventPhaseEnded | NSEventPhaseCancelled`.
+    const OVER: u64 = 8 | 16;
     let (tx, rx) = unbounded();
     let handler = ConcreteBlock::new(move |event: *mut Object| -> *mut Object {
         // SAFETY: AppKit passes a valid NSEvent to local monitors on the main thread.
         let kind: u64 = unsafe { msg_send![event, type] };
         let gesture = match kind {
             MAGNIFY => {
+                let phase: u64 = unsafe { msg_send![event, phase] };
                 let magnification: f64 = unsafe { msg_send![event, magnification] };
-                Some(Gesture::Pinch(magnification as f32))
+                Some(if phase & OVER == 0 { Gesture::Pinch(magnification as f32) } else { Gesture::PinchEnd })
             }
             SMART_MAGNIFY => Some(Gesture::SmartZoom),
             _ => None,

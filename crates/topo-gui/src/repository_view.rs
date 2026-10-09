@@ -8,8 +8,8 @@ use gpui::{
 };
 
 use super::{RecentInfo, RepositoryWindow, folder_name, folder_of};
-use crate::animation::{self, Motion as _};
-use crate::chrome::on_primary_kbd;
+use crate::animation::{self, preset};
+use crate::chrome::{self, on_primary_kbd};
 use crate::theme::{
     self,
     metrics::{H_ROW, R_XL, S3, S4, S5, S6, S8, T_BODY, T_BODY_LG, T_HEADING, T_SMALL, T_TITLE, W_PALETTE},
@@ -90,29 +90,24 @@ impl RepositoryWindow {
     }
 
     /// The switcher: the scrim over an open editor and the card in the upper third of the window.
-    pub(super) fn switcher(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// It stays drawn, inert, while it fades out.
+    pub(super) fn switcher(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let open = self.switcher_open();
+        let [opacity, travel] = animation::presence(window, cx, "switcher", open, preset::SMOOTH)?;
+        // Only an open editor is dimmed, and the dimming follows the switcher in and out.
+        let dim = open && self.editor.is_some();
+        let [dimming] = animation::springs(window, cx, "scrim", Some([0.]), [f32::from(dim)], Some(preset::FADE));
         let height = f32::from(window.viewport_size().height);
         let top = (height * 0.15).clamp(56., 140.);
         let layer = match self.editor {
-            Some(_) => {
-                ui::scrim().on_mouse_down(MouseButton::Left, cx.listener(|app, _, window, cx| app.cancel(window, cx)))
-            }
+            Some(_) => ui::scrim()
+                .bg(chrome::dimming(dimming))
+                .on_mouse_down(MouseButton::Left, cx.listener(|app, _, window, cx| app.cancel(window, cx))),
             None => div().absolute().size_full().flex(),
         };
-        layer
-            .items_start()
-            .justify_center()
-            .px(px(S6))
-            .pt(px(top))
-            .child(self.card(window, height - top - S6, cx))
-            .fade_background(
-                "switcher-motion",
-                if self.editor.is_some() {
-                    theme::current().scrim
-                } else {
-                    theme::alpha(theme::current().scrim, 0.).into()
-                },
-            )
+        let card = chrome::dialog_motion(self.card(window, height - top - S6, cx), [opacity, travel]);
+        let layer = layer.items_start().justify_center().px(px(S6)).pt(px(top)).child(card);
+        Some(animation::surface(layer).inert(!open))
     }
 
     fn card(&self, window: &Window, max_height: f32, cx: &mut Context<Self>) -> impl IntoElement {
@@ -138,7 +133,6 @@ impl RepositoryWindow {
                 false => self.list(&rows, path_budget(width), cx).into_any_element(),
             })
             .child(self.footer(cx))
-            .rise_in("repository-switcher-motion", animation::SLOW)
     }
 
     /// Nothing is open and nothing was opened before.

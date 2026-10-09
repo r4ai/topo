@@ -28,12 +28,14 @@ futures = "0.3"
 smallvec = "1"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["png"] }
-# gpui is not regularly published to crates.io; track Zed's repo at a pinned
-# commit, which carries the offscreen renderer the `screenshot` feature uses.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "b77ec90b2e6585622099235d9fb7d708d22ad956" }
+# gpui is not regularly published to crates.io; track a fork of Zed's repo at a
+# pinned commit. It carries the offscreen renderer the `screenshot` feature uses
+# and `Window::with_element_scale` (branch `topo/element-scale`), which the motion
+# code needs. See docs/gui/motion.md before changing the rev.
+gpui = { git = "https://github.com/r4ai/zed", rev = "ca67e362615fed353cb8b19de63aa8978db27fff" }
 # The platform shim `Application::with_platform` needs. `runtime_shaders`
 # compiles Metal shaders at startup, so the Xcode `metal` tool is not required.
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b77ec90b2e6585622099235d9fb7d708d22ad956", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { git = "https://github.com/r4ai/zed", rev = "ca67e362615fed353cb8b19de63aa8978db27fff", features = ["font-kit", "runtime_shaders"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Trackpad pinch and smart zoom, which gpui does not report.
@@ -52,6 +54,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 
 [dev-dependencies]
 # Headless windows that take simulated input, for the interaction tests.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "b77ec90b2e6585622099235d9fb7d708d22ad956", features = ["test-support"] }
+gpui = { git = "https://github.com/r4ai/zed", rev = "ca67e362615fed353cb8b19de63aa8978db27fff", features = ["test-support"] }
 tempfile = "3"
 serde_json.workspace = true
