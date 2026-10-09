@@ -7193,7 +7193,7 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "topo-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -7214,7 +7214,7 @@ dependencies = [
 
 [[package]]
 name = "topo-cloud"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fastrand",
  "getrandom 0.4.3",
@@ -7230,7 +7230,7 @@ dependencies = [
 
 [[package]]
 name = "topo-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -7248,7 +7248,7 @@ dependencies = [
 
 [[package]]
 name = "topo-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "block",
@@ -7276,7 +7276,7 @@ dependencies = [
 
 [[package]]
 name = "topo-jev"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "mockito",
  "serde",
@@ -7289,7 +7289,7 @@ dependencies = [
 
 [[package]]
 name = "topo-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
