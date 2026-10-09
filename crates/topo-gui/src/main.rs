@@ -48,9 +48,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use gpui::{
-    App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Menu, MenuItem,
-    MouseButton, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions, actions, div, point, prelude::*, px, size,
+    App, Application, BackgroundExecutor, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, KeyDownEvent,
+    Menu, MenuItem, MouseButton, MouseDownEvent, OsAction, Pixels, Point, ScrollHandle, SharedString, Subscription,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, div, point, prelude::*, px, size,
 };
 use notify::{RecursiveMode, Watcher};
 use topo_core::wire::Snapshot;
@@ -60,6 +60,7 @@ use topo_jev::{Client, Config};
 
 use futures::StreamExt;
 
+use crate::animation::{Mode, Preset, Spring};
 use crate::combobox::{Choice, ComboEvent, Combobox};
 use crate::gesture::Gesture;
 use crate::inline::{Field, InlineEdit};
@@ -72,6 +73,12 @@ const NODE_W: f32 = 232.0;
 const NODE_H: f32 = 66.0;
 const MIN_ZOOM: f32 = 0.25;
 const MAX_ZOOM: f32 = 2.5;
+/// How close to its target a camera spring rests. An offset is in pixels. A zoom scales
+/// canvas coordinates, so it rests within what moves the far end of a large graph by less.
+const OFFSET_REST: f32 = 0.1;
+const ZOOM_REST: f32 = 1e-6;
+/// The slowest release, in pixels per second, that still throws the canvas.
+const FLING_SPEED: f32 = 80.;
 const UNDO_LIMIT: usize = 200;
 /// How often a cloud workspace is asked whether it changed.
 const REMOTE_POLL: Duration = Duration::from_secs(5);
@@ -86,13 +93,28 @@ enum OrganizeKind {
 
 enum Drag {
     /// The canvas dragged by its background or by a card; `last` is the
-    /// previous mouse position. A background press that never moved is a
-    /// click, which clears the selection.
-    Pan { last: Point<Pixels>, moved: bool, on_card: bool, button: MouseButton },
+    /// previous mouse position, and `velocity` the pointer's smoothed speed in
+    /// pixels per second as of `at`, its last move. A background press that
+    /// never moved is a click, which clears the selection.
+    Pan { last: Point<Pixels>, at: Instant, velocity: Point<Pixels>, moved: bool, on_card: bool, button: MouseButton },
     /// Shift-drag or handle-drag from `source`; `mouse` is in window coordinates.
     Link { source: NodeId, mouse: Point<Pixels> },
     /// The inspector's left border dragged to resize it.
     Resize,
+}
+
+impl Drag {
+    /// A pan that starts with the press `event` at the time `now`.
+    fn pan(event: &MouseDownEvent, on_card: bool, now: Instant) -> Self {
+        Self::Pan {
+            last: event.position,
+            at: now,
+            velocity: Point::default(),
+            moved: false,
+            on_card,
+            button: event.button,
+        }
+    }
 }
 
 /// How a node picked from a list relates to the node it is picked for.
@@ -160,49 +182,6 @@ struct Toast {
     error: bool,
 }
 
-/// An in-flight camera move towards `to` (offset, zoom).
-struct Anim {
-    from: (Point<Pixels>, f32),
-    to: (Point<Pixels>, f32),
-    /// Position and zoom velocity at the instant this move was retargeted.
-    velocity: (Point<Pixels>, f32),
-    start: Instant,
-}
-
-impl Anim {
-    fn sample(&self, elapsed: Duration) -> ((Point<Pixels>, f32), (Point<Pixels>, f32)) {
-        let seconds = elapsed.as_secs_f32();
-        let (x, vx) = animation::spring_state(
-            f32::from(self.from.0.x),
-            f32::from(self.to.0.x),
-            f32::from(self.velocity.0.x),
-            seconds,
-        );
-        let (y, vy) = animation::spring_state(
-            f32::from(self.from.0.y),
-            f32::from(self.to.0.y),
-            f32::from(self.velocity.0.y),
-            seconds,
-        );
-        let (zoom, vz) = animation::spring_state(self.from.1, self.to.1, self.velocity.1, seconds);
-        let clamped_zoom = zoom.clamp(f32::MIN_POSITIVE, MAX_ZOOM);
-        // A long reveal needs a little more settling time than a nearby zoom.
-        // End only once the remaining error is subpixel, instead of snapping a
-        // distant destination at a fixed deadline.
-        if elapsed >= animation::CAMERA
-            && (x - f32::from(self.to.0.x)).abs() <= 0.25
-            && (y - f32::from(self.to.0.y)).abs() <= 0.25
-            && (clamped_zoom - self.to.1).abs() <= 0.0001
-            && vx.abs() <= 5.
-            && vy.abs() <= 5.
-            && vz.abs() <= 0.001
-        {
-            return (self.to, (point(px(0.), px(0.)), 0.));
-        }
-        ((point(px(x), px(y)), clamped_zoom), (point(px(vx), px(vy)), if zoom == clamped_zoom { vz } else { 0. }))
-    }
-}
-
 #[derive(Clone, Copy)]
 enum Direction {
     Left,
@@ -215,9 +194,16 @@ struct TopoApp {
     ws: Workspace,
     persistence: persistence::Persistence,
     focus: FocusHandle,
+    /// The camera as it is drawn: where the canvas origin is in the canvas area, and the scale.
     offset: Point<Pixels>,
     zoom: f32,
-    anim: Option<Anim>,
+    /// The springs (x, y, zoom) that carry the camera while it moves by itself. They
+    /// are its source of truth until they rest; a direct manipulation drops them.
+    anim: Option<[Spring; 3]>,
+    /// The lowest zoom the pinch in progress may rest at.
+    pinch: Option<f32>,
+    /// The clock the camera's springs run on.
+    clock: BackgroundExecutor,
     /// Bounds of the canvas in window coordinates, recorded while painting.
     area: Rc<Cell<Bounds<Pixels>>>,
     /// Fit the whole graph once the canvas size is known.
@@ -230,7 +216,7 @@ struct TopoApp {
     graph_cache: graph_view::GraphCache,
     hovered: Option<NodeId>,
     drag: Option<Drag>,
-    prompt: Option<Prompt>,
+    prompt: animation::Presence<Prompt>,
     /// The field and list of the prompt.
     palette: Entity<Combobox>,
     /// The node whose notes are being edited in the inspector.
@@ -239,7 +225,7 @@ struct TopoApp {
     /// The notes as the editor opened with them, to tell whether they changed.
     notes_base: String,
     /// The question of what to do with unsaved notes, while it is open.
-    notes_ask: Option<notes::Then>,
+    notes_ask: animation::Presence<notes::Ask>,
     /// The scroll position of the inspector, which the notes editor keeps its cursor within.
     inspector_scroll: ScrollHandle,
     /// The property of the selected node being edited in its inspector row.
@@ -266,7 +252,9 @@ struct TopoApp {
     busy: bool,
     /// The workspace opted into a Jev model, so the organize controls are shown.
     jev_enabled: bool,
-    toast: Option<Toast>,
+    toast: animation::Presence<Toast>,
+    /// The save status bar, holding whether it reports a failure until it has left.
+    save_bar: animation::Presence<bool>,
     toast_serial: u64,
     /// Watches the Markdown files. A cloud workspace is polled instead.
     _watcher: Option<notify::RecommendedWatcher>,
@@ -358,6 +346,8 @@ impl TopoApp {
             offset: point(px(40.), px(40.)),
             zoom: 1.0,
             anim: None,
+            pinch: None,
+            clock: cx.background_executor().clone(),
             area: Rc::new(Cell::new(Bounds::default())),
             pending_fit: true,
             selected: None,
@@ -366,12 +356,12 @@ impl TopoApp {
             graph_cache: graph_view::GraphCache::default(),
             hovered: None,
             drag: None,
-            prompt: None,
+            prompt: animation::Presence::default(),
             palette,
             notes: None,
             notes_input,
             notes_base: String::new(),
-            notes_ask: None,
+            notes_ask: animation::Presence::default(),
             inspector_scroll,
             inline: None,
             combo,
@@ -388,7 +378,8 @@ impl TopoApp {
             proposals: Vec::new(),
             busy: false,
             jev_enabled,
-            toast: None,
+            toast: animation::Presence::default(),
+            save_bar: animation::Presence::default(),
             toast_serial: 0,
             _watcher: watcher,
             _sync_task: Some(sync_task),
@@ -566,7 +557,7 @@ impl TopoApp {
         }
         self.enqueue_save(&before, cx);
         self.record_undo(before);
-        if self.prompt.is_some() {
+        if self.prompt.get().is_some() {
             self.refresh_palette(cx);
         }
         cx.notify();
@@ -587,7 +578,7 @@ impl TopoApp {
     }
 
     fn toast(&mut self, text: impl Into<String>, error: bool, cx: &mut Context<Self>) {
-        self.toast = Some(Toast { text: text.into(), error });
+        self.toast.show(Toast { text: text.into(), error });
         self.toast_serial += 1;
         let serial = self.toast_serial;
         let delay = Duration::from_millis(if error { 6000 } else { 2500 });
@@ -595,7 +586,7 @@ impl TopoApp {
             cx.background_executor().timer(delay).await;
             let _ = this.update(cx, |app, cx| {
                 if app.toast_serial == serial {
-                    app.toast = None;
+                    app.toast.hide();
                     cx.notify();
                 }
             });
@@ -750,7 +741,7 @@ impl TopoApp {
             palette.set_lead(lead);
             palette.open("", placeholder, None, cx);
         });
-        self.prompt = Some(prompt);
+        self.prompt.show(prompt);
         self.show_help = false;
         self.theme_menu = false;
         self.refresh_palette(cx);
@@ -759,7 +750,7 @@ impl TopoApp {
     }
 
     fn close_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.prompt = None;
+        self.prompt.hide();
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -840,7 +831,7 @@ impl TopoApp {
                 }
             })
             .collect();
-        let listing = matches!(self.prompt, Some(Prompt::Search | Prompt::Pick { .. }));
+        let listing = matches!(self.prompt.get(), Some(Prompt::Search | Prompt::Pick { .. }));
         let empty = if listing && choices.is_empty() { "No matches" } else { "" };
         let t = theme::current();
         self.palette.update(cx, |palette, cx| {
@@ -850,7 +841,7 @@ impl TopoApp {
     }
 
     pub(crate) fn submit_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(prompt) = self.prompt.clone() else { return };
+        let Some(prompt) = self.prompt.get().cloned() else { return };
         let palette = self.palette.read(cx);
         let text = palette.text(cx).trim().to_owned();
         let picked = palette.picked().and_then(|choice| choice.key.clone()).map(NodeId);
@@ -880,7 +871,7 @@ impl TopoApp {
     pub(crate) fn listed(&self, cx: &App) -> Vec<NodeId> {
         // Nodes the canvas hides cannot be jumped to; linking may still offer them.
         let cells = self.graph_cache.cells();
-        let offered = |n: &&Node| match &self.prompt {
+        let offered = |n: &&Node| match self.prompt.get() {
             Some(Prompt::Search) => cells.contains_key(&n.id),
             Some(Prompt::Pick { candidates, .. }) => candidates.contains(&n.id),
             _ => false,
@@ -908,7 +899,7 @@ impl TopoApp {
 
     /// The node the highlighted list entry stands for.
     fn list_cursor(&self, cx: &App) -> Option<NodeId> {
-        self.prompt.as_ref()?;
+        self.prompt.get()?;
         self.palette.read(cx).highlighted()?.key.clone().map(NodeId)
     }
 
@@ -982,37 +973,54 @@ impl TopoApp {
         point(self.offset.x + px(col as f32 * CELL_W * self.zoom), self.offset.y + px(row as f32 * CELL_H * self.zoom))
     }
 
-    fn animate_to(&mut self, offset: Point<Pixels>, zoom: f32) {
-        match animation::enabled() {
-            true => {
-                let now = Instant::now();
-                let velocity = match &self.anim {
-                    Some(anim) => {
-                        let (position, velocity) = anim.sample(now.duration_since(anim.start));
-                        (self.offset, self.zoom) = position;
-                        velocity
-                    }
-                    None => (point(px(0.), px(0.)), 0.),
-                };
-                self.anim = Some(Anim { from: (self.offset, self.zoom), to: (offset, zoom), velocity, start: now })
-            }
-            false => {
-                self.anim = None;
-                (self.offset, self.zoom) = (offset, zoom);
-            }
-        }
+    /// The camera's springs: those of the move in progress, or ones resting where it is.
+    fn springs(&self, now: Instant) -> [Spring; 3] {
+        self.anim.unwrap_or_else(|| {
+            let rest = |value, rest| Spring::settled(value, animation::preset::SMOOTH, rest, now);
+            [
+                rest(f32::from(self.offset.x), OFFSET_REST),
+                rest(f32::from(self.offset.y), OFFSET_REST),
+                rest(self.zoom, ZOOM_REST),
+            ]
+        })
     }
 
-    /// Advances the camera animation; returns whether it needs another frame.
+    /// Sends the camera to `to` (x, y, zoom) on `preset`. Each spring carries on at its
+    /// own velocity unless `velocity` gives it one. Without motion the camera is there at once.
+    fn fly(&mut self, to: [f32; 3], preset: Preset, velocity: [Option<f32>; 3]) {
+        // Every camera preset is spatial, so reduced motion lands at once as well.
+        if animation::mode() != Mode::Full {
+            self.anim = None;
+            (self.offset, self.zoom) = (point(px(to[0]), px(to[1])), to[2]);
+            return;
+        }
+        let now = self.clock.now();
+        let mut springs = self.springs(now);
+        for ((spring, to), velocity) in springs.iter_mut().zip(to).zip(velocity) {
+            spring.set_preset(preset, now);
+            match velocity {
+                Some(velocity) => spring.push(to, velocity, now),
+                None => spring.retarget(to, now),
+            }
+        }
+        self.anim = Some(springs);
+    }
+
+    fn animate_to(&mut self, offset: Point<Pixels>, zoom: f32) {
+        self.fly([f32::from(offset.x), f32::from(offset.y), zoom], animation::preset::SMOOTH, [None; 3]);
+    }
+
+    /// Draws the camera where its springs are; returns whether they need another frame.
     fn step_anim(&mut self) -> bool {
-        let Some(anim) = &self.anim else { return false };
-        let (position, velocity) = anim.sample(anim.start.elapsed());
-        let done = !animation::enabled() || (position == anim.to && velocity == (point(px(0.), px(0.)), 0.));
-        (self.offset, self.zoom) = if done { anim.to } else { position };
-        if done {
+        let Some(springs) = self.anim else { return false };
+        let now = self.clock.now();
+        let moving = animation::mode() == Mode::Full && springs.iter().any(|spring| !spring.is_settled(now));
+        let [x, y, zoom] = springs.map(|spring| if moving { spring.sample(now).0 } else { spring.target() });
+        (self.offset, self.zoom) = (point(px(x), px(y)), zoom);
+        if !moving {
             self.anim = None;
         }
-        !done
+        moving
     }
 
     /// Frames the whole graph in the canvas. The initial framing keeps text
@@ -1042,37 +1050,81 @@ impl TopoApp {
 
     /// The (offset, zoom) the camera is at, or is moving to.
     fn target(&self) -> (Point<Pixels>, f32) {
-        self.anim.as_ref().map_or((self.offset, self.zoom), |a| a.to)
+        self.anim
+            .map_or((self.offset, self.zoom), |[x, y, zoom]| (point(px(x.target()), px(y.target())), zoom.target()))
     }
 
-    /// Zooms by `factor` keeping the canvas point `anchor` (local coordinates) fixed.
-    fn zoom_by(&mut self, factor: f32, anchor: Point<Pixels>, animate: bool) {
-        let (offset, zoom) = self.target();
+    /// `zoom` times `factor`, within the limits of a zoom step.
+    fn stepped(zoom: f32, factor: f32) -> f32 {
         // A large selection can fit below the usual interactive zoom limit.
         // Continue smoothly from that overview instead of jumping to MIN_ZOOM.
         let min_zoom = if zoom < MIN_ZOOM { f32::MIN_POSITIVE } else { MIN_ZOOM };
-        let new_zoom = (zoom * factor).clamp(min_zoom, MAX_ZOOM);
-        let new_offset = anchor - (anchor - offset) * (new_zoom / zoom);
+        (zoom * factor).clamp(min_zoom, MAX_ZOOM)
+    }
+
+    /// Zooms by `factor` keeping the canvas point `anchor` (local coordinates) fixed:
+    /// in a move from where the camera is heading, or at once from where it is.
+    fn zoom_by(&mut self, factor: f32, anchor: Point<Pixels>, animate: bool) {
         match animate {
-            true => self.animate_to(new_offset, new_zoom),
-            false => {
-                self.anim = None;
-                (self.offset, self.zoom) = (new_offset, new_zoom);
-            }
+            true => self.zoom_to(Self::stepped(self.target().1, factor), anchor, animation::preset::SMOOTH),
+            false => self.set_zoom(Self::stepped(self.zoom, factor), anchor),
         }
     }
 
-    /// Pinch zooms around the pointer; a two-finger double-tap toggles
+    /// Moves the zoom to `zoom` on `preset` with the canvas point under `anchor` fixed
+    /// all the way. The offset springs start in step with the zoom's and share its
+    /// preset, and a spring is linear, so the offset stays the same function of the zoom.
+    fn zoom_to(&mut self, zoom: f32, anchor: Point<Pixels>, preset: Preset) {
+        let now = self.clock.now();
+        let [(x, _), (y, _), (from, speed)] = self.springs(now).map(|spring| spring.sample(now));
+        // The canvas point under the anchor: each offset is `anchor - held * zoom`.
+        let anchor = [f32::from(anchor.x), f32::from(anchor.y)];
+        let held = [(anchor[0] - x) / from, (anchor[1] - y) / from];
+        self.fly(
+            [anchor[0] - held[0] * zoom, anchor[1] - held[1] * zoom, zoom],
+            preset,
+            [Some(-held[0] * speed), Some(-held[1] * speed), None],
+        );
+    }
+
+    /// Puts the zoom at `zoom` at once, the canvas point drawn under `anchor` staying
+    /// there. This stops a move in progress where it is.
+    fn set_zoom(&mut self, zoom: f32, anchor: Point<Pixels>) {
+        self.anim = None;
+        self.offset = anchor - (anchor - self.offset) * (zoom / self.zoom);
+        self.zoom = zoom;
+    }
+
+    /// Lets go of the canvas at `velocity` (pixels per second): it glides on and comes to rest.
+    fn fling(&mut self, velocity: Point<Pixels>) {
+        let (vx, vy) = (f32::from(velocity.x), f32::from(velocity.y));
+        if vx.hypot(vy) <= FLING_SPEED || animation::mode() != Mode::Full {
+            return;
+        }
+        let glide = animation::preset::GLIDE;
+        let (offset, zoom) = self.target();
+        let land = |offset: Pixels, velocity: f32| f32::from(offset) + animation::projection(velocity, glide);
+        self.fly([land(offset.x, vx), land(offset.y, vy), zoom], glide, [Some(vx), Some(vy), None]);
+    }
+
+    /// Pinch zooms around the pointer, giving a little past the zoom limits and
+    /// returning to them when the fingers lift; a two-finger double-tap toggles
     /// between actual size and the whole graph.
     fn on_gesture(&mut self, gesture: Gesture, window: &mut Window, cx: &mut Context<Self>) {
         let area = self.area.get();
         let mouse = window.mouse_position();
-        if !area.contains(&mouse) {
-            return;
-        }
         let anchor = mouse - area.origin;
         match gesture {
-            Gesture::Pinch(magnification) => self.zoom_by(1.0 + magnification, anchor, false),
+            Gesture::PinchEnd => {
+                let Some(floor) = self.pinch.take() else { return };
+                self.zoom_to(self.zoom.clamp(floor, MAX_ZOOM), anchor, animation::preset::BOUNCY);
+            }
+            _ if !area.contains(&mouse) => return,
+            Gesture::Pinch(magnification) => {
+                // A pinch that starts on an overview below the limit may return to it.
+                let floor = *self.pinch.get_or_insert(self.zoom.min(MIN_ZOOM));
+                self.set_zoom(pinched(self.zoom, 1.0 + magnification, floor), anchor);
+            }
             Gesture::SmartZoom if (self.target().1 - 1.0).abs() < 0.05 => self.fit(false),
             Gesture::SmartZoom => self.zoom_to_actual_size(anchor),
         }
@@ -1134,12 +1186,9 @@ impl TopoApp {
         };
     }
 
-    /// Frames the new layout at once: a different set of cards is not a camera move to animate.
+    /// Frames the new layout.
     fn refit(&mut self) {
         self.fit(false);
-        if let Some(anim) = self.anim.take() {
-            (self.offset, self.zoom) = anim.to;
-        }
     }
 
     pub(crate) fn toggle_hide_completed(&mut self) {
@@ -1303,11 +1352,11 @@ impl TopoApp {
     // ---- keyboard ------------------------------------------------------
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.notes_ask.is_some() {
+        if self.notes_ask.get().is_some() {
             return self.on_notes_ask_key(event, window, cx);
         }
         // A text field has the keyboard; its keys are text, not canvas commands.
-        if self.prompt.is_some() || self.inline.is_some() || self.notes.is_some() {
+        if self.prompt.get().is_some() || self.inline.is_some() || self.notes.is_some() {
             return;
         }
         let keystroke = &event.keystroke;
@@ -1440,7 +1489,7 @@ impl Render for TopoApp {
         }
         // The canvas takes the standard editing commands only while no text field is
         // open. A command that cannot run has no handler, which disables its menu item.
-        let canvas = self.prompt.is_none() && self.inline.is_none() && self.notes.is_none();
+        let canvas = self.prompt.get().is_none() && self.inline.is_none() && self.notes.is_none();
         let (has_selection, has_nodes) = (!self.selected_nodes.is_empty(), self.graph().nodes().next().is_some());
         let (can_undo, can_redo) = (!self.undo.is_empty(), !self.redo.is_empty());
         let t = theme::current();
@@ -1483,11 +1532,11 @@ impl Render for TopoApp {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, _, window, cx| {
-                    if app.prompt.is_some() {
+                    if app.prompt.get().is_some() {
                         app.close_prompt(window, cx);
                     }
                     app.cancel_inline(window, cx);
-                    if app.notes.is_some() && app.notes_ask.is_none() {
+                    if app.notes.is_some() && app.notes_ask.get().is_none() {
                         app.leave_notes(window, cx);
                     }
                 }),
@@ -1497,7 +1546,7 @@ impl Render for TopoApp {
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_drag_end))
             .child(self.toolbar(window, cx))
             .child(div().flex_1().min_h(px(0.)).flex().child(self.graph_view(window, cx)).child(self.inspector(cx)))
-            .when(self.notes_ask.is_some(), |d| d.child(self.notes_dialog(cx)))
+            .children(self.notes_dialog(window, cx))
     }
 }
 
@@ -1649,6 +1698,23 @@ fn run(start: repository::Selection, config: config::UserConfig) -> Result<()> {
     Ok(())
 }
 
+/// `zoom` scaled by `factor` the way a pinch does it: freely between `floor` and
+/// [`MAX_ZOOM`], and against a pull that grows with the distance past either. Distances
+/// are logarithmic; past a limit the zoom moves `1 / (1 + 4 * distance)` as fast as the
+/// fingers ask, so it is continuous at the limit and follows the fingers back the way it came.
+fn pinched(zoom: f32, factor: f32, floor: f32) -> f32 {
+    let (low, high) = (floor.ln(), MAX_ZOOM.ln());
+    // How far past a limit the zoom gives for what the fingers ask, and the reverse.
+    let give = |asked: f32| ((1. + 8. * asked).sqrt() - 1.) / 4.;
+    let asked = |given: f32| given * (1. + 2. * given);
+    let past = |zoom: f32, bend: &dyn Fn(f32) -> f32| match zoom {
+        _ if zoom > high => high + bend(zoom - high),
+        _ if zoom < low => low - bend(low - zoom),
+        _ => zoom,
+    };
+    past(past(zoom.ln(), &asked) + factor.ln(), &give).exp()
+}
+
 /// The window material: blurred on macOS, Mica on Windows, opaque elsewhere.
 fn window_background() -> WindowBackgroundAppearance {
     if cfg!(target_os = "macos") && glass::requested() {
@@ -1680,17 +1746,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_long_camera_move_settles_without_a_large_final_snap() {
-        let anim = Anim {
-            from: (point(px(0.), px(0.)), 1.),
-            to: (point(px(100_000.), px(-100_000.)), 0.5),
-            velocity: (point(px(0.), px(0.)), 0.),
-            start: Instant::now(),
-        };
-        let (position, velocity) = anim.sample(animation::CAMERA);
-        assert_ne!(position, anim.to);
-        assert!(velocity.0.x > px(0.));
-        assert_eq!(anim.sample(Duration::from_secs(2)), (anim.to, (point(px(0.), px(0.)), 0.)));
+    fn pinching_past_a_limit_is_resisted_continuously_and_reversibly() {
+        let pinch = |zoom, factor| pinched(zoom, factor, MIN_ZOOM);
+        assert!((pinch(1., 1.5) - 1.5).abs() < 1e-5);
+        // Past either limit the zoom still follows the fingers, but less and less.
+        let (over, further) = (pinch(MAX_ZOOM, 2.), pinch(MAX_ZOOM, 4.));
+        assert!(MAX_ZOOM < over && over < further && further < MAX_ZOOM * 4.);
+        assert!(further / over < over / MAX_ZOOM);
+        let under = pinch(MIN_ZOOM, 0.5);
+        assert!(MIN_ZOOM * 0.5 < under && under < MIN_ZOOM);
+        // No step at the limit, whether one event crosses it or two meet on it.
+        assert!((pinch(MAX_ZOOM, 1.001) - MAX_ZOOM * 1.001).abs() < 1e-4);
+        assert!((pinch(2., 2.5) - pinch(pinch(2., 1.25), 2.)).abs() < 1e-4);
+        // The same fingers back bring the same zoom back.
+        assert!((pinch(over, 0.25) - MAX_ZOOM * 0.5).abs() < 1e-4);
     }
 
     #[test]

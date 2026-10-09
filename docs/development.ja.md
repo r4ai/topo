@@ -64,6 +64,8 @@ rustc --version
 cargo --version
 ```
 
+`topo-gui` は Zed の `gpui` の fork である [`r4ai/zed`](https://github.com/r4ai/zed)（ブランチ `topo/element-scale`）に依存し、`crates/topo-gui/Cargo.toml` の `rev` で固定している。fork は、モーションのコードが使う `Window::with_element_scale` を追加する。変更内容と更新手順は [docs/gui/motion.md](gui/motion.md#the-gpui-fork)（英語）を参照。Xcode の `metal` ツールがないマシンで fork 自身のテストを実行するには `--features gpui_platform/runtime_shaders` を付ける。
+
 ## ビルドと実行
 
 ```bash
@@ -137,7 +139,7 @@ cargo run -p topo-gui --features screenshot -- \
 全状態を1プロセスでまとめて撮影し、両テーマ・両Monotoneを網羅したコンタクトシートを作る場合：
 
 ```bash
-# 25状態 × 4バリアント = 100枚のPNGと index.html
+# 26状態 × 4バリアント = 104枚のPNGと index.html
 cargo run -p topo-gui --features screenshot -- --screenshot-all qa/
 
 # 状態名の一覧、または一部だけを描画

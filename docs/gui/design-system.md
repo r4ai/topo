@@ -159,7 +159,7 @@ On macOS 26 and later, `TOPO_GLASS=1` swaps the blur for AppKit's `NSGlassEffect
 
 ## Motion
 
-Surfaces settle in with a short, non-bouncy spring; opacity arrives sooner than position, and backdrops fade independently of their cards. The timing, camera continuity, reduced-motion and headless rules are in [motion.md](motion.md). Motion preserves layout, margins and hierarchy; hover, press and focus remain instant.
+Motion uses springs rather than durations: five presets (`FADE`, `SNAPPY`, `SMOOTH`, `BOUNCY`, `GLIDE`) set the feel, and every move can be interrupted and retargeted without a jump. Surfaces enter and leave symmetrically with short travel, opacity arrives sooner than position, and backdrops fade independently of their cards. The presets, per-surface table, camera, reduced-motion and headless rules are in [motion.md](motion.md). Motion preserves layout, margins and hierarchy; hover and focus remain instant.
 
 ## Visual QA
 

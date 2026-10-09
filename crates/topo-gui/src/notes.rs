@@ -16,7 +16,8 @@ use gpui::{
 use topo_core::{Edit, NodeId};
 
 use crate::TopoApp;
-use crate::animation::{self, Motion as _};
+use crate::animation::{self, preset};
+use crate::chrome::{dialog_motion, dimming};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::metrics::{T_BODY_LG, T_TITLE};
 use crate::theme::{self, alpha};
@@ -36,6 +37,13 @@ pub(crate) enum Then {
     Quit,
 }
 
+/// The open question. It keeps the title of the node it is about, which is gone once the editor closes,
+/// for as long as the question takes to leave.
+pub(crate) struct Ask {
+    pub(crate) then: Then,
+    title: String,
+}
+
 impl TopoApp {
     pub(crate) fn notes_input(&self) -> &Entity<TextInput> {
         &self.notes_input
@@ -51,7 +59,7 @@ impl TopoApp {
         });
         self.notes = Some(id);
         self.notes_base = body;
-        self.notes_ask = None;
+        self.notes_ask.hide();
         self.show_help = false;
         window.focus(&self.notes_input.focus_handle(cx), cx);
         cx.notify();
@@ -66,7 +74,7 @@ impl TopoApp {
     /// Closes the editor, saving what it holds unless told to discard it.
     pub(crate) fn finish_notes(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.notes.take() else { return };
-        self.notes_ask = None;
+        self.notes_ask.hide();
         window.focus(&self.focus, cx);
         cx.notify();
         if !save || self.graph().get(&id).is_none() {
@@ -91,13 +99,16 @@ impl TopoApp {
     /// Puts the question of what to do with the unsaved notes, to be followed by `then`.
     /// The question takes the keyboard when the window is next drawn.
     pub(crate) fn ask_notes(&mut self, then: Then, cx: &mut Context<Self>) {
-        self.notes_ask = Some(then);
+        let title =
+            self.notes.as_ref().and_then(|id| self.graph().get(id)).map_or_else(String::new, |n| n.title.clone());
+        self.notes_ask.show(Ask { then, title });
         cx.notify();
     }
 
     /// Answers the question: `Some(true)` saves, `Some(false)` discards, `None` goes on editing.
     pub(crate) fn answer_notes(&mut self, save: Option<bool>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(then) = self.notes_ask.take() else { return };
+        let Some(then) = self.notes_ask.get().map(|ask| ask.then.clone()) else { return };
+        self.notes_ask.hide();
         let Some(save) = save else {
             window.focus(&self.notes_input.focus_handle(cx), cx);
             return cx.notify();
@@ -135,14 +146,14 @@ impl TopoApp {
         }
         let writing = self.notes_input.focus_handle(cx).is_focused(window);
         let moved = self.selected_node().is_none_or(|n| n.id != id);
-        let asking = self.notes_ask.is_some();
+        let asking = self.notes_ask.get().is_some();
         if !asking && writing && !moved {
             return;
         }
         if !asking && !self.notes_dirty(cx) {
             return self.finish_notes(false, window, cx);
         }
-        if moved && matches!(self.notes_ask, None | Some(Then::Stay)) {
+        if moved && matches!(self.notes_ask.get().map(|ask| &ask.then), None | Some(Then::Stay)) {
             let then = Then::Select {
                 selected: self.selected.replace(id.clone()),
                 nodes: std::mem::replace(&mut self.selected_nodes, BTreeSet::from([id])),
@@ -172,21 +183,28 @@ impl TopoApp {
     }
 
     /// The question over the whole window, which holds the click and the keys until it is answered.
-    pub(crate) fn notes_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// It stays drawn, inert, while it fades out.
+    pub(crate) fn notes_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let progress = self.notes_ask.progress(window, cx, "notes-ask", preset::SMOOTH)?;
+        let open = self.notes_ask.get().is_some();
+        let title = &self.notes_ask.shown()?.title;
         let t = theme::current();
-        let title =
-            self.notes.as_ref().and_then(|id| self.graph().get(id)).map_or_else(String::new, |n| n.title.clone());
-        let choice = |button: gpui::Stateful<Div>, key: Div, save: Option<bool>| -> AnyElement {
+        let choice = |button: ui::Pressable, key: Div, save: Option<bool>| -> AnyElement {
             button
                 .child(key)
                 .on_click(cx.listener(move |app, _, window, cx| app.answer_notes(save, window, cx)))
                 .into_any_element()
         };
         let on_primary = kbd("↵").text_color(t.on_emphasis).border_color(alpha(t.on_emphasis, 0.3));
-        ui::scrim()
+        let scrim = ui::scrim()
             .id("notes-ask")
+            .bg(dimming(progress[0]))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
-            .child(
+            .child(dialog_motion(
                 ui::dialog()
                     .debug_selector(|| "notes-dialog".to_owned())
                     .w(px(380.))
@@ -211,10 +229,10 @@ impl TopoApp {
                             .child(choice(ui::button_danger("notes-discard", "Discard"), kbd("D"), Some(false)))
                             .child(choice(ui::button_ghost("notes-keep", "Keep editing"), kbd("Esc"), None))
                             .child(choice(ui::button_primary("notes-save", "Save"), on_primary, Some(true))),
-                    )
-                    .rise_in("notes-card-motion", animation::SLOW),
-            )
-            .fade_background("notes-motion", t.scrim)
+                    ),
+                progress,
+            ));
+        Some(animation::surface(scrim).inert(!open))
     }
 
     pub(crate) fn on_notes_event(

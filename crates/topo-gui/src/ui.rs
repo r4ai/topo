@@ -1,7 +1,16 @@
 //! Shared components of the design system; views compose these instead of styling a `div` by hand.
 
-use gpui::{Div, FontWeight, Rgba, SharedString, Stateful, Styled, Svg, div, prelude::*, px, relative};
+use std::cell::Cell;
+use std::rc::Rc;
 
+use gpui::{
+    AnyElement, App, Bounds, DispatchPhase, Div, Element, ElementId, FontWeight, GlobalElementId, Hitbox,
+    HitboxBehavior, InspectorElementId, Interactivity, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    MouseUpEvent, Pixels, Rgba, SharedString, Stateful, StyleRefinement, Styled, Svg, Window, div, prelude::*, px,
+    relative,
+};
+
+use crate::animation::{self, preset};
 pub use crate::icons::{Icon, icon};
 use crate::theme::{
     alpha, current,
@@ -15,38 +24,170 @@ pub enum Elevation {
     Dialog,
 }
 
+/// How far a pressed button shrinks.
+const PRESSED_SCALE: f32 = 0.97;
+
+/// A button frame that shrinks about its centre while the left mouse button is held on it and
+/// springs back on release. It builds like the [`Stateful<Div>`] it wraps.
+pub struct Pressable {
+    frame: Stateful<Div>,
+    /// Whether the frame responds to a press at all.
+    pressable: bool,
+}
+
+impl Pressable {
+    fn new(frame: Stateful<Div>) -> Self {
+        Self { frame, pressable: true }
+    }
+
+    /// A frame that looks like a button but never shrinks: a disabled one.
+    pub fn unpressable(frame: Stateful<Div>) -> Self {
+        Self { frame, pressable: false }
+    }
+}
+
+impl Styled for Pressable {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.frame.style()
+    }
+}
+
+impl InteractiveElement for Pressable {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.frame.interactivity()
+    }
+}
+
+impl StatefulInteractiveElement for Pressable {}
+
+impl ParentElement for Pressable {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.frame.extend(elements);
+    }
+}
+
+impl IntoElement for Pressable {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Pressable {
+    type RequestLayoutState = <Stateful<Div> as Element>::RequestLayoutState;
+    /// The frame's own state, where the press is held, and a hitbox to tell whether it is the target.
+    type PrepaintState = (<Stateful<Div> as Element>::PrepaintState, Rc<Cell<bool>>, Hitbox);
+
+    fn id(&self) -> Option<ElementId> {
+        Element::id(&self.frame)
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        self.frame.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.frame.request_layout(id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let pressed =
+            window.with_element_state(id.expect("a button has an id"), |pressed: Option<Rc<Cell<bool>>>, _| {
+                let pressed = pressed.unwrap_or_default();
+                (pressed.clone(), pressed)
+            });
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        (self.frame.prepaint(id, inspector_id, bounds, layout, window, cx), pressed, hitbox)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        (state, pressed, hitbox): &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Capturing runs before the frame's own listeners, which may stop the event.
+        window.on_mouse_event({
+            let (pressed, hitbox) = (pressed.clone(), hitbox.clone());
+            move |event: &MouseDownEvent, phase, window, _| {
+                if phase == DispatchPhase::Capture
+                    && event.button == MouseButton::Left
+                    && hitbox.is_hovered(window)
+                    && !pressed.replace(true)
+                {
+                    window.refresh();
+                }
+            }
+        });
+        window.on_mouse_event({
+            let pressed = pressed.clone();
+            move |_: &MouseUpEvent, phase, window, _| {
+                if phase == DispatchPhase::Capture && pressed.replace(false) {
+                    window.refresh();
+                }
+            }
+        });
+        let target = if self.pressable && pressed.get() { PRESSED_SCALE } else { 1. };
+        let [scale] = animation::springs(window, cx, "press", None, [target], Some(preset::SNAPPY));
+        window.with_element_scale(scale, bounds.center(), |window| {
+            self.frame.paint(id, inspector_id, bounds, layout, state, window, cx);
+        });
+    }
+}
+
 /// The common frame of a text button; the variants set colors. An empty label leaves the lead alone.
-fn base_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Stateful<Div> {
+fn base_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Pressable {
     let id = id.into();
-    div()
-        .id(id.clone())
-        .debug_selector(|| id.to_string())
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .gap_1p5()
-        .whitespace_nowrap()
-        .h(px(H_BUTTON))
-        .px_2p5()
-        .rounded(px(R_MD))
-        .border_1()
-        .text_size(px(T_BODY))
-        .cursor_pointer()
-        .children(lead)
-        .children(Some(label.into()).filter(|label: &SharedString| !label.is_empty()))
+    Pressable::new(
+        div()
+            .id(id.clone())
+            .debug_selector(|| id.to_string())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_1p5()
+            .whitespace_nowrap()
+            .h(px(H_BUTTON))
+            .px_2p5()
+            .rounded(px(R_MD))
+            .border_1()
+            .text_size(px(T_BODY))
+            .cursor_pointer()
+            .children(lead)
+            .children(Some(label.into()).filter(|label: &SharedString| !label.is_empty())),
+    )
 }
 
 /// A small text button.
-pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Pressable {
     plain_button(id, None, label)
 }
 
 /// A [`button`] led by an icon.
-pub fn button_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn button_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Pressable {
     plain_button(id, Some(icon(lead, current().fg_muted)), label)
 }
 
-fn plain_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Stateful<Div> {
+fn plain_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Pressable {
     let t = current();
     let (hover, hover_border, active) = (t.control_hover, t.border_strong, t.control_active);
     base_button(id, lead, label)
@@ -58,16 +199,16 @@ fn plain_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into
 }
 
 /// The primary action: filled with the emphasis color.
-pub fn button_primary(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn button_primary(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Pressable {
     primary_button(id, None, label)
 }
 
 /// A [`button_primary`] led by an icon.
-pub fn button_primary_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn button_primary_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Pressable {
     primary_button(id, Some(icon(lead, current().on_emphasis)), label)
 }
 
-fn primary_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Stateful<Div> {
+fn primary_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl Into<SharedString>) -> Pressable {
     let t = current();
     base_button(id, lead, label)
         .bg(t.emphasis)
@@ -78,7 +219,7 @@ fn primary_button(id: impl Into<SharedString>, lead: Option<Svg>, label: impl In
 }
 
 /// A destructive action, tinted with the danger color.
-pub fn button_danger(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn button_danger(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Pressable {
     let t = current();
     let danger = t.danger;
     base_button(id, None, label)
@@ -89,7 +230,7 @@ pub fn button_danger(id: impl Into<SharedString>, label: impl Into<SharedString>
 }
 
 /// A button with no fill until it is hovered.
-pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Pressable {
     let t = current();
     let (hover, fg) = (t.control_hover, t.fg);
     base_button(id, None, label)
@@ -99,7 +240,7 @@ pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>)
 }
 
 /// A [`button_ghost`] led by an icon.
-pub fn button_ghost_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Stateful<Div> {
+pub fn button_ghost_icon(id: impl Into<SharedString>, lead: Icon, label: impl Into<SharedString>) -> Pressable {
     let t = current();
     let (hover, fg) = (t.control_hover, t.fg);
     let lead = icon(lead, t.fg_muted).group_hover("button", move |s| s.text_color(fg));
@@ -111,12 +252,12 @@ pub fn button_ghost_icon(id: impl Into<SharedString>, lead: Icon, label: impl In
 }
 
 /// A borderless square button showing a single glyph.
-pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) -> Stateful<Div> {
+pub fn icon_button(id: impl Into<SharedString>, glyph: impl Into<SharedString>) -> Pressable {
     icon_frame(id).child(glyph.into())
 }
 
 /// An [`icon_button`] showing one of the app's icons.
-pub fn icon_button_svg(id: impl Into<SharedString>, shown: Icon) -> Stateful<Div> {
+pub fn icon_button_svg(id: impl Into<SharedString>, shown: Icon) -> Pressable {
     let t = current();
     let fg = t.fg;
     icon_frame(id)
@@ -124,41 +265,45 @@ pub fn icon_button_svg(id: impl Into<SharedString>, shown: Icon) -> Stateful<Div
         .child(icon(shown, t.fg_muted).group_hover("icon-button", move |s| s.text_color(fg)))
 }
 
-fn icon_frame(id: impl Into<SharedString>) -> Stateful<Div> {
+fn icon_frame(id: impl Into<SharedString>) -> Pressable {
     let id = id.into();
     let t = current();
     let (hover, fg) = (t.control_hover, t.fg);
-    div()
-        .id(id.clone())
-        .debug_selector(|| id.to_string())
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .size(px(H_ICON))
-        .rounded(px(R_SM))
-        .text_color(t.fg_muted)
-        .text_sm()
-        .hover(move |s| s.bg(hover).text_color(fg))
-        .cursor_pointer()
+    Pressable::new(
+        div()
+            .id(id.clone())
+            .debug_selector(|| id.to_string())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(H_ICON))
+            .rounded(px(R_SM))
+            .text_color(t.fg_muted)
+            .text_sm()
+            .hover(move |s| s.bg(hover).text_color(fg))
+            .cursor_pointer(),
+    )
 }
 
-/// A small on/off switch. `on` fills the track with the accent and moves the knob to the end.
-pub fn switch(on: bool) -> Div {
-    let t = current();
+/// A small on/off switch. `t` (0..=1) is the animated on-ness, so the knob slides
+/// and the track, border and knob crossfade as the value changes.
+pub fn switch(t: f32) -> Div {
+    let t = t.clamp(0., 1.);
+    let theme = current();
+    let track = animation::lerp(theme.control, theme.accent, t);
+    let border = animation::lerp(theme.border_strong, theme.accent, t);
+    let knob = animation::lerp(theme.fg_muted, theme.on_accent, t);
     div()
         .flex_shrink_0()
-        .flex()
-        .items_center()
+        .relative()
         .w(px(30.))
         .h(px(17.))
-        .px(px(2.))
         .rounded_full()
         .border_1()
-        .border_color(if on { t.accent } else { t.border_strong })
-        .bg(if on { t.accent } else { t.control })
-        .map(|d| if on { d.justify_end() } else { d.justify_start() })
-        .child(div().size(px(11.)).rounded_full().bg(if on { t.on_accent } else { t.fg_muted }))
+        .border_color(border)
+        .bg(track)
+        .child(div().absolute().top(px(2.)).left(px(2. + t * 13.)).size(px(11.)).rounded_full().bg(knob))
 }
 
 /// The track that holds a row of segments.
@@ -314,4 +459,73 @@ pub fn progress_bar(fraction: f32, complete: bool, height: f32) -> Div {
 /// The glass pill of a toast.
 pub fn toast_frame() -> Div {
     glass(Elevation::Popover).px(px(S5)).py(px(S4))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, Modifiers, Render, TestAppContext, canvas, point, size};
+    use std::time::Duration;
+
+    /// Two buttons, each with a canvas that notes the content mask it paints under, which grows as the button shrinks.
+    struct Buttons {
+        masks: [Rc<Cell<f32>>; 2],
+        clicked: Rc<Cell<bool>>,
+    }
+
+    impl Render for Buttons {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let probe = |mask: &Rc<Cell<f32>>| {
+                let mask = mask.clone();
+                canvas(|_, _, _| (), move |_, (), window, _| mask.set(window.content_mask().bounds.size.width.into()))
+                    .w(px(40.))
+                    .h(px(10.))
+            };
+            let clicked = self.clicked.clone();
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(button("press", "Press").child(probe(&self.masks[0])).on_click(move |_, _, _| clicked.set(true)))
+                .child(Pressable::unpressable(
+                    div().id("fixed").debug_selector(|| "fixed".into()).child(probe(&self.masks[1])),
+                ))
+        }
+    }
+
+    #[gpui::test]
+    fn a_button_shrinks_while_pressed_and_springs_back_on_release_anywhere(cx: &mut TestAppContext) {
+        animation::set_enabled(true);
+        let masks = [Rc::new(Cell::new(0.)), Rc::new(Cell::new(0.))];
+        let clicked = Rc::new(Cell::new(false));
+        let (view, cx) = cx.add_window_view(|_, _| Buttons { masks: masks.clone(), clicked: clicked.clone() });
+        cx.simulate_resize(size(px(800.), px(600.)));
+        let settle = |cx: &mut gpui::VisualTestContext, milliseconds| {
+            cx.executor().advance_clock(Duration::from_millis(milliseconds));
+            view.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+        };
+        settle(cx, 3000);
+        assert_eq!(masks.each_ref().map(|mask| mask.get()), [800., 800.]);
+
+        let (press, fixed) = (cx.debug_bounds("press").unwrap().center(), cx.debug_bounds("fixed").unwrap().center());
+        cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::none());
+        settle(cx, 100);
+        assert!(masks[0].get() > 800., "a pressed button is painted smaller");
+        // Released away from the button, it still lets go.
+        cx.simulate_mouse_up(point(px(700.), px(500.)), MouseButton::Left, Modifiers::none());
+        settle(cx, 3000);
+        assert_eq!(masks[0].get(), 800.);
+        assert!(!clicked.get(), "a press that ends elsewhere is no click");
+
+        cx.simulate_click(press, Modifiers::none());
+        assert!(clicked.get(), "pressing does not take the click");
+
+        cx.simulate_mouse_down(fixed, MouseButton::Left, Modifiers::none());
+        settle(cx, 100);
+        assert_eq!(masks[1].get(), 800., "an unpressable frame stays put");
+        cx.simulate_mouse_up(fixed, MouseButton::Left, Modifiers::none());
+        animation::set_enabled(false);
+    }
 }

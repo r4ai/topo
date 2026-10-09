@@ -1,21 +1,24 @@
 //! The canvas: dot grid, edges, node cards and the gestures on them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::RangeInclusive;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
-    AnyElement, Bounds, Context, CursorStyle, ElementId, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent, Window, canvas, div, fill, point,
-    prelude::*, px, size,
+    AnyElement, App, Bounds, Context, CursorStyle, ElementId, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathBuilder, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent, Transformation, Window, canvas, div,
+    fill, point, prelude::*, px, radians, size,
 };
 use jiff::civil::Date;
 use topo_core::{Graph, Kind, Node, NodeId, Status};
 
+use crate::animation::{Pivot, Preset, preset};
 use crate::inline::Field;
 use crate::layout::Band;
 use crate::theme::{Theme, metrics};
 use crate::ui;
-use crate::{Drag, NODE_H, NODE_W, TopoApp, dates, layout, theme};
+use crate::{Drag, NODE_H, NODE_W, TopoApp, animation, dates, layout, theme};
 
 /// How a card is emphasized in the current frame.
 struct CardState {
@@ -27,6 +30,133 @@ struct CardState {
     cursor: bool,
     /// `Some(allowed)` while a link is being dragged over this card.
     drop: Option<bool>,
+    /// The open requirements of the node.
+    open_requirements: usize,
+    /// The closed and all members of a milestone.
+    progress: (usize, usize),
+}
+
+impl CardState {
+    /// The opacity the card of a `closed` node rests at.
+    fn opacity(&self, closed: bool) -> f32 {
+        match () {
+            _ if self.dimmed => 0.22,
+            _ if closed && !self.selected => 0.6,
+            _ => 1.0,
+        }
+    }
+}
+
+/// A card as its springs have it in the current frame.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CardMotion {
+    /// The top-left corner, in canvas units.
+    pub(crate) at: [f32; 2],
+    /// The scale of the whole card: below 1 while it enters or leaves.
+    pub(crate) scale: f32,
+    pub(crate) opacity: f32,
+    /// How far the border and shadow of a selected card have faded in.
+    pub(crate) selected: f32,
+    /// How far the colours of a done card have faded in.
+    pub(crate) done: f32,
+    /// The scale of the status glyph, which pops when the card is completed.
+    pub(crate) check: f32,
+}
+
+/// Runs the springs of the card `key`. `place` is `[x, y, shrink]` in canvas units and moves
+/// on `reflow`; `fade` is `[opacity, selected, done]`. A card whose springs are new starts at
+/// `from` instead of at rest.
+fn card_motion(
+    window: &mut Window,
+    cx: &App,
+    key: ElementId,
+    from: Option<([f32; 3], [f32; 3])>,
+    place: [f32; 3],
+    fade: [f32; 3],
+    reflow: Option<Preset>,
+) -> CardMotion {
+    window.with_id(key, |window| {
+        let start = from.map(|(place, _)| place);
+        let [x, y, shrink] = animation::springs_within(window, cx, "place", start, place, reflow, PLACE_REST);
+        let start = from.map(|(_, fade)| fade);
+        let [opacity, selected, done] = animation::springs(window, cx, "fade", start, fade, Some(preset::FADE));
+        // Completing pops the glyph; taking it back only lets the new one grow.
+        let completed = fade[2] == 1.;
+        let pop = if completed { preset::BOUNCY } else { preset::SMOOTH };
+        let [check] = animation::springs(window, cx, "check", None, [fade[2]], Some(pop));
+        let check = 1. - 0.4 * if completed { 1. - check } else { check };
+        CardMotion { at: [x, y], scale: 1. - shrink / NODE_W, opacity, selected, done, check }
+    })
+}
+
+/// `element` drawn at `scale` about its centre. At rest it is the element itself.
+fn scaled(element: impl IntoElement, scale: f32) -> AnyElement {
+    match scale == 1. {
+        true => element.into_any_element(),
+        false => animation::surface(element).scale(scale, Pivot::Center).into_any_element(),
+    }
+}
+
+/// The canvas point of the top-left corner of `cell`.
+fn spot(cell: layout::Cell) -> [f32; 2] {
+    [cell.0 as f32 * crate::CELL_W, cell.1 as f32 * crate::CELL_H]
+}
+
+/// The point `left` of the way back from `at` to `from`.
+fn back(at: [f32; 2], from: [f32; 2], left: f32) -> [f32; 2] {
+    [at[0] + (from[0] - at[0]) * left, at[1] + (from[1] - at[1]) * left]
+}
+
+/// `from` crossfaded to `to`. The ends are exact, so a card at rest is drawn in its own colours.
+fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
+    match t {
+        t if t <= 0. => from,
+        t if t >= 1. => to,
+        t => animation::lerp(from.into(), to.into(), t).into(),
+    }
+}
+
+/// The most cards a layout change moves on springs; more of them snap.
+const REFLOW_CARDS: usize = 300;
+/// The most cards drawn leaving the canvas.
+const GHOSTS: usize = 40;
+/// How close a card comes to its cell before it rests, in canvas units.
+const PLACE_REST: f32 = 0.1;
+/// How much narrower a card is drawn as it enters or leaves, in canvas units: a scale of 0.9.
+const SHRINK: f32 = NODE_W * 0.1;
+
+/// A card leaving the canvas: what it showed, and where.
+#[derive(Clone)]
+struct Ghost {
+    node: Node,
+    cell: layout::Cell,
+    open_requirements: usize,
+    progress: (usize, usize),
+}
+
+/// The layout change the cards are still moving through.
+#[derive(Default)]
+struct Reflow {
+    /// Counts the layout changes, so that each one starts its own progress.
+    serial: usize,
+    /// Where each card was before the change; empty once the cards have arrived.
+    previous: BTreeMap<NodeId, layout::Cell>,
+    /// The most columns and rows any card is away from its cell.
+    reach: layout::Cell,
+    /// The cards of the nodes the last edit removed from the graph.
+    departed: Vec<Ghost>,
+    /// The cards that left with the change and are drawn fading out.
+    ghosts: Vec<Ghost>,
+}
+
+impl Reflow {
+    /// Ends the change: every card is where the layout has it.
+    fn settle(&mut self) {
+        self.previous.clear();
+        self.reach = (0, 0);
+        self.departed.clear();
+        self.ghosts.clear();
+    }
 }
 
 /// A drawn edge with the cells it joins; a node shown in several groups has one per group.
@@ -93,6 +223,10 @@ pub(crate) struct GraphCache {
     pub(crate) critical_lengths: BTreeMap<NodeId, usize>,
     path_next: BTreeMap<NodeId, Option<NodeId>>,
     cells: BTreeMap<NodeId, layout::Cell>,
+    reflow: Reflow,
+    /// The cards of the last frame, ghosts included, as they were drawn.
+    #[cfg(test)]
+    pub(crate) drawn: std::cell::RefCell<BTreeMap<NodeId, CardMotion>>,
     order: Vec<NodeId>,
     selected: BTreeSet<NodeId>,
     pub(crate) selected_ids: Vec<NodeId>,
@@ -135,6 +269,9 @@ impl Default for GraphCache {
             critical_lengths: BTreeMap::new(),
             path_next: BTreeMap::new(),
             cells: BTreeMap::new(),
+            reflow: Reflow::default(),
+            #[cfg(test)]
+            drawn: Default::default(),
             order: Vec::new(),
             selected: BTreeSet::new(),
             selected_ids: Vec::new(),
@@ -184,6 +321,21 @@ impl GraphCache {
                     || (self.view.group_by_tag && old.tags != n.tags)
             })
         });
+        if structure {
+            // The graph forgets a removed node, and its card still has to be drawn leaving.
+            let removed = before.nodes().filter(|n| after.get(&n.id).is_none());
+            let departed = removed
+                .filter_map(|n| {
+                    Some(Ghost {
+                        cell: *self.cells.get(&n.id)?,
+                        open_requirements: self.open_requirements[&n.id],
+                        progress: self.progress.get(&n.id).copied().unwrap_or_default(),
+                        node: n.clone(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            self.reflow.departed.extend(departed);
+        }
         self.layout_dirty |= structure || reshaped;
         self.dirty |= metrics || reshaped;
         if structure
@@ -245,6 +397,20 @@ impl GraphCache {
         }
     }
 
+    /// The columns and rows whose cards can be in the viewport; `None` when none can.
+    fn visible_cells(
+        offset: Point<Pixels>,
+        zoom: f32,
+        viewport: Bounds<Pixels>,
+    ) -> Option<(RangeInclusive<usize>, RangeInclusive<usize>)> {
+        let left = (-f32::from(offset.x) / zoom - NODE_W - 8.).max(0.) / crate::CELL_W;
+        let right = ((f32::from(viewport.size.width - offset.x)) / zoom).max(0.) / crate::CELL_W;
+        let top = (-f32::from(offset.y) / zoom - NODE_H).max(0.) / crate::CELL_H;
+        let bottom = (f32::from(viewport.size.height - offset.y) / zoom).max(0.) / crate::CELL_H;
+        (left.ceil() <= right.floor() && top.ceil() <= bottom.floor())
+            .then(|| (left.ceil() as usize..=right.floor() as usize, top.ceil() as usize..=bottom.floor() as usize))
+    }
+
     fn visible_nodes(&self, offset: Point<Pixels>, zoom: f32, viewport: Bounds<Pixels>) -> Vec<(NodeId, layout::Cell)> {
         if viewport.size.width <= px(0.) {
             return self
@@ -253,19 +419,63 @@ impl GraphCache {
                 .flat_map(|(col, rows)| rows.iter().map(|(row, id)| (id.clone(), (*col, *row))))
                 .collect();
         }
-        let left = (-f32::from(offset.x) / zoom - NODE_W - 8.).max(0.) / crate::CELL_W;
-        let right = ((f32::from(viewport.size.width - offset.x)) / zoom).max(0.) / crate::CELL_W;
-        let top = (-f32::from(offset.y) / zoom - NODE_H).max(0.) / crate::CELL_H;
-        let bottom = (f32::from(viewport.size.height - offset.y) / zoom).max(0.) / crate::CELL_H;
-        if left.ceil() > right.floor() || top.ceil() > bottom.floor() {
-            return Vec::new();
-        }
+        let Some((columns, rows)) = Self::visible_cells(offset, zoom, viewport) else { return Vec::new() };
         self.columns
-            .range(left.ceil() as usize..=right.floor() as usize)
-            .flat_map(|(col, rows)| {
-                rows.range(top.ceil() as usize..=bottom.floor() as usize).map(|(row, id)| (id.clone(), (*col, *row)))
-            })
+            .range(columns)
+            .flat_map(|(col, placed)| placed.range(rows.clone()).map(|(row, id)| (id.clone(), (*col, *row))))
             .collect()
+    }
+
+    /// How much of the layout change in flight is left: 1 as it starts, 0 once the cards
+    /// have arrived. Call it every frame, from where [`animation::springs`] may be called.
+    fn reflow_progress(&mut self, window: &mut Window, cx: &App) -> f32 {
+        let left = match self.reflow.previous.is_empty() {
+            true => 0.,
+            false => {
+                let id = ("reflow", self.reflow.serial);
+                animation::springs(window, cx, id, Some([1.]), [0.], Some(preset::SMOOTH))[0]
+            }
+        };
+        if left == 0. {
+            self.reflow.settle();
+        }
+        left
+    }
+
+    /// Picks the cards that left with the layout change and are drawn fading out: those
+    /// whose cell was in the viewport, and no more than [`GHOSTS`].
+    fn leave(&mut self, graph: &Graph, offset: Point<Pixels>, zoom: f32, viewport: Bounds<Pixels>) {
+        let Reflow { previous, departed, ghosts, .. } = &mut self.reflow;
+        let Some((columns, rows)) = Self::visible_cells(offset, zoom, viewport) else { return ghosts.clear() };
+        let left = previous.iter().filter(|(id, (column, row))| {
+            !self.cells.contains_key(*id) && columns.contains(column) && rows.contains(row)
+        });
+        *ghosts = left
+            .take(GHOSTS)
+            .filter_map(|(id, cell)| match graph.get(id) {
+                // A node hidden by the view is still in the graph.
+                Some(node) => Some(Ghost {
+                    node: node.clone(),
+                    cell: *cell,
+                    open_requirements: self.open_requirements[id],
+                    progress: self.progress.get(id).copied().unwrap_or_default(),
+                }),
+                // One removed without `changed` hearing of it leaves at once.
+                None => departed.iter().find(|ghost| ghost.node.id == *id).cloned(),
+            })
+            .collect();
+    }
+
+    /// Whether cards are still moving through a layout change.
+    #[cfg(test)]
+    pub(crate) fn reflowing(&self) -> bool {
+        !self.reflow.previous.is_empty()
+    }
+
+    /// The nodes whose cards are drawn leaving.
+    #[cfg(test)]
+    pub(crate) fn ghosts(&self) -> Vec<&str> {
+        self.reflow.ghosts.iter().map(|ghost| ghost.node.id.as_str()).collect()
     }
 
     fn visible_edges(&self, offset: Point<Pixels>, zoom: f32, viewport: Bounds<Pixels>) -> BTreeSet<usize> {
@@ -389,9 +599,20 @@ impl GraphCache {
             if self.layout_dirty {
                 self.order = graph.topo_order().expect("graph invariant");
                 let layout = layout::layout(graph, &self.view);
-                self.cells.clear();
+                let previous = std::mem::take(&mut self.cells);
                 for slot in &layout.slots {
                     self.cells.entry(slot.id.clone()).or_insert(slot.cell);
+                }
+                // The first layout has nothing to move from, and an unchanged one nothing to move.
+                if !previous.is_empty() && previous != self.cells {
+                    // A card still on its way from an earlier change is at most that much further off.
+                    let (columns, rows) = self.reflow.reach;
+                    let moves = self.cells.iter().filter_map(|(id, cell)| Some((cell, previous.get(id)?)));
+                    self.reflow.reach = moves.fold((columns, rows), |reach, (cell, old)| {
+                        (reach.0.max(columns + cell.0.abs_diff(old.0)), reach.1.max(rows + cell.1.abs_diff(old.1)))
+                    });
+                    self.reflow.serial += 1;
+                    self.reflow.previous = previous;
                 }
                 self.extent = layout
                     .slots
@@ -539,6 +760,11 @@ impl GraphCache {
     }
 }
 
+/// The time over which a pan's pointer speed is averaged, in seconds.
+const PAN_SMOOTHING: f32 = 0.04;
+/// A pointer that has been still this long before the release does not throw the canvas.
+const PAN_PAUSE: Duration = Duration::from_millis(80);
+
 const TILE: f32 = 560.;
 
 /// Conservative Bezier bounds include both control points, including curves that cross the viewport.
@@ -602,11 +828,19 @@ impl TopoApp {
             }
             return;
         }
+        let now = self.clock.now();
         match &mut self.drag {
-            Some(Drag::Pan { last, moved, .. }) => {
+            Some(Drag::Pan { last, at, velocity, moved, .. }) => {
                 let delta = event.position - *last;
                 *moved |= delta.x.abs() + delta.y.abs() > px(2.);
                 *last = event.position;
+                // Moves that share an instant carry no speed.
+                let seconds = now.saturating_duration_since(*at).as_secs_f32();
+                if seconds > 0. {
+                    let weight = 1. - (-seconds / PAN_SMOOTHING).exp();
+                    *velocity += (delta * (1. / seconds) - *velocity) * weight;
+                    *at = now;
+                }
                 self.offset += delta;
                 self.anim = None;
             }
@@ -631,6 +865,12 @@ impl TopoApp {
         }
         match self.drag.take() {
             Some(Drag::Pan { moved: false, on_card: false, button: MouseButton::Left, .. }) => self.clear_selection(),
+            // A pointer that rested before the release lets go of the canvas without throwing it.
+            Some(Drag::Pan { moved: true, at, velocity, .. })
+                if self.clock.now().saturating_duration_since(at) < PAN_PAUSE =>
+            {
+                self.fling(velocity)
+            }
             Some(Drag::Resize) => self.persist_inspector_width(),
             Some(Drag::Link { source, .. }) => {
                 let area = self.area.get();
@@ -648,11 +888,16 @@ impl TopoApp {
         cx.notify();
     }
 
-    pub(crate) fn graph_view(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Where the canvas point `at` is drawn in the canvas area.
+    fn drawn_at(&self, at: [f32; 2]) -> Point<Pixels> {
+        point(self.offset.x + px(at[0] * self.zoom), self.offset.y + px(at[1] * self.zoom))
+    }
+
+    pub(crate) fn graph_view(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         self.ensure_graph_cache();
-        let graph = &self.ws.graph;
-        let cells = self.graph_cache.cells();
+        // The overlays advance their motion, which the borrows of the graph below rule out.
+        let overlays = self.overlays(window, cx);
         // The first frame has no canvas bounds yet. Use the window as a conservative
         // bound rather than constructing every offscreen card before layout settles.
         let area = self.area.get().size;
@@ -662,18 +907,50 @@ impl TopoApp {
         let z = self.zoom;
         let origin = self.area.get().origin;
 
+        // While a layout change is in flight a card is drawn away from its cell, so cards
+        // and edges are looked up in a viewport grown by how far that still is: at most by
+        // the viewport itself, and by nothing once the cards have arrived.
+        let mut progress = self.graph_cache.reflow_progress(window, cx);
+        let [reach_x, reach_y] = spot(self.graph_cache.reflow.reach);
+        let margin = point(
+            viewport.size.width.min(px(reach_x * z * progress)),
+            viewport.size.height.min(px(reach_y * z * progress)),
+        );
+        let grown = Bounds::new(viewport.origin - margin, viewport.size + size(margin.x * 2., margin.y * 2.));
+        let placed = self.graph_cache.visible_nodes(self.offset + margin, z, grown);
+        let mut reflow = Some(preset::SMOOTH);
+        if progress > 0. {
+            let GraphCache { cells, reflow: Reflow { previous, .. }, .. } = &self.graph_cache;
+            let moves =
+                |(id, cell): &&(NodeId, layout::Cell)| cells.get(id) == Some(cell) && previous.get(id) != Some(cell);
+            if placed.iter().filter(moves).count() > REFLOW_CARDS {
+                self.graph_cache.reflow.settle();
+                (progress, reflow) = (0., None);
+            } else if progress == 1. {
+                // The first frame of the change.
+                self.graph_cache.leave(&self.ws.graph, self.offset, z, viewport);
+            }
+        }
+        let graph = &self.ws.graph;
+        let cells = self.graph_cache.cells();
+        let previous = &self.graph_cache.reflow.previous;
+        let on_screen = |at: Point<Pixels>| {
+            viewport.size.width <= px(0.)
+                || Bounds::new(at, size(px((NODE_W + 8.) * z), px(NODE_H * z))).intersects(&viewport)
+        };
+
         let focus = &self.graph_cache.focus;
         let cursor = self.list_cursor(cx);
         let critical = &self.graph_cache.critical;
         let filtered = |id: &NodeId| self.passes_filter(graph.get(id).expect("graph invariant"));
         let palette = self.palette.read(cx);
-        let matching = matches!(self.prompt, Some(crate::Prompt::Pick { .. }))
-            || (matches!(self.prompt, Some(crate::Prompt::Search)) && !palette.text(cx).trim().is_empty());
+        let matching = matches!(self.prompt.get(), Some(crate::Prompt::Pick { .. }))
+            || (matches!(self.prompt.get(), Some(crate::Prompt::Search)) && !palette.text(cx).trim().is_empty());
         let matches = matching.then(|| palette.matching_keys());
         let emphasized = |id: &NodeId| match (matching, &focus) {
             (true, _) => {
                 matches.as_ref().is_some_and(|keys| keys.contains(id.as_str()))
-                    || matches!(&self.prompt, Some(crate::Prompt::Pick { node, .. }) if node == id)
+                    || matches!(self.prompt.get(), Some(crate::Prompt::Pick { node, .. }) if node == id)
             }
             (false, Some(f)) => f.contains(id) && filtered(id),
             (false, None) => filtered(id),
@@ -691,13 +968,93 @@ impl TopoApp {
             },
         );
 
+        let card = |n: &Node| CardState {
+            selected: self.selected_nodes.contains(&n.id),
+            hovered: self.hovered.as_ref() == Some(&n.id) && self.drag.is_none(),
+            dimmed: !emphasized(&n.id),
+            critical: critical.contains(&n.id),
+            cursor: cursor.as_ref() == Some(&n.id),
+            drop: drop.as_ref().filter(|(t, ..)| *t == n.id).map(|(_, _, allowed)| *allowed),
+            open_requirements: self.graph_cache.open_requirements[&n.id],
+            progress: self.graph_cache.progress.get(&n.id).copied().unwrap_or_default(),
+        };
+        #[cfg(test)]
+        self.graph_cache.drawn.borrow_mut().clear();
+        let mut nodes: Vec<AnyElement> = Vec::new();
+        // Where the cards that are away from their cells are drawn, for their edges.
+        let mut moved: BTreeMap<&NodeId, [f32; 2]> = BTreeMap::new();
+        for (id, cell) in &placed {
+            let Some(n) = graph.get(id) else { continue };
+            let state = card(n);
+            let rest = spot(*cell);
+            let done = f32::from(n.status == Status::Done);
+            let fade = [state.opacity(n.status.is_closed()), f32::from(state.selected), done];
+            // Only the first card of a node follows it between layouts; its cards in other
+            // groups belong to their cells.
+            let first = cells.get(id) == Some(cell);
+            let key = match first {
+                true => ElementId::from(id.as_str().to_owned()),
+                false => ElementId::from(("card", ((cell.0 as u64) << 32) | cell.1 as u64)),
+            };
+            // A card that comes into view during the change joins it where it would be by now.
+            let from = (first && progress > 0.).then(|| match previous.get(id) {
+                Some(old) => {
+                    let [x, y] = back(rest, spot(*old), progress);
+                    ([x, y, 0.], fade)
+                }
+                None => ([rest[0], rest[1], SHRINK * progress], [0., fade[1], fade[2]]),
+            });
+            let motion = card_motion(window, cx, key, from, [rest[0], rest[1], 0.], fade, reflow);
+            if first && motion.at != rest {
+                moved.insert(id, motion.at);
+            }
+            if on_screen(self.drawn_at(motion.at)) {
+                nodes.push(self.node_card(t, n, state, motion, today, cx));
+            }
+        }
+        for Ghost { node, cell, open_requirements, progress } in &self.graph_cache.reflow.ghosts {
+            let state = CardState {
+                selected: false,
+                hovered: false,
+                dimmed: !self.passes_filter(node),
+                critical: false,
+                cursor: false,
+                drop: None,
+                open_requirements: *open_requirements,
+                progress: *progress,
+            };
+            let [x, y] = spot(*cell);
+            let done = f32::from(node.status == Status::Done);
+            let from = ([x, y, 0.], [state.opacity(node.status.is_closed()), 0., done]);
+            let key = ElementId::from(node.id.as_str().to_owned());
+            let motion = card_motion(window, cx, key, Some(from), [x, y, SHRINK], [0., 0., done], reflow);
+            if motion.opacity > 0. && on_screen(self.drawn_at(motion.at)) {
+                let card = self.node_card(t, node, state, motion, today, cx);
+                nodes.push(animation::surface(card).inert(true).into_any_element());
+            }
+        }
+
+        // A card that is not drawn is taken to move in step with the change.
+        let place = |id: &NodeId, cell: layout::Cell| match (moved.get(id), previous.get(id)) {
+            _ if cells.get(id) != Some(&cell) => spot(cell),
+            (Some(at), _) => *at,
+            (None, Some(old)) => back(spot(cell), spot(*old), progress),
+            (None, None) => spot(cell),
+        };
         // Edges run from the right side of a requirement to the left side of
         // the node requiring it: prerequisite → dependent, member → milestone.
-        let anchor = |cell: layout::Cell, right: bool| {
-            let p = self.to_screen(cell);
+        let anchor = |id: &NodeId, cell: layout::Cell, right: bool| {
+            let at = match moved.is_empty() && previous.is_empty() {
+                true => spot(cell),
+                false => place(id, cell),
+            };
+            let p = self.drawn_at(at);
             point(p.x + px(if right { NODE_W * z } else { 0. }), p.y + px(NODE_H * z / 2.))
         };
-        let edge = |placed: &PlacedEdge| {
+        let ends = |placed: &PlacedEdge| {
+            (anchor(&placed.from, placed.from_cell, true), anchor(&placed.to, placed.to_cell, false))
+        };
+        let edge = |(placed, (start, end)): (&PlacedEdge, (Point<Pixels>, Point<Pixels>))| {
             let PlacedEdge { from, to, membership, .. } = placed;
             let closed = graph.get(from).expect("graph invariant").status.is_closed();
             let on_focus = focus.as_ref().is_some_and(|f| f.contains(from) && f.contains(to));
@@ -710,22 +1067,18 @@ impl TopoApp {
                 _ if *membership => (theme::alpha(t.milestone, 0.5), 1.25),
                 _ => (t.edge.into(), 1.5),
             };
-            EdgePaint {
-                from: anchor(placed.from_cell, true),
-                to: anchor(placed.to_cell, false),
-                color,
-                width,
-                dashed: *membership,
-            }
+            EdgePaint { from: start, to: end, color, width, dashed: *membership }
         };
         let mut edges: Vec<EdgePaint> = self
             .graph_cache
-            .visible_edges(self.offset, z, viewport)
+            .visible_edges(self.offset + margin, z, grown)
             .into_iter()
             .map(|i| &self.graph_cache.edges[i])
             .chain(&self.graph_cache.cross)
+            // Most edges of a tile miss the viewport: place them before working out their looks.
+            .map(|placed| (placed, ends(placed)))
+            .filter(|(_, (from, to))| edge_visible(*from, *to, viewport, z))
             .map(edge)
-            .filter(|e| edge_visible(e.from, e.to, viewport, z))
             .collect();
         edges.sort_by(|a, b| a.width.total_cmp(&b.width));
         let pending = link.as_ref().and_then(|(source, mouse)| {
@@ -734,38 +1087,16 @@ impl TopoApp {
                 Some(_) => t.success,
                 None => t.accent,
             };
-            Some((anchor(*cells.get(source)?, true), *mouse, color))
+            Some((anchor(source, *cells.get(source)?, true), *mouse, color))
         });
 
-        let nodes: Vec<AnyElement> = self
-            .graph_cache
-            .visible_nodes(self.offset, z, viewport)
-            .iter()
-            .filter_map(|(id, cell)| graph.get(id).map(|n| (n, *cell)))
-            .filter(|(_, cell)| {
-                viewport.size.width <= px(0.)
-                    || Bounds::new(self.to_screen(*cell), size(px((NODE_W + 8.) * z), px(NODE_H * z)))
-                        .intersects(&viewport)
-            })
-            .map(|(n, cell)| {
-                let state = CardState {
-                    selected: self.selected_nodes.contains(&n.id),
-                    hovered: self.hovered.as_ref() == Some(&n.id) && self.drag.is_none(),
-                    dimmed: !emphasized(&n.id),
-                    critical: critical.contains(&n.id),
-                    cursor: cursor.as_ref() == Some(&n.id),
-                    drop: drop.as_ref().filter(|(t, ..)| *t == n.id).map(|(_, _, allowed)| *allowed),
-                };
-                self.node_card(t, n, self.to_screen(cell), state, today, cx)
-            })
-            .collect();
         let headers: Vec<AnyElement> = (0..self.graph_cache.bands.len())
             .filter(|&band| {
                 let pos = self.to_screen((0, self.graph_cache.bands[band].row));
                 viewport.size.width <= px(0.)
-                    || Bounds::new(pos, size(px(NODE_W * z), px(NODE_H * z))).intersects(&viewport)
+                    || Bounds::new(pos, size(px(NODE_W * z), px(NODE_H * z))).intersects(&grown)
             })
-            .map(|band| self.group_header(t, band, cx))
+            .map(|band| self.group_header(t, band, reflow, window, cx))
             .collect();
 
         let area = self.area.clone();
@@ -848,21 +1179,13 @@ impl TopoApp {
             .children(link_label)
             .child(self.zoom_controls(cx))
             // The save status floats over the canvas, so showing it never moves the graph.
-            .when(self.persistence.pending_count() > 0, |d| d.child(self.persistence_bar(cx)))
-            .children(self.prompt_overlay())
-            .children(self.toast_view())
-            .when(self.show_help, |d| d.child(self.help_overlay(cx)))
+            .children(overlays)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, ev: &MouseDownEvent, _, cx| {
                     // A click away from an open prompt only dismisses it (the window does that).
-                    if app.prompt.is_none() {
-                        app.drag = Some(Drag::Pan {
-                            last: ev.position,
-                            moved: false,
-                            on_card: false,
-                            button: MouseButton::Left,
-                        });
+                    if app.prompt.get().is_none() {
+                        app.drag = Some(Drag::pan(ev, false, app.clock.now()));
                         cx.notify();
                     }
                 }),
@@ -870,53 +1193,77 @@ impl TopoApp {
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(|app, ev: &MouseDownEvent, _, cx| {
-                    if app.prompt.is_none() {
-                        app.drag = Some(Drag::Pan {
-                            last: ev.position,
-                            moved: false,
-                            on_card: true,
-                            button: MouseButton::Middle,
-                        });
+                    if app.prompt.get().is_none() {
+                        app.drag = Some(Drag::pan(ev, true, app.clock.now()));
                         cx.notify();
                     }
                 }),
             )
+            // Any press takes hold of a camera that is moving by itself.
+            .capture_any_mouse_down(cx.listener(|app, _, _, _| app.anim = None))
             .on_scroll_wheel(cx.listener(|app, ev: &ScrollWheelEvent, _, cx| {
-                app.anim = None;
+                let anchor = ev.position - app.area.get().origin;
+                let modified = ev.modifiers.platform || ev.modifiers.control;
                 match ev.delta {
-                    ScrollDelta::Lines(delta) if ev.modifiers.shift => {
-                        app.offset.x += px((delta.y + delta.x) * 40.);
+                    // Wheel notches add up: each zooms on from where the last one is heading.
+                    ScrollDelta::Lines(delta) if !ev.modifiers.shift && !modified => {
+                        let zoom = Self::stepped(app.target().1, 1.12_f32.powf(delta.y));
+                        app.zoom_to(zoom, anchor, animation::preset::SNAPPY);
                     }
-                    ScrollDelta::Lines(delta) if ev.modifiers.platform || ev.modifiers.control => {
-                        app.offset.y += px(delta.y * 40.);
-                        app.offset.x += px(delta.x * 40.);
-                    }
+                    // Everything else moves the camera directly, from where it is drawn.
                     ScrollDelta::Lines(delta) => {
-                        app.zoom_by(1.12_f32.powf(delta.y), ev.position - app.area.get().origin, false);
+                        app.anim = None;
+                        app.offset += match ev.modifiers.shift {
+                            true => point(px((delta.y + delta.x) * 40.), px(0.)),
+                            false => point(px(delta.x * 40.), px(delta.y * 40.)),
+                        };
                     }
-                    ScrollDelta::Pixels(delta) if ev.modifiers.platform || ev.modifiers.control => {
-                        app.zoom_by((f32::from(delta.y) / 300.).exp(), ev.position - app.area.get().origin, false);
+                    // The scroll's end is not reported for every device, so the zoom stops at its limits.
+                    ScrollDelta::Pixels(delta) if modified => {
+                        app.zoom_by((f32::from(delta.y) / 300.).exp(), anchor, false)
                     }
-                    ScrollDelta::Pixels(delta) => app.offset += delta,
+                    ScrollDelta::Pixels(delta) => {
+                        app.anim = None;
+                        app.offset += delta;
+                    }
                 }
                 cx.notify();
             }))
     }
 
     /// The header of group `band`: click to fold or unfold its cards.
-    fn group_header(&self, t: &'static Theme, band: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn group_header(
+        &self,
+        t: &'static Theme,
+        band: usize,
+        reflow: Option<Preset>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Band { group, row, count } = &self.graph_cache.bands[band];
         let z = self.zoom;
         let collapsed = self.graph_cache.view.collapsed.contains(group);
         let toggled = group.clone();
         let name = format!("group-{}", group.label());
+        // The header moves with its cards, and its chevron turns from pointing right (0°)
+        // to pointing down (90°) as the group unfolds.
+        let rest = [spot((0, *row))[1], if collapsed { 0. } else { 90. }];
+        let id = ElementId::from(name.clone());
+        let [y, turn] = animation::springs_within(window, cx, id, None, rest, reflow, PLACE_REST);
+        // At rest the chevron is the icon itself, not a turned one.
+        let chevron = match turn {
+            turn if turn <= 0. => ui::icon(ui::Icon::ChevronRight, t.fg_faint),
+            turn if turn >= 90. => ui::icon(ui::Icon::ChevronDown, t.fg_faint),
+            turn => ui::icon(ui::Icon::ChevronRight, t.fg_faint)
+                .with_transformation(Transformation::rotate(radians(turn.to_radians()))),
+        };
         div()
             .id(ElementId::Name(name.clone().into()))
             .debug_selector(move || name.clone())
             .absolute()
-            .left(self.to_screen((0, *row)).x)
+            .left(self.offset.x)
             // Sits at the bottom of its row, right above the first card of the group.
-            .top(self.to_screen((0, *row)).y + px((crate::CELL_H - 6. - 28.) * z))
+            .top(self.drawn_at([0., y]).y + px((crate::CELL_H - 6. - 28.) * z))
             .h(px(28. * z))
             .px(px(10. * z))
             .flex()
@@ -931,10 +1278,7 @@ impl TopoApp {
             .whitespace_nowrap()
             .cursor_pointer()
             .hover(|s| s.border_color(t.border_strong))
-            .child(
-                ui::icon(if collapsed { ui::Icon::ChevronRight } else { ui::Icon::ChevronDown }, t.fg_faint)
-                    .size(px(12. * z)),
-            )
+            .child(chevron.size(px(12. * z)))
             .child(div().text_color(t.fg).child(group.label()))
             .child(div().text_color(t.fg_muted).child(count.to_string()))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
@@ -949,35 +1293,42 @@ impl TopoApp {
         &self,
         t: &'static Theme,
         node: &Node,
-        pos: Point<Pixels>,
         state: CardState,
+        motion: CardMotion,
         today: Date,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        #[cfg(test)]
+        self.graph_cache.drawn.borrow_mut().insert(node.id.clone(), motion);
         let z = self.zoom;
+        let pos = self.drawn_at(motion.at);
         let id = node.id.clone();
         let milestone = node.kind == Kind::Milestone;
         let closed = node.status.is_closed();
         let (icon, icon_color) = theme::node_icon(node);
-        let border: Hsla = match (state.drop, state.selected || state.cursor) {
-            (Some(true), _) => t.success.into(),
-            (Some(false), _) => t.danger.into(),
-            (None, true) => t.accent.into(),
+        // The glyph changes at once; its colour and the title's cross over from the other state.
+        let icon_color = match node.status {
+            Status::Done if milestone => mix(t.milestone.into(), icon_color.into(), motion.done),
+            Status::Done => mix(theme::status_color(Status::Todo).into(), icon_color.into(), motion.done),
+            _ => mix(icon_color.into(), t.status_done.into(), motion.done),
+        };
+        let unselected: Hsla = match () {
             _ if state.critical => theme::alpha(t.critical, 0.6),
             _ if milestone => theme::alpha(t.milestone, 0.45),
             _ if state.hovered => t.border_strong.into(),
             _ => t.hairline.into(),
+        };
+        let border: Hsla = match (state.drop, state.cursor) {
+            (Some(true), _) => t.success.into(),
+            (Some(false), _) => t.danger.into(),
+            (None, true) => t.accent.into(),
+            (None, false) => mix(unselected, t.accent.into(), motion.selected),
         };
         let bg = match (milestone, state.hovered) {
             (true, false) => t.card_milestone,
             (true, true) => t.card_milestone_hover,
             (false, false) => t.card,
             (false, true) => t.card_hover,
-        };
-        let opacity = match () {
-            _ if state.dimmed => 0.22,
-            _ if closed && !state.selected => 0.6,
-            _ => 1.0,
         };
 
         let check = {
@@ -992,7 +1343,7 @@ impl TopoApp {
                 .rounded(px(4. * z))
                 .text_color(icon_color)
                 .text_size(px(13. * z))
-                .child(icon)
+                .child(scaled(icon, motion.check))
                 .when(!milestone, |d| {
                     d.hover(|s| s.bg(t.control_hover)).on_mouse_down(
                         MouseButton::Left,
@@ -1007,10 +1358,12 @@ impl TopoApp {
             .flex_1()
             .min_w(px(0.))
             .truncate()
-            .text_color(t.fg)
+            .text_color(match node.status {
+                Status::Dropped => t.fg_faint.into(),
+                _ => mix(t.fg.into(), t.fg_muted.into(), motion.done),
+            })
             .when(milestone, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
-            .when(node.status == Status::Done, |d| d.line_through().text_color(t.fg_muted))
-            .when(node.status == Status::Dropped, |d| d.line_through().text_color(t.fg_faint))
+            .when(node.status == Status::Dropped || motion.done >= 0.5, |d| d.line_through())
             .child(node.title.clone());
 
         let mini = |label: String, color: Rgba, fill: Hsla| {
@@ -1048,7 +1401,7 @@ impl TopoApp {
             .text_color(t.fg_faint);
         let meta = match node.kind {
             Kind::Milestone => {
-                let (done, total) = self.graph_cache.progress[&node.id];
+                let (done, total) = state.progress;
                 let fraction = if total == 0 { 0. } else { done as f32 / total as f32 };
                 let complete = closed || (total > 0 && done == total);
                 meta.child(ui::progress_bar(fraction, complete, 4. * z))
@@ -1062,7 +1415,7 @@ impl TopoApp {
                     .children(due)
             }
             Kind::Task => {
-                let open_reqs = self.graph_cache.open_requirements[&node.id];
+                let open_reqs = state.open_requirements;
                 let status = match node.status {
                     Status::Doing => mini("In progress".into(), t.on_accent, t.accent.into()),
                     Status::Done => tinted("Done".into(), t.status_done),
@@ -1116,7 +1469,11 @@ impl TopoApp {
             .border_2()
             .border_color(border)
             .bg(bg)
-            .when(state.selected, |d| d.shadow(metrics::e1()))
+            .when(motion.selected > 0., |d| {
+                let mut shadows = metrics::e1();
+                shadows.iter_mut().for_each(|shadow| shadow.color.a *= motion.selected);
+                d.shadow(shadows)
+            })
             .text_size(px(13. * z))
             .cursor_pointer()
             .child(div().flex().items_center().gap(px(6. * z)).child(check).child(title))
@@ -1125,7 +1482,7 @@ impl TopoApp {
                 MouseButton::Left,
                 cx.listener(move |app, ev: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    if app.prompt.is_some() {
+                    if app.prompt.get().is_some() {
                         app.close_prompt(window, cx);
                     }
                     window.focus(&app.focus, cx);
@@ -1143,19 +1500,14 @@ impl TopoApp {
                             None
                         }
                         // Cards are placed by the layout, so dragging one moves the canvas.
-                        _ => Some(Drag::Pan {
-                            last: ev.position,
-                            moved: false,
-                            on_card: true,
-                            button: MouseButton::Left,
-                        }),
+                        _ => Some(Drag::pan(ev, true, app.clock.now())),
                     };
                     cx.notify();
                 }),
             );
 
         // Wider than the card, so the pointer can reach all of the handle without leaving.
-        div()
+        let card = div()
             .id(ElementId::Name(format!("node-{id}").into()))
             .debug_selector(|| format!("node-{id}"))
             .absolute()
@@ -1163,7 +1515,7 @@ impl TopoApp {
             .top(pos.y)
             .w(px((NODE_W + 8.) * z))
             .h(px(NODE_H * z))
-            .opacity(opacity)
+            .opacity(motion.opacity)
             .child(card)
             .when(state.hovered || state.selected, |d| d.child(handle))
             .on_hover(cx.listener(move |app, hovered: &bool, _, cx| {
@@ -1174,8 +1526,8 @@ impl TopoApp {
                     false => return,
                 }
                 cx.notify();
-            }))
-            .into_any_element()
+            }));
+        scaled(card, motion.scale)
     }
 }
 

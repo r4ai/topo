@@ -150,37 +150,261 @@ fn large_overview_and_selection_lists_keep_all_rows_reachable(cx: &mut TestAppCo
     assert_eq!(ui.selection(), ["task0199"]);
 }
 
+/// Turns motion on until it is dropped; tests otherwise run without it.
+struct Motion;
+
+impl Motion {
+    fn on() -> Self {
+        crate::animation::set_enabled(true);
+        Self
+    }
+}
+
+impl Drop for Motion {
+    fn drop(&mut self) {
+        crate::animation::set_enabled(false);
+    }
+}
+
+/// The value and velocity of the camera's x, y and zoom now.
+fn camera(app: &TopoApp) -> [(f32, f32); 3] {
+    let now = app.clock.now();
+    app.springs(now).map(|spring| spring.sample(now))
+}
+
+/// Puts the camera at rest at `offset` and `zoom`.
+fn place(ui: &mut Ui, offset: Point<Pixels>, zoom: f32) {
+    ui.app.update(ui.cx, |app, _| (app.anim, app.offset, app.zoom) = (None, offset, zoom));
+    ui.redraw();
+}
+
+fn gesture(ui: &mut Ui, gesture: Gesture) {
+    ui.app.update_in(ui.cx, |app, window, cx| app.on_gesture(gesture, window, cx));
+    ui.redraw();
+}
+
 #[gpui::test]
 fn camera_retargeting_keeps_velocity_and_disabling_motion_finishes_the_move(cx: &mut TestAppContext) {
-    struct ResetMotion;
-    impl Drop for ResetMotion {
-        fn drop(&mut self) {
-            crate::animation::set_enabled(false);
-        }
-    }
-    let ui = open(cx, SAMPLE);
-    let _reset = ResetMotion;
-    crate::animation::set_enabled(true);
-    ui.app.update(ui.cx, |app, _| {
-        app.anim = None;
-        app.offset = point(px(0.), px(0.));
-        app.zoom = 1.;
-        app.animate_to(point(px(1000.), px(400.)), 1.5);
-        // Retarget between rendered frames, while the first move has velocity.
-        app.anim.as_mut().unwrap().start -= std::time::Duration::from_millis(80);
-        app.animate_to(point(px(-100.), px(50.)), 0.75);
-        let next = app.anim.as_ref().unwrap();
-        assert!(next.from.0.x > px(0.) && next.from.0.x < px(1000.));
-        assert!(next.velocity.0.x > px(0.));
-        assert!(next.velocity.1 > 0.);
-        assert_eq!(next.sample(std::time::Duration::ZERO).0, next.from);
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    place(&mut ui, point(px(0.), px(0.)), 1.);
+    ui.app.update(ui.cx, |app, _| app.animate_to(point(px(1000.), px(400.)), 1.5));
+    ui.advance(80);
+    let before = ui.read(camera);
+    let [(x, vx), (_, vy), (zoom, vz)] = before;
+    assert!(0. < x && x < 1000. && 1. < zoom && zoom < 1.5);
+    assert!(vx > 0. && vy > 0. && vz > 0.);
+    assert_eq!(ui.read(|app| (f32::from(app.offset.x), app.zoom)), (x, zoom), "the frame draws the springs");
 
-        crate::animation::set_enabled(false);
-        assert!(!app.step_anim());
-        assert!(app.anim.is_none());
-        assert_eq!(app.offset, point(px(-100.), px(50.)));
-        assert_eq!(app.zoom, 0.75);
-    });
+    // Retargeted between frames, the camera is where it was and as fast.
+    ui.app.update(ui.cx, |app, _| app.animate_to(point(px(-100.), px(50.)), 0.75));
+    for ((value, velocity), (old_value, old_velocity)) in ui.read(camera).into_iter().zip(before) {
+        assert!((value - old_value).abs() <= old_value.abs() * 1e-6, "{value} != {old_value}");
+        assert!((velocity - old_velocity).abs() <= old_velocity.abs() * 1e-4, "{velocity} != {old_velocity}");
+    }
+    // It still coasts the old way before it turns round.
+    ui.advance(8);
+    assert!(ui.read(|app| f32::from(app.offset.x)) > x);
+    assert_eq!(ui.read(|app| app.target()), (point(px(-100.), px(50.)), 0.75));
+
+    crate::animation::set_enabled(false);
+    ui.redraw();
+    assert!(ui.read(|app| app.anim.is_none()));
+    assert_eq!(ui.read(|app| (app.offset, app.zoom)), (point(px(-100.), px(50.)), 0.75));
+}
+
+#[gpui::test]
+fn a_long_camera_move_settles_without_a_final_snap(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    place(&mut ui, point(px(0.), px(0.)), 1.);
+    let to = (point(px(100_000.), px(-100_000.)), 0.5);
+    ui.app.update(ui.cx, |app, _| app.animate_to(to.0, to.1));
+    let mut last = ui.read(|app| (app.offset, app.zoom));
+    let mut frames = 0;
+    while ui.read(|app| app.anim.is_some()) {
+        last = ui.read(|app| (app.offset, app.zoom));
+        ui.advance(8);
+        frames += 1;
+    }
+    assert!(frames > 45, "a move this long takes its time: {frames} frames");
+    assert_eq!(ui.read(|app| (app.offset, app.zoom)), to);
+    // The frame before the camera rested was already there to the eye.
+    assert!((last.0.x - to.0.x).abs() < px(0.5) && (last.0.y - to.0.y).abs() < px(0.5), "{last:?}");
+    assert!((last.1 - to.1).abs() < 1e-5, "{last:?}");
+}
+
+#[gpui::test]
+fn without_motion_every_camera_move_lands_at_once(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let moved = |ui: &mut Ui, f: fn(&mut TopoApp, &mut gpui::Context<TopoApp>)| {
+        ui.app.update(ui.cx, |app, cx| {
+            f(app, cx);
+            assert!(app.anim.is_none());
+            assert_eq!(app.target(), (app.offset, app.zoom));
+        });
+        ui.read(|app| (app.offset, app.zoom))
+    };
+    place(&mut ui, point(px(5000.), px(5000.)), 2.);
+    let framed = moved(&mut ui, |app, _| app.fit(false));
+    assert!(framed.0.x < px(5000.) && framed.1 < 2.);
+    assert_eq!(moved(&mut ui, |app, _| app.zoom_by(1.25, app.canvas_center(), true)).1, framed.1 * 1.25);
+    place(&mut ui, point(px(5000.), px(5000.)), 2.);
+    assert_ne!(moved(&mut ui, |app, _| app.reveal(&id("a"), true)).0, point(px(5000.), px(5000.)));
+    assert_ne!(moved(&mut ui, |app, cx| app.select_nodes(&[id("a"), id("b")], cx)).1, 2.);
+    place(&mut ui, point(px(5000.), px(5000.)), 2.);
+    assert_ne!(moved(&mut ui, |app, _| app.toggle_hide_completed()).0, point(px(5000.), px(5000.)));
+
+    // A fast drag ends where it is released, and a pinch past the limit returns at once.
+    let before = ui.read(|app| app.offset);
+    let from = ui.read(|app| app.area.get().origin) + point(px(30.), px(300.));
+    ui.fast_drag(from, point(px(20.), px(0.)), 10);
+    ui.release(from + point(px(200.), px(0.)));
+    assert_eq!(ui.read(|app| (app.anim.is_none(), app.offset)), (true, before + point(px(200.), px(0.))));
+    ui.move_to(from, false);
+    gesture(&mut ui, Gesture::Pinch(3.));
+    assert!(ui.read(|app| app.zoom) > crate::MAX_ZOOM);
+    gesture(&mut ui, Gesture::PinchEnd);
+    assert_eq!(ui.read(|app| (app.anim.is_none(), app.zoom)), (true, crate::MAX_ZOOM));
+}
+
+#[gpui::test]
+fn a_pinch_takes_over_a_camera_flight_without_a_jump(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    place(&mut ui, point(px(900.), px(-300.)), 2.);
+    let pointer = ui.read(|app| app.area.get().origin) + point(px(300.), px(200.));
+    ui.move_to(pointer, false);
+    ui.app.update(ui.cx, |app, _| app.fit(false));
+    ui.advance(80);
+    let (offset, zoom, target) = ui.read(|app| (app.offset, app.zoom, app.target()));
+    assert!(ui.read(|app| app.anim.is_some()) && (zoom - target.1).abs() > 0.1);
+
+    gesture(&mut ui, Gesture::Pinch(0.01));
+    let (pinched_offset, pinched_zoom) = ui.read(|app| (app.offset, app.zoom));
+    assert!(ui.read(|app| app.anim.is_none()), "the pinch holds the camera");
+    assert!((pinched_zoom - zoom * 1.01).abs() < 1e-4, "{pinched_zoom} continues from {zoom}");
+    // The offset moves only as far as zooming by a hundredth around the pointer takes it.
+    let shift = (point(px(300.), px(200.)) - offset) * -0.01;
+    assert!((pinched_offset.x - offset.x - shift.x).abs() < px(0.01), "{pinched_offset:?} continues from {offset:?}");
+    assert!((pinched_offset.y - offset.y - shift.y).abs() < px(0.01), "{pinched_offset:?} continues from {offset:?}");
+    // Nothing carries the camera on once the pinch holds it.
+    ui.advance(500);
+    assert_eq!(ui.read(|app| (app.offset, app.zoom)), (pinched_offset, pinched_zoom));
+}
+
+#[gpui::test]
+fn a_pinch_past_a_zoom_limit_is_resisted_and_springs_back_to_it(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    let pointer = ui.card("a", 0., 0.);
+    ui.move_to(pointer, false);
+    for (limit, magnification) in [(crate::MAX_ZOOM, 0.5), (crate::MIN_ZOOM, -0.4)] {
+        let offset = ui.read(|app| app.offset);
+        place(&mut ui, offset, 1.);
+        let mut asked = 1.;
+        for _ in 0..6 {
+            gesture(&mut ui, Gesture::Pinch(magnification));
+            asked *= 1. + magnification;
+        }
+        let zoom = ui.read(|app| app.zoom);
+        let past = |zoom: f32| (zoom / limit).ln().abs();
+        assert!((asked / limit).ln() * (zoom / limit).ln() > 0., "{zoom} is past {limit}");
+        assert!(past(zoom) < past(asked) / 2., "{zoom} gives much less than the {asked} asked for");
+        let held = ui.card("a", 0., 0.);
+
+        gesture(&mut ui, Gesture::PinchEnd);
+        assert!(ui.read(|app| app.anim.is_some()));
+        ui.advance(100);
+        assert!(past(ui.read(|app| app.zoom)) < past(zoom), "the zoom is on its way back");
+        // The point under the fingers stays under them on the way.
+        let corner = ui.card("a", 0., 0.);
+        assert!((corner.x - held.x).abs() < px(0.5) && (corner.y - held.y).abs() < px(0.5), "{corner:?} left {held:?}");
+        ui.advance(3000);
+        assert_eq!(ui.read(|app| (app.anim.is_none(), app.zoom)), (true, limit));
+        let corner = ui.card("a", 0., 0.);
+        assert!((corner.x - held.x).abs() < px(0.01) && (corner.y - held.y).abs() < px(0.01));
+    }
+}
+
+#[gpui::test]
+fn wheel_notches_add_up_and_stay_anchored_all_the_way(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent};
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    // Start in a flight, so the zoom takes over a camera that is already moving.
+    place(&mut ui, point(px(700.), px(500.)), 0.6);
+    ui.app.update(ui.cx, |app, _| app.fit(false));
+    ui.advance(60);
+    let position = ui.card("b", 0.5, 0.5);
+    let zoom = ui.read(|app| app.target().1);
+    let notch = ScrollWheelEvent { position, delta: ScrollDelta::Lines(point(0., 1.)), ..Default::default() };
+    let anchored = |ui: &mut Ui, within: f32| {
+        let card = ui.card("b", 0.5, 0.5);
+        assert!((card.x - position.x).abs() < px(within) && (card.y - position.y).abs() < px(within), "{card:?}");
+    };
+    ui.cx.simulate_event(notch.clone());
+    for _ in 0..3 {
+        ui.advance(16);
+        assert!(ui.read(|app| app.anim.is_some()));
+        anchored(&mut ui, 0.5);
+    }
+    // A second notch before the first has landed zooms on from where that one was heading.
+    ui.cx.simulate_event(notch);
+    assert!((ui.read(|app| app.target().1) - zoom * 1.12 * 1.12).abs() < 1e-4);
+    for _ in 0..3 {
+        ui.advance(16);
+        anchored(&mut ui, 0.5);
+    }
+    ui.advance(3000);
+    assert!(ui.read(|app| app.anim.is_none()));
+    assert!((ui.read(|app| app.zoom) - zoom * 1.12 * 1.12).abs() < 1e-4);
+    anchored(&mut ui, 0.01);
+}
+
+#[gpui::test]
+fn a_thrown_canvas_glides_to_its_projection_and_a_press_stops_it(cx: &mut TestAppContext) {
+    use crate::animation::{preset::GLIDE, projection};
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    let from = ui.read(|app| app.area.get().origin) + point(px(30.), px(300.));
+    let glide = |speed| px(projection(speed, GLIDE));
+
+    // 10 px every 10 ms: the smoothed speed approaches 1000 px/s from below.
+    let end = ui.fast_drag(from, point(px(10.), px(0.)), 30);
+    let released = ui.read(|app| app.offset);
+    ui.release(end);
+    let landing = ui.read(|app| app.target().0);
+    assert!(ui.read(|app| app.anim.is_some()));
+    assert!(released.x + glide(950.) < landing.x && landing.x <= released.x + glide(1000.), "{landing:?}");
+    assert_eq!(landing.y, released.y);
+    // It leaves the hand at the speed it was dragged.
+    ui.advance(10);
+    let coasted = ui.read(|app| app.offset.x) - released.x;
+    assert!(px(8.5) < coasted && coasted < px(10.), "{coasted:?}");
+    ui.advance(5000);
+    assert_eq!(ui.read(|app| (app.anim.is_none(), app.offset)), (true, landing));
+
+    // A press catches the next throw where it is.
+    let end = ui.fast_drag(from, point(px(10.), px(0.)), 30);
+    ui.release(end);
+    ui.advance(100);
+    let caught = ui.read(|app| app.offset);
+    assert!(caught.x < ui.read(|app| app.target().0.x) - px(50.));
+    ui.press(from);
+    assert!(ui.read(|app| app.anim.is_none()));
+    ui.release(from);
+    ui.advance(1000);
+    assert_eq!(ui.read(|app| app.offset), caught);
+
+    // A pointer that rests before the release lets go without a throw, and so does a slow one.
+    let end = ui.fast_drag(from, point(px(10.), px(0.)), 30);
+    ui.advance(100);
+    ui.release(end);
+    assert!(ui.read(|app| app.anim.is_none()));
+    let end = ui.fast_drag(from, point(px(0.5), px(0.)), 30);
+    ui.release(end);
+    assert!(ui.read(|app| app.anim.is_none()));
 }
 
 impl Ui<'_> {
@@ -194,6 +418,22 @@ impl Ui<'_> {
     fn redraw(&mut self) {
         self.app.update(self.cx, |_, cx| cx.notify());
         self.cx.run_until_parked();
+    }
+
+    /// Lets `milliseconds` pass and draws the frame after them.
+    fn advance(&mut self, milliseconds: u64) {
+        self.cx.executor().advance_clock(std::time::Duration::from_millis(milliseconds));
+        self.redraw();
+    }
+
+    /// Presses at `from` and drags by `step` every 10 ms, `steps` times; returns where the pointer is held.
+    fn fast_drag(&mut self, from: Point<Pixels>, step: Point<Pixels>, steps: usize) -> Point<Pixels> {
+        self.press(from);
+        for moved in 1..=steps {
+            self.cx.executor().advance_clock(std::time::Duration::from_millis(10));
+            self.move_to(from + step * moved as f32, true);
+        }
+        from + step * steps as f32
     }
 
     fn read<T>(&mut self, f: impl FnOnce(&TopoApp) -> T) -> T {
@@ -367,7 +607,7 @@ fn dragging_the_handle_connects(cx: &mut TestAppContext) {
     // b already requires a, so a cannot require b back.
     ui.drag_handle("b", "a");
     assert!(ui.node("a").depends_on == [id("c")]);
-    assert_eq!(ui.read(|app| app.toast.as_ref().map(|t| t.text.clone())).as_deref(), Some("Would create a cycle"));
+    assert_eq!(ui.read(|app| app.toast.get().map(|t| t.text.clone())).as_deref(), Some("Would create a cycle"));
     // A task dropped on a milestone joins it.
     ui.drag_handle("a", "m");
     assert_eq!(ui.node("a").milestones, [id("m")]);
@@ -409,7 +649,7 @@ fn picking_from_the_list_connects_only_what_is_allowed(cx: &mut TestAppContext) 
     ui.keys("right");
     assert_eq!(ui.selected().as_deref(), Some("m"));
     ui.keys("i");
-    assert!(ui.read(|app| app.prompt.is_none()));
+    assert!(ui.read(|app| app.prompt.get().is_none()));
 }
 
 #[gpui::test]
@@ -440,10 +680,10 @@ fn clicking_away_from_a_prompt_only_closes_it(cx: &mut TestAppContext) {
     let card = ui.card("a", 0.5, 0.5);
     ui.click(card);
     ui.keys("/");
-    assert!(matches!(ui.read(|app| app.prompt.clone()), Some(Prompt::Search)));
+    assert!(matches!(ui.read(|app| app.prompt.get().cloned()), Some(Prompt::Search)));
     let empty = ui.read(|app| app.area.get().bottom_left()) + point(px(200.), px(-120.));
     ui.click(empty);
-    assert!(ui.read(|app| app.prompt.is_none()));
+    assert!(ui.read(|app| app.prompt.get().is_none()));
     assert_eq!(ui.selected().as_deref(), Some("a"));
     assert_eq!(ui.node("a").title, "a");
 }
@@ -577,11 +817,11 @@ fn trackpad_gestures_zoom_around_the_pointer(cx: &mut TestAppContext) {
     let mut ui = open(cx, SAMPLE);
     let pointer = ui.card("a", 0.0, 0.0);
     ui.move_to(pointer, false);
-    let gesture = |ui: &mut Ui, gesture| ui.app.update_in(ui.cx, |app, window, cx| app.on_gesture(gesture, window, cx));
     gesture(&mut ui, Gesture::Pinch(0.5));
-    assert_eq!(ui.read(|app| app.zoom), 1.5);
+    assert!((ui.read(|app| app.zoom) - 1.5).abs() < 1e-5);
     // The corner of the card under the pointer stays under it.
-    assert_eq!(ui.card("a", 0.0, 0.0), pointer);
+    let corner = ui.card("a", 0.0, 0.0);
+    assert!((corner.x - pointer.x).abs() < px(0.01) && (corner.y - pointer.y).abs() < px(0.01));
     // A double-tap returns to actual size, and from there shows the whole graph.
     gesture(&mut ui, Gesture::SmartZoom);
     assert_eq!(ui.read(|app| app.target().1), 1.0);
@@ -611,7 +851,7 @@ fn multiple_selection_does_not_rename_or_connect_only_one_node(cx: &mut TestAppC
     let mut ui = open(cx, SAMPLE);
     ui.app.update(ui.cx, |app, cx| app.select_nodes(&[id("a"), id("c")], cx));
     ui.keys("enter l tab");
-    assert!(ui.read(|app| app.prompt.is_none()));
+    assert!(ui.read(|app| app.prompt.get().is_none()));
     ui.keys("right");
     assert_eq!(ui.selected().as_deref(), Some("b"));
     assert_eq!(ui.read(|app| app.selected_nodes.len()), 1);
@@ -905,7 +1145,7 @@ fn details_are_edited_in_place(cx: &mut TestAppContext) {
     // A key opens the row as a field holding the current value; Enter saves.
     ui.keys("d");
     assert_eq!(ui.inline(), Some((Field::Due, String::new())));
-    assert!(ui.read(|app| app.prompt.is_none()), "the value is edited in its row, not in the prompt");
+    assert!(ui.read(|app| app.prompt.get().is_none()), "the value is edited in its row, not in the prompt");
     assert!(ui.cx.debug_bounds("inline-edit").is_some());
     ui.type_text("2026-12-24");
     ui.keys("enter");
@@ -1110,7 +1350,7 @@ fn the_canvas_selects_all_copies_and_pastes_nodes(cx: &mut TestAppContext) {
     ui.cx.write_to_clipboard(gpui::ClipboardItem::new_string("- [ ] a".into()));
     ui.keys("cmd-v");
     assert_eq!(ui.read(|app| app.graph().nodes().count()), 4);
-    assert!(ui.read(|app| app.toast.as_ref().is_some_and(|t| t.error)));
+    assert!(ui.read(|app| app.toast.get().is_some_and(|t| t.error)));
 }
 
 #[gpui::test]
@@ -1154,7 +1394,7 @@ fn the_prompt_field_has_the_standard_text_shortcuts(cx: &mut TestAppContext) {
     // An empty clipboard pastes nothing.
     ui.cx.write_to_clipboard(gpui::ClipboardItem::new_string(String::new()));
     ui.keys("cmd-v escape");
-    assert!(ui.read(|app| app.prompt.is_none()));
+    assert!(ui.read(|app| app.prompt.get().is_none()));
     assert_eq!(ui.read(|app| app.graph().nodes().count()), 4);
 }
 
@@ -1214,7 +1454,7 @@ fn tab_saves_a_field_and_opens_the_next(cx: &mut TestAppContext) {
     ui.keys("escape");
     // Tab is still the follow-up key on the canvas.
     ui.keys("tab");
-    assert!(matches!(ui.read(|app| app.prompt.clone()), Some(Prompt::Create(_))));
+    assert!(matches!(ui.read(|app| app.prompt.get().cloned()), Some(Prompt::Create(_))));
 }
 
 #[gpui::test]
@@ -1348,7 +1588,7 @@ fn the_title_is_edited_in_the_inspector(cx: &mut TestAppContext) {
     ui.select("a");
     ui.keys("enter");
     assert_eq!(ui.inline(), Some((Field::Title, "a".into())));
-    assert!(ui.read(|app| app.prompt.is_none()));
+    assert!(ui.read(|app| app.prompt.get().is_none()));
     ui.type_text("Alpha");
     ui.keys("enter");
     assert_eq!(ui.node("a").title, "Alpha");
@@ -1399,9 +1639,9 @@ fn notes_are_written_in_the_inspector(cx: &mut TestAppContext) {
     // Escape asks about the changes, and discarding them keeps the saved notes.
     ui.keys("escape");
     assert_eq!(ui.node("a").body, "first x\nsecond\n");
-    assert!(ui.read(|app| app.notes_ask.is_some()));
+    assert!(ui.read(|app| app.notes_ask.get().is_some()));
     ui.keys("d");
-    assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.clone())), (None, None));
+    assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.get().map(|ask| ask.then.clone()))), (None, None));
     assert_eq!(ui.node("a").body, "first x\nsecond\n");
 
     // Another selection asks too, and saving it goes on to select.
@@ -1429,7 +1669,7 @@ fn unsaved_notes_ask_before_they_are_left(cx: &mut TestAppContext) {
     // Nothing changed: the editor says so, and leaving it is silent.
     assert!(ui.cx.debug_bounds("notes-saved").is_some() && ui.cx.debug_bounds("notes-unsaved").is_none());
     ui.keys("escape");
-    assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.clone())), (None, None));
+    assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.get().map(|ask| ask.then.clone()))), (None, None));
 
     // A change shows, and the question over it has three answers.
     ui.keys("e");
@@ -1440,7 +1680,7 @@ fn unsaved_notes_ask_before_they_are_left(cx: &mut TestAppContext) {
     assert_eq!(ui.node("a").body, "");
     // Keep editing: the text and the cursor are as they were, and the keys are text again.
     ui.click_on("notes-keep");
-    assert_eq!(ui.read(|app| app.notes_ask.clone()), None);
+    assert_eq!(ui.read(|app| app.notes_ask.get().map(|ask| ask.then.clone())), None);
     ui.type_text("!");
     assert_eq!(ui.notes(), "draft!");
     // Typing the change away is no change.
@@ -1462,7 +1702,7 @@ fn unsaved_notes_ask_before_they_are_left(cx: &mut TestAppContext) {
     ui.type_text("kept");
     let empty = ui.card("a", 0.5, 0.5) + point(px(0.), px(300.));
     ui.click(empty);
-    assert!(ui.read(|app| app.notes_ask.is_some()));
+    assert!(ui.read(|app| app.notes_ask.get().is_some()));
     ui.click_on("notes-save");
     assert_eq!((ui.read(|app| app.notes.clone()), ui.node("a").body.as_str()), (None, "kept\n"));
     // The keys the canvas knows are the canvas's again.
@@ -1504,13 +1744,13 @@ fn closing_the_window_with_unsaved_notes_asks(cx: &mut TestAppContext) {
     ui.type_text("x");
     assert!(!ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::CloseWindow, cx)));
     ui.redraw();
-    assert_eq!(ui.read(|app| app.notes_ask.clone()), Some(Then::CloseWindow));
+    assert_eq!(ui.read(|app| app.notes_ask.get().map(|ask| ask.then.clone())), Some(Then::CloseWindow));
     assert!(ui.cx.debug_bounds("notes-dialog").is_some());
     // The question, not the text, has the keyboard.
     ui.type_text("y");
     assert_eq!(ui.notes(), "x");
     ui.keys("escape");
-    assert_eq!(ui.read(|app| app.notes_ask.clone()), None);
+    assert_eq!(ui.read(|app| app.notes_ask.get().map(|ask| ask.then.clone())), None);
     ui.type_text("y");
     assert_eq!(ui.notes(), "xy");
 
@@ -1803,7 +2043,7 @@ fn a_cloud_workspace_edits_notes_in_place(cx: &mut TestAppContext) {
     ui.keys("cmd-enter");
     let stored: Vec<Node> = remote.fetch(None).unwrap().unwrap().nodes.into_iter().map(Node::from).collect();
     assert_eq!(stored[0].body, "from the gui\n");
-    assert!(ui.read(|app| app.toast.as_ref().is_none_or(|t| !t.error)));
+    assert!(ui.read(|app| app.toast.get().is_none_or(|t| !t.error)));
 }
 
 /// a (done, #core #ui) → b (todo, #ui) → m (todo, no tag); c dropped, no tag; d todo, #core.
@@ -2214,12 +2454,12 @@ fn notes_of_a_node_that_gets_hidden_are_asked_about_not_lost(cx: &mut TestAppCon
             app.mutate(cx, |g| g.set_status(&id("b"), Status::Done));
         });
         ui.redraw();
-        assert!(ui.read(|app| app.notes_ask.is_some()), "{answer}: the notes are asked about");
+        assert!(ui.read(|app| app.notes_ask.get().is_some()), "{answer}: the notes are asked about");
         assert_eq!(ui.node("b").body, "");
         ui.keys(answer);
         let saved = ui.node("b").body;
         assert_eq!(saved, if answer == "enter" { "keep me\n" } else { "" }, "{answer}");
-        assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.clone())), (None, None));
+        assert_eq!(ui.read(|app| (app.notes.clone(), app.notes_ask.get().map(|ask| ask.then.clone()))), (None, None));
         assert!(ui.cx.debug_bounds("notes-dialog").is_none());
     }
 }
@@ -2251,10 +2491,10 @@ fn quitting_with_unsaved_notes_asks_and_then_quits(cx: &mut TestAppContext) {
     ui.type_text("x");
     assert!(!ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::Quit, cx)));
     ui.redraw();
-    assert_eq!(ui.read(|app| app.notes_ask.clone()), Some(Then::Quit));
+    assert_eq!(ui.read(|app| app.notes_ask.get().map(|ask| ask.then.clone())), Some(Then::Quit));
     // Keep editing does not quit.
     ui.keys("escape");
-    assert!(ui.read(|app| app.notes.is_some() && app.notes_ask.is_none()));
+    assert!(ui.read(|app| app.notes.is_some() && app.notes_ask.get().is_none()));
     assert!(!ui.app.update(ui.cx, |app, cx| app.can_leave_to(Then::Quit, cx)));
     ui.redraw();
     // Saving settles the notes and then quits; the test platform's quit only flags the app.
@@ -2449,4 +2689,476 @@ fn nothing_in_the_toolbar_overlaps_at_any_width(cx: &mut TestAppContext) {
         }
     }
     crate::chrome::test_inset::set(0.);
+}
+
+/// The top edge of the element with debug selector `selector`, which a surface's travel moves.
+fn top_of(ui: &mut Ui, selector: &'static str) -> Pixels {
+    ui.cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is drawn")).top()
+}
+
+#[gpui::test]
+fn a_closed_prompt_fades_out_inert_and_a_reopening_continues_from_where_it_was(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    ui.keys("/");
+    ui.advance(3000);
+    let rest = top_of(&mut ui, "prompt-card");
+    ui.keys("escape");
+    ui.advance(40);
+    assert!(ui.read(|app| app.prompt.get().is_none()), "the prompt is closed as far as the app is concerned");
+    let leaving = top_of(&mut ui, "prompt-card");
+    assert!(leaving > rest, "but its card is still painted, sinking: {leaving:?} below {rest:?}");
+
+    // A click where the card is reaches the canvas under it, which starts a pan.
+    let at = ui.cx.debug_bounds("prompt-card").unwrap().center();
+    ui.press(at);
+    assert!(ui.read(|app| app.drag.is_some()), "a leaving prompt takes no clicks");
+    ui.release(at);
+
+    // Reopening in mid-exit carries on from the card's place instead of starting over.
+    let leaving = top_of(&mut ui, "prompt-card");
+    ui.keys("/");
+    assert!(ui.read(|app| app.prompt.get().is_some()));
+    let reopened = top_of(&mut ui, "prompt-card");
+    assert!((reopened - leaving).abs() < px(0.01), "{reopened:?} continues from {leaving:?}");
+    assert!(reopened > rest && reopened < rest + px(7.), "{reopened:?} is neither at rest nor back at the start");
+    ui.advance(3000);
+    assert_eq!(top_of(&mut ui, "prompt-card"), rest);
+
+    ui.keys("escape");
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("prompt-card").is_none(), "the card is gone once it has faded");
+}
+
+#[gpui::test]
+fn a_toast_replaced_while_visible_keeps_its_place_and_leaves_when_it_expires(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    ui.app.update(ui.cx, |app, cx| app.toast("one", false, cx));
+    ui.advance(30);
+    let rising = top_of(&mut ui, "toast");
+    ui.app.update(ui.cx, |app, cx| app.toast("two", false, cx));
+    ui.redraw();
+    assert_eq!(ui.read(|app| app.toast.get().map(|toast| toast.text.clone())).as_deref(), Some("two"));
+    assert_eq!(top_of(&mut ui, "toast"), rising, "the new text does not replay the entrance");
+    ui.advance(1500);
+    let rest = top_of(&mut ui, "toast");
+    assert!(rest < rising);
+    ui.app.update(ui.cx, |app, cx| app.toast("three", false, cx));
+    ui.redraw();
+    assert_eq!(top_of(&mut ui, "toast"), rest, "nor does a replacement of a toast at rest");
+
+    // The timer of the latest toast hides it; it sinks and is removed after the exit.
+    ui.advance(2400);
+    assert!(ui.read(|app| app.toast.get().is_some()));
+    ui.advance(200);
+    assert!(ui.read(|app| app.toast.get().is_none()), "the expiry hides the toast");
+    ui.advance(40);
+    let sinking = top_of(&mut ui, "toast");
+    assert!(sinking > rest, "and it is still painted, on its way out");
+
+    // A toast that arrives during the exit continues from where the old one was.
+    ui.app.update(ui.cx, |app, cx| app.toast("four", false, cx));
+    ui.redraw();
+    assert_eq!(top_of(&mut ui, "toast"), sinking);
+    ui.advance(100);
+    assert!(top_of(&mut ui, "toast") < sinking, "and rises again");
+
+    ui.advance(3000 + 2600);
+    assert!(ui.cx.debug_bounds("toast").is_none());
+    assert!(ui.read(|app| app.toast.shown().is_none()), "the text is dropped after the exit");
+}
+
+#[gpui::test]
+fn the_theme_menu_leaves_inert_and_reverses_when_toggled_in_flight(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    ui.click_on("theme");
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("theme-menu").is_some());
+    let monotone = theme::monotone();
+
+    ui.click_on("theme");
+    ui.advance(30);
+    assert!(!ui.read(|app| app.theme_menu));
+    assert!(ui.cx.debug_bounds("theme-menu").is_some(), "the menu is still drawn while it leaves");
+    ui.click_on("theme-monotone");
+    assert_eq!(theme::monotone(), monotone, "a leaving menu takes no clicks");
+
+    // Toggled again before it has gone, the same menu comes back and works.
+    ui.click_on("theme");
+    assert!(ui.read(|app| app.theme_menu));
+    ui.advance(20);
+    ui.click_on("theme-monotone");
+    assert_eq!(theme::monotone(), !monotone);
+    ui.click_on("theme-monotone");
+    assert_eq!(theme::monotone(), monotone);
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("theme-menu").is_some());
+
+    ui.keys("escape");
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("theme-menu").is_none());
+}
+
+#[gpui::test]
+fn the_help_sheet_and_the_unsaved_question_leave_inert_and_the_keys_follow_the_logical_state(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    ui.keys("?");
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("help-card").is_some());
+    ui.keys("escape");
+    ui.advance(40);
+    assert!(!ui.read(|app| app.show_help));
+    assert!(ui.cx.debug_bounds("help-card").is_some(), "the sheet is still drawn while it fades");
+    // Its scrim no longer holds the canvas: a press on it starts a pan.
+    let corner = ui.read(|app| app.area.get().origin) + point(px(4.), px(4.));
+    ui.press(corner);
+    assert!(ui.read(|app| app.drag.is_some()));
+    ui.release(corner);
+    // And the keys are the canvas's again.
+    ui.keys("n");
+    assert!(ui.read(|app| app.prompt.get().is_some()));
+    ui.keys("escape");
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("help-card").is_none());
+
+    ui.select("a");
+    ui.keys("e");
+    ui.type_text("draft");
+    ui.keys("escape");
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("notes-dialog").is_some());
+    ui.keys("d");
+    ui.advance(40);
+    assert!(ui.read(|app| app.notes.is_none() && app.notes_ask.get().is_none()));
+    assert!(ui.cx.debug_bounds("notes-dialog").is_some(), "the question is still drawn while it fades");
+    ui.keys("n");
+    assert!(ui.read(|app| app.prompt.get().is_some()), "the question no longer takes the keys");
+    ui.keys("escape");
+    ui.advance(3000);
+    assert!(ui.cx.debug_bounds("notes-dialog").is_none());
+}
+
+#[gpui::test]
+fn without_motion_every_floating_surface_appears_and_disappears_at_once(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    ui.keys("?");
+    assert!(ui.cx.debug_bounds("help-card").is_some());
+    ui.keys("escape");
+    assert!(ui.cx.debug_bounds("help-card").is_none());
+    ui.keys("/");
+    assert!(ui.cx.debug_bounds("prompt-card").is_some());
+    ui.keys("escape");
+    assert!(ui.cx.debug_bounds("prompt-card").is_none());
+    ui.app.update(ui.cx, |app, cx| app.toast("Saved", false, cx));
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("toast").is_some());
+    ui.cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    ui.redraw();
+    assert!(ui.cx.debug_bounds("toast").is_none());
+}
+
+// ---- reflow and card motion ---------------------------------------------
+
+impl Ui<'_> {
+    /// How the card of `node` was drawn in the last frame, if it was.
+    fn drawn(&mut self, node: &str) -> Option<crate::graph_view::CardMotion> {
+        self.read(|app| app.graph_cache.drawn.borrow().get(&id(node)).copied())
+    }
+
+    /// The canvas point of the cell of `node`.
+    fn rest(&mut self, node: &str) -> [f32; 2] {
+        let (column, row) = self.read(|app| app.graph_cache.cells()[&id(node)]);
+        [column as f32 * crate::CELL_W, row as f32 * crate::CELL_H]
+    }
+
+    /// Changes the view or the graph and draws the frame after the change.
+    fn change(&mut self, f: impl FnOnce(&mut TopoApp, &mut gpui::Context<TopoApp>)) {
+        self.app.update(self.cx, f);
+        self.redraw();
+    }
+
+    /// Whether the card of `node` is laid out on its cell, to the pixel layout rounds to.
+    fn on_cell(&mut self, node: &str) -> bool {
+        let offset = self.cx.debug_bounds(format!("node-{node}").leak()).unwrap().origin - self.card(node, 0., 0.);
+        offset.x.abs() <= px(0.5) && offset.y.abs() <= px(0.5)
+    }
+
+    fn reflowing(&mut self) -> bool {
+        self.read(|app| app.graph_cache.reflowing())
+    }
+}
+
+/// Whether `value` lies strictly between `a` and `b`.
+fn between(value: f32, a: f32, b: f32) -> bool {
+    a.min(b) < value && value < a.max(b)
+}
+
+#[gpui::test]
+fn a_layout_change_moves_cards_on_springs_and_retargets_them_mid_flight(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.redraw();
+    let _motion = Motion::on();
+    // Hiding a moves b and m one column to the left.
+    let shown = ui.rest("b");
+    ui.change(|app, _| app.toggle_hide_completed());
+    let hidden = ui.rest("b");
+    assert_eq!((shown, hidden), ([crate::CELL_W, 0.], [0., 0.]));
+    assert_eq!(ui.drawn("b").unwrap().at, shown, "the change starts where the card was");
+    assert!(ui.reflowing());
+
+    ui.advance(100);
+    let midway = ui.drawn("b").unwrap().at[0];
+    assert!(between(midway, hidden[0], shown[0]), "{midway}");
+    // The card is laid out where it is drawn, and the camera's own move does not disturb it.
+    let (bounds, origin, zoom) = (ui.cx.debug_bounds("node-b").unwrap(), ui.card("b", 0., 0.), ui.read(|app| app.zoom));
+    assert!((f32::from(bounds.left() - origin.x) - midway * zoom).abs() <= 0.5, "layout rounds to pixels");
+
+    // Showing a again turns the card round where it is, still moving the old way at first.
+    ui.change(|app, _| app.toggle_hide_completed());
+    let turned = ui.drawn("b").unwrap().at[0];
+    assert!((turned - midway).abs() < 1e-3, "{turned} != {midway}");
+    ui.advance(8);
+    let coasting = ui.drawn("b").unwrap().at[0];
+    assert!(coasting < turned && turned - coasting < 20., "{coasting} after {turned}");
+    ui.advance(100);
+    assert!(between(ui.drawn("b").unwrap().at[0], coasting, shown[0]));
+
+    ui.advance(3000);
+    assert_eq!(ui.drawn("b").unwrap().at, shown, "a settled card sits exactly on its cell");
+    assert!(ui.on_cell("b") && !ui.reflowing());
+}
+
+#[gpui::test]
+fn a_new_card_grows_in_and_a_deleted_one_fades_out_as_an_inert_ghost(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    ui.change(|app, cx| {
+        app.mutate(cx, |graph| graph.insert(Node::new(id("new"), Kind::Task, "new".into())));
+    });
+    let entering = ui.drawn("new").unwrap();
+    assert_eq!((entering.opacity, entering.at), (0., ui.rest("new")));
+    assert!((entering.scale - 0.9).abs() < 1e-6, "{}", entering.scale);
+    ui.advance(60);
+    let growing = ui.drawn("new").unwrap();
+    assert!(between(growing.opacity, 0., 1.) && between(growing.scale, 0.9, 1.), "{growing:?}");
+    ui.advance(3000);
+    let grown = ui.drawn("new").unwrap();
+    assert_eq!((grown.opacity, grown.scale), (1., 1.));
+
+    let spot = ui.card("c", 0.5, 0.5);
+    ui.change(|app, cx| app.delete(id("c"), cx));
+    assert_eq!(ui.read(|app| app.graph_cache.ghosts().len()), 1);
+    ui.advance(40);
+    let ghost = ui.drawn("c").expect("the deleted card is still drawn");
+    assert!(between(ghost.opacity, 0., 1.) && between(ghost.scale, 0.9, 1.), "{ghost:?}");
+    assert!(ui.cx.debug_bounds("node-c").is_some());
+    // It is a picture of the card: a click goes through it to the canvas.
+    ui.click(spot);
+    assert_eq!(ui.selected(), None);
+    assert!(ui.read(|app| app.hovered.is_none()));
+    ui.advance(3000);
+    assert!(ui.drawn("c").is_none() && ui.cx.debug_bounds("node-c").is_none());
+    assert!(ui.read(|app| app.graph_cache.ghosts().is_empty()) && !ui.reflowing());
+}
+
+/// `lanes` chains of `length` tasks, named `t{lane}{step}`, all behind the task `root`.
+fn lanes(lanes: usize, length: usize) -> Vec<(String, Vec<String>)> {
+    let lane = |lane: usize| {
+        (0..length).map(move |step| {
+            let before = if step == 0 { "root".to_owned() } else { format!("t{lane:02}{:02}", step - 1) };
+            (format!("t{lane:02}{step:02}"), vec![before])
+        })
+    };
+    std::iter::once(("root".to_owned(), vec![])).chain((0..lanes).flat_map(lane)).collect()
+}
+
+fn open_lanes<'a>(cx: &'a mut TestAppContext, nodes: &[(String, Vec<String>)]) -> Ui<'a> {
+    let dependencies: Vec<Vec<&str>> =
+        nodes.iter().map(|(_, deps)| deps.iter().map(String::as_str).collect()).collect();
+    let nodes: Vec<_> = nodes
+        .iter()
+        .zip(&dependencies)
+        .map(|((name, _), deps)| (name.as_str(), Kind::Task, &deps[..], &[][..]))
+        .collect();
+    open(cx, &nodes)
+}
+
+#[gpui::test]
+fn no_more_ghosts_are_drawn_than_the_cap_and_only_from_the_viewport(cx: &mut TestAppContext) {
+    let mut ui = open_lanes(cx, &lanes(20, 4));
+    ui.change(|app, cx| {
+        let ids: Vec<_> = app.graph().nodes().map(|n| n.id.clone()).collect();
+        app.mutate(cx, |graph| ids.iter().try_for_each(|id| graph.set_status(id, Status::Done)));
+    });
+    place(&mut ui, point(px(40.), px(40.)), 0.4);
+    let _motion = Motion::on();
+    ui.change(|app, _| app.toggle_hide_completed());
+    assert_eq!(ui.shown(), [""; 0]);
+    assert_eq!(ui.read(|app| app.graph_cache.ghosts().len()), 40, "81 cards left, all of them on screen");
+    ui.advance(3000);
+    assert!(ui.read(|app| app.graph_cache.ghosts().is_empty()));
+
+    // Cards that leave outside the viewport are not drawn leaving at all.
+    ui.change(|app, _| app.toggle_hide_completed());
+    ui.advance(3000);
+    place(&mut ui, point(px(-4000.), px(40.)), 0.4);
+    ui.change(|app, _| app.toggle_hide_completed());
+    assert!(ui.reflowing() && ui.read(|app| app.graph_cache.ghosts().is_empty()));
+}
+
+#[gpui::test]
+fn a_layout_change_that_moves_too_many_cards_snaps(cx: &mut TestAppContext) {
+    let mut ui = open_lanes(cx, &lanes(30, 20));
+    ui.change(|app, cx| {
+        app.mutate(cx, |graph| graph.set_status(&id("root"), Status::Done));
+    });
+    place(&mut ui, point(px(40.), px(40.)), 0.25);
+    let _motion = Motion::on();
+    let shown = ui.rest("t0005");
+    // Hiding the root moves all 600 cards a column to the left.
+    ui.change(|app, _| app.toggle_hide_completed());
+    let hidden = ui.rest("t0005");
+    assert_eq!(hidden[0], shown[0] - crate::CELL_W);
+    assert_eq!(ui.drawn("t0005").unwrap().at, hidden);
+    assert!(!ui.reflowing() && ui.read(|app| app.graph_cache.ghosts().is_empty()));
+    assert!(ui.read(|app| app.graph_cache.drawn.borrow().len()) > 300);
+}
+
+#[gpui::test]
+fn a_card_leaving_the_viewport_is_drawn_until_it_is_out_and_culling_is_tight_again(cx: &mut TestAppContext) {
+    let chain = (0..5).map(|i| (format!("t{i}"), if i == 0 { vec![] } else { vec![format!("t{}", i - 1)] }));
+    let chain: Vec<_> = chain.chain([("x".to_owned(), vec![])]).collect();
+    let mut ui = open_lanes(cx, &chain);
+    place(&mut ui, point(px(40.), px(40.)), 1.);
+    let _motion = Motion::on();
+    let width = ui.read(|app| f32::from(app.area.get().size.width));
+    // Requiring the end of the chain sends x five columns to the right, out of the canvas.
+    ui.change(|app, cx| {
+        app.mutate(cx, |graph| graph.link(&id("x"), &id("t4")));
+    });
+    let rest = ui.rest("x");
+    assert_eq!(rest, [5. * crate::CELL_W, 0.]);
+    assert!(40. + rest[0] > width, "the cell of x is outside the canvas");
+    assert_eq!(ui.drawn("x").unwrap().at[0], 0.);
+    ui.advance(100);
+    let midway = ui.drawn("x").expect("x is still on screen").at[0];
+    assert!(between(midway, 0., rest[0]) && 40. + midway < width, "{midway}");
+    assert!(ui.cx.debug_bounds("node-x").is_some());
+    ui.advance(3000);
+    assert!(ui.drawn("x").is_none() && ui.cx.debug_bounds("node-x").is_none());
+    assert!(!ui.reflowing());
+    assert_eq!(ui.read(|app| app.graph_cache.drawn.borrow().len()), 4, "only the cards in the canvas are drawn");
+
+    // Coming back, it is drawn from the moment it enters.
+    ui.change(|app, cx| {
+        app.mutate(cx, |graph| graph.unlink(&id("x"), &id("t4")));
+    });
+    assert!(ui.drawn("x").is_none(), "x starts outside the canvas");
+    ui.advance(300);
+    assert!(between(ui.drawn("x").expect("x has entered").at[0], 0., rest[0]));
+    ui.advance(3000);
+    assert_eq!(ui.drawn("x").unwrap().at, ui.rest("x"));
+}
+
+#[gpui::test]
+fn without_motion_every_layout_change_lands_at_once(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    let landed = |ui: &mut Ui| {
+        assert!(!ui.reflowing() && ui.read(|app| app.graph_cache.ghosts().is_empty()));
+        for node in ui.shown() {
+            let drawn = ui.drawn(&node).unwrap();
+            assert_eq!((drawn.at, drawn.scale, drawn.check), (ui.rest(&node), 1., 1.), "{node}");
+            assert!(ui.on_cell(&node), "{node}");
+        }
+        let shown = ui.shown().len();
+        assert_eq!(ui.read(|app| app.graph_cache.drawn.borrow().len()), shown);
+    };
+    ui.change(|app, _| app.toggle_hide_completed());
+    assert_eq!(ui.shown(), ["b", "d", "m"]);
+    landed(&mut ui);
+    ui.change(|app, _| app.toggle_hide_completed());
+    landed(&mut ui);
+    ui.change(|app, _| app.toggle_group_by_tag());
+    ui.change(|app, _| app.toggle_group(&Group::Tag("core".into())));
+    landed(&mut ui);
+    ui.change(|app, _| app.toggle_group_by_tag());
+    ui.change(|app, cx| {
+        app.mutate(cx, |graph| graph.insert(Node::new(id("new"), Kind::Task, "new".into())));
+    });
+    assert_eq!(ui.drawn("new").unwrap().opacity, 1.);
+    landed(&mut ui);
+    ui.change(|app, cx| app.delete(id("new"), cx));
+    assert!(ui.drawn("new").is_none());
+    landed(&mut ui);
+    ui.keys("cmd-z");
+    landed(&mut ui);
+    ui.change(|app, cx| app.toggle_done(id("b"), cx));
+    ui.select("d");
+    assert_eq!(ui.drawn("d").unwrap().selected, 1.);
+    landed(&mut ui);
+}
+
+#[gpui::test]
+fn selection_and_dimming_crossfade_and_completing_pops_the_check(cx: &mut TestAppContext) {
+    let mut ui = open(cx, SAMPLE);
+    let _motion = Motion::on();
+    ui.select("a");
+    let unselected = ui.drawn("a").unwrap();
+    assert_eq!((unselected.selected, unselected.opacity), (0., 1.));
+    ui.advance(40);
+    assert!(between(ui.drawn("a").unwrap().selected, 0., 1.));
+    // The cards outside the selection's chain dim over the same time.
+    assert!(between(ui.drawn("c").unwrap().opacity, 0.22, 1.));
+    ui.advance(1000);
+    assert_eq!((ui.drawn("a").unwrap().selected, ui.drawn("c").unwrap().opacity), (1., 0.22));
+
+    ui.change(|app, cx| app.toggle_done(id("b"), cx));
+    let done = ui.drawn("b").unwrap();
+    assert_eq!((done.check, done.done), (0.6, 0.));
+    let mut peak: f32 = 0.;
+    for _ in 0..60 {
+        ui.advance(8);
+        peak = peak.max(ui.drawn("b").unwrap().check);
+    }
+    assert!(peak > 1.01 && peak < 1.1, "the check overshoots a little: {peak}");
+    ui.advance(2000);
+    let done = ui.drawn("b").unwrap();
+    assert_eq!((done.check, done.done), (1., 1.));
+
+    // Taking it back lets the open glyph grow without a bounce.
+    ui.change(|app, cx| app.toggle_done(id("b"), cx));
+    assert_eq!(ui.drawn("b").unwrap().check, 0.6);
+    let mut peak: f32 = 0.;
+    for _ in 0..120 {
+        ui.advance(8);
+        peak = peak.max(ui.drawn("b").unwrap().check);
+    }
+    assert_eq!(peak, 1.);
+    assert_eq!(ui.drawn("b").unwrap().done, 0.);
+}
+
+#[gpui::test]
+fn folding_a_group_moves_the_headers_and_cards_below_it(cx: &mut TestAppContext) {
+    let mut ui = open(cx, VIEW_SAMPLE);
+    view_fixture(&mut ui);
+    ui.change(|app, _| app.toggle_group_by_tag());
+    ui.advance(0);
+    let _motion = Motion::on();
+    let header = |ui: &mut Ui| f32::from(ui.cx.debug_bounds("group-#ui").unwrap().top());
+    let (open, card) = (header(&mut ui), ui.rest("b"));
+    ui.change(|app, _| app.toggle_group(&Group::Tag("core".into())));
+    assert_eq!(header(&mut ui), open);
+    ui.advance(100);
+    let (moving, folded) = (header(&mut ui), ui.rest("b"));
+    assert!(moving < open && folded[1] < card[1]);
+    assert!(between(ui.drawn("b").unwrap().at[1], folded[1], card[1]));
+    ui.advance(3000);
+    assert!(header(&mut ui) < moving);
+    assert_eq!(ui.drawn("b").unwrap().at, folded);
+    assert!(!ui.reflowing());
 }

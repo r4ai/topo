@@ -220,3 +220,32 @@ Rendering-thread CPU time, median / p95 in milliseconds:
 All elapsed and CPU measurements, including the small and dense fixtures: [gui-large-graphs-2026-10-06.json](performance/gui-large-graphs-2026-10-06.json). Results apply to the specified workloads on this host; the artifact retains every measured operation.
 
 Validation: 291 workspace tests pass; strict workspace Clippy with all targets and the screenshot feature, formatting, and diff checks pass. Tests cover scrolling to the last entry, selecting/completing tasks from virtual rows, priority reordering, inspector insets and row widths, and bounded dashed geometry with a stable phase. Native Metal rendering was checked for overview, multiple selection and search across all four palettes (12 captures), plus a 5000-task overview and all-selected view (2 captures). Screenshot rendering required access to macOS font/XPC services outside the shell sandbox.
+
+## Reflow motion (2026-10-09)
+
+Cards, group headers and edges now travel to their new cells on springs when a layout change (a structural edit, hiding completed tasks, grouping) moves them, new cards grow in and removed cards fade out as ghosts. The per-card springs add work to every frame while a change is in flight, and the layout change itself still runs the layout once. Motion rules and caps: [gui/motion.md](gui/motion.md#performance).
+
+Same harness and host as above (Apple M5, macOS arm64, release build, 1360 × 860, one test thread), rendering-thread CPU time, median / p95 in milliseconds. Cases are written nodes / density.
+
+```bash
+cargo test --locked -p topo-gui --release benchmark -- --ignored --nocapture --test-threads=1
+```
+
+Steady-state frames with this work in place:
+
+| Workload | 5000 / 1 | 1000 / 12 |
+| --- | --- | --- |
+| Pan | 2.408 / 2.828 | 5.981 / 9.762 |
+| Zoom | 2.929 / 3.740 | 7.368 / 9.782 |
+| Selection | 4.143 / 4.930 | 10.051 / 11.608 |
+
+The new `reflow_benchmark` measures frames while the cards are travelling and the frame that starts the change:
+
+| Frame | 5000 / 1 | 1000 / 12 |
+| --- | --- | --- |
+| Animated frames after the change | 2.631 / 3.910 | 6.967 / 10.615 |
+| Reflow start (the frame that recomputes the layout) | 23.254 / 26.693 | 24.746 / 27.315 |
+
+The reflow-start rows are six samples each.
+
+**The frame that recomputes the layout exceeds the 16.7 ms budget** (23.3 to 24.7 ms median, 26.7 to 27.3 ms p95). It was already over budget before this work: with the motion code stubbed out the same frame measured about 19.5 to 24.9 ms, so the motion adds roughly 1 to 5 ms to it. The animated frames that follow are within budget (median 2.6 and 7.0 ms, p95 3.9 and 10.6 ms), as are the steady-state frames. Only the single frame in which the layout is recomputed is slow; the benchmark does not establish display FPS or input-to-display latency.

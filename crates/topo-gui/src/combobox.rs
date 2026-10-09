@@ -30,7 +30,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
 
-use crate::animation::{self, Motion as _};
+use crate::animation::{self, Pivot, preset};
 use crate::text_input::{InputEvent, TextInput};
 use crate::theme::{self, metrics};
 use crate::ui;
@@ -483,7 +483,7 @@ impl Combobox {
                 .text_xs()
                 .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| cx.stop_propagation())
                 .child(list)
-                .rise_in("combo-list-motion", animation::FAST),
+                .into_any_element(),
         })
     }
 }
@@ -506,7 +506,19 @@ impl Render for Combobox {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme::current();
         let focused = self.focus_handle(cx).is_focused(window);
-        let list = focused.then(|| self.list(cx)).flatten();
+        // The list grows out of the corner that touches the field and shrinks back into it
+        // when the field loses focus. A palette's list is part of its owner's card, which
+        // brings its own motion, so it only fades.
+        let grow = if self.palette { 0. } else { 0.08 };
+        let list =
+            animation::presence(window, cx, "combo-list", focused, preset::SNAPPY).and_then(|[opacity, travel]| {
+                self.list(cx).map(|list| {
+                    animation::surface(list)
+                        .scale(1. - grow * (1. - travel), Pivot::TopLeft)
+                        .opacity(opacity)
+                        .inert(!focused)
+                })
+            });
         let field = div().flex_1().min_w(px(64.)).child(self.input.clone());
         if self.palette {
             // The owner draws the card around it; the list follows the field in the flow.
@@ -568,6 +580,8 @@ impl Render for Combobox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Bounds, Modifiers, TestAppContext, VisualTestContext};
+    use std::time::Duration;
 
     #[test]
     fn the_scroll_thumb_spans_the_track_as_the_list_scrolls() {
@@ -577,5 +591,78 @@ mod tests {
         // A long list keeps a thumb that can be seen, and overscroll keeps it on the track.
         assert_eq!(scroll_thumb(1000, 2000., 192.), (192. - THUMB_MIN, THUMB_MIN));
         assert_eq!(scroll_thumb(1000, -5., 192.), (0., THUMB_MIN));
+    }
+
+    /// A field resting on the bottom edge of an 800 by 600 window, with its focus under test control.
+    struct Host(Entity<Combobox>);
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().flex().flex_col().justify_end().p_4().child(self.0.clone())
+        }
+    }
+
+    fn host(cx: &mut TestAppContext, palette: bool) -> (Entity<Combobox>, &mut VisualTestContext) {
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            let combo = cx.new(if palette { Combobox::palette } else { Combobox::new });
+            Host(combo)
+        });
+        cx.simulate_resize(size(px(800.), px(600.)));
+        let combo = host.read_with(cx, |host, _| host.0.clone());
+        let choices = (0..20).map(|i| Choice::new(format!("choice{i:02}"), "")).collect();
+        combo.update(cx, |combo, cx| {
+            combo.open("", "", None, cx);
+            combo.set_choices(choices, cx);
+        });
+        (combo, cx)
+    }
+
+    fn focus(combo: &Entity<Combobox>, cx: &mut VisualTestContext) {
+        let handle = combo.read_with(cx, |combo, cx| combo.focus_handle(cx));
+        cx.update(|window, cx| window.focus(&handle, cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn a_list_opened_at_the_bottom_edge_stays_inside_the_window(cx: &mut TestAppContext) {
+        let (combo, cx) = host(cx, false);
+        focus(&combo, cx);
+        let list = cx.debug_bounds("combo-list").expect("the list is open");
+        let window = Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.)));
+        assert!(window.contains(&list.origin) && window.contains(&list.bottom_right()), "{list:?}");
+    }
+
+    #[gpui::test]
+    fn a_list_leaves_by_the_way_it_came_and_takes_no_clicks_meanwhile(cx: &mut TestAppContext) {
+        animation::set_enabled(true);
+        let (combo, cx) = host(cx, false);
+        focus(&combo, cx);
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        let open = cx.debug_bounds("choice-0").expect("the open list shows its choices");
+        cx.update(|window, _| window.blur());
+        combo.update(cx, |_, cx| cx.notify());
+        cx.executor().advance_clock(Duration::from_millis(40));
+        cx.run_until_parked();
+        let at = open.center();
+        assert!(cx.debug_bounds("combo-list").is_some(), "the list is still drawn while it fades out");
+        cx.simulate_click(at, Modifiers::none());
+        assert!(combo.read_with(cx, |combo, _| combo.picked().is_none()), "a leaving list is inert");
+        cx.executor().advance_clock(Duration::from_secs(3));
+        combo.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("combo-list").is_none(), "and is gone once it has faded");
+        animation::set_enabled(false);
+    }
+
+    #[gpui::test]
+    fn a_palette_list_is_drawn_in_the_flow_and_opens_with_the_field(cx: &mut TestAppContext) {
+        let (combo, cx) = host(cx, true);
+        focus(&combo, cx);
+        assert!(cx.debug_bounds("choice-0").is_some());
+        cx.update(|window, _| window.blur());
+        combo.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("choice-0").is_none());
     }
 }

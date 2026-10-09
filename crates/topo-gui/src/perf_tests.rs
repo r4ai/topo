@@ -140,6 +140,52 @@ fn responsiveness_benchmark(cx: &mut TestAppContext) {
     }
 }
 
+/// Frames of a layout change in flight: hiding and showing a column of done tasks moves
+/// every card after it. The frame that computes the new layout is reported separately.
+#[gpui::test]
+#[ignore]
+fn reflow_benchmark(cx: &mut TestAppContext) {
+    for (count, density) in [(5000, 1), (1000, 12)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::init(dir.path()).unwrap();
+        ws.graph = fixture(count, density);
+        for i in 25..50 {
+            ws.graph.set_status(&NodeId(format!("n{i:05}")), topo_core::Status::Done).unwrap();
+        }
+        ws.save().unwrap();
+        let (app, visual) = cx.add_window_view(|window, cx| TopoApp::new(ws, window, cx).unwrap());
+        visual.simulate_resize(size(px(1360.), px(860.)));
+        visual.run_until_parked();
+        app.update(visual, |app, _| {
+            app.anim = None;
+            app.offset = point(px(40.), px(40.));
+            app.zoom = 1.;
+        });
+        visual.run_until_parked();
+        crate::animation::set_enabled(true);
+        let (mut starts, mut frames) = (Vec::new(), Vec::new());
+        for frame in 0..240 {
+            let start = FrameClock::now();
+            visual.executor().advance_clock(Duration::from_millis(16));
+            app.update(visual, |app, cx| {
+                if frame % 40 == 0 {
+                    app.view.hide_completed = !app.view.hide_completed;
+                }
+                cx.notify();
+            });
+            visual.run_until_parked();
+            match frame % 40 {
+                0 => starts.push(start.sample()),
+                _ => frames.push(start.sample()),
+            }
+        }
+        crate::animation::set_enabled(false);
+        report(&format!("nodes={count} density={density} reflow"), frames);
+        report(&format!("nodes={count} density={density} reflow start"), starts);
+        app.update(visual, |app, _| app.retire());
+    }
+}
+
 #[test]
 #[ignore]
 fn milestone_layout_benchmark() {
