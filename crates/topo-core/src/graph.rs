@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -165,8 +165,12 @@ impl Graph {
     }
 
     /// Everything `id` transitively requires, excluding `id` itself.
+    /// Returns an empty set when `id` is not in the graph.
     pub fn descendants(&self, id: &NodeId) -> BTreeSet<NodeId> {
         let mut seen = BTreeSet::new();
+        if !self.nodes.contains_key(id) {
+            return seen;
+        }
         let requirements = self.requirement_map();
         let mut stack = requirements[id].clone();
         while let Some(next) = stack.pop() {
@@ -200,7 +204,40 @@ impl Graph {
 
     /// Whether `from` transitively requires `to` (or they are the same node).
     pub fn reaches(&self, from: &NodeId, to: &NodeId) -> bool {
-        from == to || self.descendants(from).contains(to)
+        if from == to {
+            return true;
+        }
+        if !self.nodes.contains_key(from) || !self.nodes.contains_key(to) {
+            return false;
+        }
+        let mut seen = HashSet::new();
+        let mut stack = vec![from];
+        let mut members = None;
+        while let Some(next) = stack.pop() {
+            if next == to {
+                return true;
+            }
+            if !seen.insert(next) {
+                continue;
+            }
+            let node = &self.nodes[next];
+            stack.extend(&node.depends_on);
+            if node.kind == Kind::Milestone {
+                // Most link checks touch tasks only. Index memberships only
+                // when the walk first reaches a milestone, then reuse it.
+                let members = members.get_or_insert_with(|| {
+                    let mut members: HashMap<&NodeId, Vec<&NodeId>> = HashMap::new();
+                    for node in self.nodes.values() {
+                        for milestone in &node.milestones {
+                            members.entry(milestone).or_default().push(&node.id);
+                        }
+                    }
+                    members
+                });
+                stack.extend(members.get(next).into_iter().flatten().copied());
+            }
+        }
+        false
     }
 
     /// An open node whose requirements are all closed. For a milestone this
@@ -227,7 +264,11 @@ impl Graph {
 
     /// The longest chain of open tasks that `id` requires (inclusive), in
     /// order of execution. Its length is the minimum number of sequential steps left.
+    /// Returns an empty path when `id` is not in the graph.
     pub fn critical_path(&self, id: &NodeId) -> Vec<NodeId> {
+        if !self.nodes.contains_key(id) {
+            return Vec::new();
+        }
         let requirements = self.requirement_map();
         let mut paths: HashMap<&NodeId, (usize, Option<&NodeId>)> = HashMap::new();
         for next in self.topo_order().expect("graph mutations preserve acyclicity") {
@@ -601,6 +642,8 @@ mod tests {
         assert_eq!(path.last(), Some(&id("n00000")));
         assert_eq!(graph.descendants(&id("n00000")).len(), count - 1);
         assert_eq!(graph.ancestors(&id("n19999")).len(), count - 1);
+        assert!(graph.reaches(&id("n00000"), &id("n19999")));
+        assert!(!graph.reaches(&id("n19999"), &id("n00000")));
     }
 
     #[test]
@@ -625,6 +668,90 @@ mod tests {
 
     fn id(s: &str) -> NodeId {
         NodeId(s.into())
+    }
+
+    #[test]
+    fn missing_nodes_have_no_transitive_requirements_or_critical_path() {
+        for graph in [Graph::default(), sample()] {
+            let missing = id("missing");
+            assert!(graph.descendants(&missing).is_empty());
+            assert!(graph.ancestors(&missing).is_empty());
+            assert!(graph.critical_path(&missing).is_empty());
+            assert!(!graph.reaches(&missing, &id("a")));
+            assert!(!graph.reaches(&id("a"), &missing));
+            assert!(graph.reaches(&missing, &missing));
+        }
+    }
+
+    #[test]
+    fn reachability_matches_transitive_requirements_across_memberships() {
+        let mut graph = sample();
+        graph.insert(node("v2", Kind::Milestone, &["m"], &[])).unwrap();
+        graph.insert(node("d", Kind::Task, &["a"], &["v2"])).unwrap();
+        graph.insert(node("p", Kind::Task, &["v2"], &[])).unwrap();
+        graph.insert(node("isolated", Kind::Task, &[], &[])).unwrap();
+        for from in graph.nodes() {
+            let descendants = graph.descendants(&from.id);
+            for to in graph.nodes() {
+                assert_eq!(
+                    graph.reaches(&from.id, &to.id),
+                    from.id == to.id || descendants.contains(&to.id),
+                    "{} -> {}",
+                    from.id,
+                    to.id
+                );
+            }
+        }
+        let before = graph.clone();
+        assert!(matches!(graph.link(&id("a"), &id("v2")), Err(Error::WouldCycle { .. })));
+        assert!(matches!(graph.join(&id("p"), &id("m")), Err(Error::WouldCycle { .. })));
+        assert_eq!(graph, before);
+    }
+
+    #[test]
+    fn reachability_matches_descendants_in_a_dense_mixed_dag() {
+        let graph = Graph::from_nodes((0..60).map(|i| {
+            let kind = if i % 7 == 0 { Kind::Milestone } else { Kind::Task };
+            let mut n = node(&format!("n{i:02}"), kind, &[], &[]);
+            n.depends_on = (0..i).filter(|j| (i + j) % 4 == 0).map(|j| id(&format!("n{j:02}"))).collect();
+            if kind == Kind::Task {
+                n.milestones =
+                    (i + 1..60).filter(|j| j % 7 == 0 && (i + j) % 3 == 0).map(|j| id(&format!("n{j:02}"))).collect();
+            }
+            n
+        }))
+        .unwrap();
+        for from in graph.nodes() {
+            let descendants = graph.descendants(&from.id);
+            for to in graph.nodes() {
+                assert_eq!(graph.reaches(&from.id, &to.id), from.id == to.id || descendants.contains(&to.id));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "release-mode graph query benchmark"]
+    fn sparse_link_benchmark() {
+        use std::{hint::black_box, time::Instant};
+
+        let count = 5_000;
+        let base = Graph::from_nodes((0..count).map(|i| node(&format!("n{i:05}"), Kind::Task, &[], &[]))).unwrap();
+        for workload in ["leaf", "milestone"] {
+            let mut graph = base.clone();
+            let target = if workload == "milestone" {
+                graph.insert(node("m", Kind::Milestone, &[], &[])).unwrap();
+                graph.join(&id("n00000"), &id("m")).unwrap();
+                id("m")
+            } else {
+                id("n00000")
+            };
+            let start = Instant::now();
+            for i in 1..=1_000 {
+                graph.link(&id(&format!("n{i:05}")), black_box(&target)).unwrap();
+            }
+            eprintln!("PERF sparse-links nodes={count} links=1000 target={workload}: {:?}", start.elapsed());
+            assert_eq!(graph.topo_order().unwrap().len(), count + usize::from(workload == "milestone"));
+        }
     }
 
     /// b depends on a; milestone m = {b, c}.
