@@ -31,6 +31,7 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       sha: ${{ steps.version.outputs.sha }}
+      migrations_changed: ${{ steps.version.outputs.migrations_changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -202,8 +203,9 @@ jobs:
           gh release edit "$RELEASE_TAG" --draft=false
 
   deploy-cloud:
-    needs: publish
+    needs: [validate, publish]
     uses: ./.github/workflows/deploy-cloud.yml
     with:
       environment: production
+      apply_migrations: ${{ needs.validate.outputs.migrations_changed == 'true' }}
     secrets: inherit

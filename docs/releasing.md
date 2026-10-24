@@ -46,7 +46,7 @@ The release workflow validates the tag and automates artifact generation:
    - Windows GUI installer (`-setup.exe`), compiled with Inno Setup and then silently installed, upgraded, and uninstalled as a check
 4. Executes smoke tests verifying workspace initialization and readiness evaluation
 5. Creates a draft release, uploads the seven assets (four CLI archives, two macOS installers, one Windows installer) and `SHA256SUMS`, then publishes it. The notes are `docs/release-notes/<tag>.md` (when that file exists at the tagged commit) followed by GitHub's generated notes
-6. Triggers production cloud deployment with the matching source commit
+6. Triggers production cloud deployment with the matching source commit. D1 migrations run only when `crates/topo-server/migrations` changed since the preceding version tag; an unchanged schema skips all D1 migration commands
 
 Pushing a `release/vMAJOR.MINOR.PATCH` branch at the version commit already on `main` starts the same workflow. It creates the annotated tag itself after all checks and builds pass.
 
