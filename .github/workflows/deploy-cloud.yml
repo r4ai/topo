@@ -8,6 +8,9 @@ on:
       environment:
         type: string
         default: production
+      apply_migrations:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       environment:
@@ -15,6 +18,10 @@ on:
         type: choice
         options: [staging, production]
         default: staging
+      apply_migrations:
+        description: Apply pending database migrations
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -44,6 +51,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify deployment credentials
+        run: |
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo '::error::CLOUDFLARE_API_TOKEN is not configured for this GitHub environment.'
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: '1.96.0'
@@ -54,6 +67,7 @@ jobs:
           package-manager-cache: false
       # The migration runs first, so every migration must leave the deployed Worker working.
       - name: Apply database migrations
+        if: inputs.apply_migrations
         run: |
           case "$ENVIRONMENT" in
             production) npx --yes wrangler@4 d1 migrations apply topo --remote ;;

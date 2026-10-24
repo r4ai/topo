@@ -64,6 +64,8 @@ It reads two secrets, set per GitHub environment:
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token limited to Workers and D1 on the account |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
 
+Deployment stops before any Cloudflare operation if `CLOUDFLARE_API_TOKEN` is missing. Releases compare migrations with the preceding version tag and skip the migration step when the schema is unchanged. A manual deployment retains the existing migration behavior; disable its `apply_migrations` input when no database change is needed.
+
 ## Local Development and Verification
 
 Use Node.js 24.22.1 (pinned in `.node-version`) for Wrangler. This is the October 21, 2026 security release; the deployment workflow uses the same version. Node runs the deployment tools, while the API itself runs on Cloudflare Workers and D1.
