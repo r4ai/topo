@@ -66,6 +66,8 @@ It reads two secrets, set per GitHub environment:
 
 ## Local Development and Verification
 
+Use Node.js 24.22.1 (pinned in `.node-version`) for Wrangler. This is the October 21, 2026 security release; the deployment workflow uses the same version. Node runs the deployment tools, while the API itself runs on Cloudflare Workers and D1.
+
 Run the local development server against an isolated local D1 database, from `crates/topo-server`:
 
 ```bash
