@@ -30,7 +30,7 @@ rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 worker = { version = "0.8", features = ["http", "d1"] }
 tower-service = "0.3"
 getrandom = { version = "0.4", features = ["wasm_js"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 # The tests run the router over SQLite.
